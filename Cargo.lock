@@ -4720,9 +4720,9 @@ dependencies = [
 
 [[package]]
 name = "sp1-primitives"
-version = "4.0.1"
+version = "4.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09b25a09b455dfae9c688da05718b205e8bd4afab36cd912d54639f5d4035815"
+checksum = "1cf66c2781c36037c94a5905b6e05e7396fd4d12df09cd7f05cf96e3f0889f49"
 dependencies = [
  "bincode",
  "hex",
