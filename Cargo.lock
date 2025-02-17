@@ -4999,9 +4999,9 @@ dependencies = [
 
 [[package]]
 name = "sp1-verifier"
-version = "4.0.1"
+version = "4.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "626324b2772bbc318d1673b31faa3880891536677d531911f497867e3c94753d"
+checksum = "94bf3296a784f68f51caaa9d79a5dd4046c507bdcc54ca26e14c41c4ea7d844a"
 dependencies = [
  "hex",
  "lazy_static",
