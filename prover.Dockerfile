@@ -1,2 +1,2 @@
 FROM ubuntu
-COPY ./bin/charms /usr/local/bin/
+COPY ./target/release/charms /usr/local/bin/
