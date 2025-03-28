@@ -249,7 +249,12 @@ impl<'de> Deserialize<'de> for App {
                 E: de::Error,
             {
                 // Split the string at '/'
-                let parts: Vec<&str> = value.split('/').collect();
+                let mut parts: Vec<&str> = value.split('/').collect();
+                if parts[0].is_empty() && parts[1].is_empty() {
+                    parts.remove(0);
+                    parts[0] = "/";
+                }
+                let parts = parts;
                 if parts.len() != 3 {
                     return Err(E::custom("expected format: tag_char/identity_hex/vk_hex"));
                 }
@@ -280,18 +285,14 @@ impl<'de> Deserialize<'de> for App {
                 let tag = seq
                     .next_element()?
                     .ok_or_else(|| de::Error::missing_field("tag"))?;
-                let id = seq
+                let identity = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::missing_field("id"))?;
-                let vk_hash = seq
+                    .ok_or_else(|| de::Error::missing_field("identity"))?;
+                let vk = seq
                     .next_element()?
-                    .ok_or_else(|| de::Error::missing_field("vk_hash"))?;
+                    .ok_or_else(|| de::Error::missing_field("vk"))?;
 
-                Ok(App {
-                    tag,
-                    identity: id,
-                    vk: vk_hash,
-                })
+                Ok(App { tag, identity, vk })
             }
         }
 
@@ -401,7 +402,7 @@ impl<'de> Deserialize<'de> for TxId {
 
 /// 32-byte byte string (e.g. a hash, like SHA256).
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct B32(pub [u8; 32]);
 
 impl B32 {
@@ -428,7 +429,75 @@ impl fmt::Display for B32 {
 
 impl fmt::Debug for B32 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "VkHash({})", hex::encode(&self.0))
+        write!(f, "Bytes32({})", hex::encode(&self.0))
+    }
+}
+
+impl Serialize for B32 {
+    fn serialize<S>(&self, serializer: S) -> core::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&self.to_string())
+        } else {
+            let mut seq = serializer.serialize_tuple(32)?;
+            for &byte in &self.0 {
+                seq.serialize_element(&byte)?;
+            }
+            seq.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for B32 {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct B32Visitor;
+
+        impl<'de> Visitor<'de> for B32Visitor {
+            type Value = B32;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string of 64 hex characters or a sequence of 32 bytes")
+            }
+
+            // Handle human-readable format ("hex")
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                B32::from_str(value).map_err(E::custom)
+            }
+
+            // Handle non-human-readable byte format [u8; 32]
+            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut bytes = [0u8; 32];
+                for i in 0..32 {
+                    bytes[i] = seq
+                        .next_element()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(i, &"32 elements"))?;
+                }
+
+                // Check if there are extra elements
+                if seq.next_element::<u8>()?.is_some() {
+                    return Err(serde::de::Error::invalid_length(33, &"exactly 32 elements"));
+                }
+
+                Ok(B32(bytes))
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(B32Visitor)
+        } else {
+            deserializer.deserialize_tuple(32, B32Visitor)
+        }
     }
 }
 
@@ -587,6 +656,22 @@ mod tests {
     fn vk_serde_roundtrip(vk: B32) {
         let bytes = util::write(&vk).unwrap();
         let vk2 = util::read(bytes.as_slice()).unwrap();
+        prop_assert_eq!(vk, vk2);
+    }
+
+    #[proptest]
+    fn vk_serde_json_roundtrip(vk: App) {
+        let json_str = serde_json::to_string(&vk).unwrap();
+        // dbg!(&json_str);
+        let vk2 = serde_json::from_str(&json_str).unwrap();
+        prop_assert_eq!(vk, vk2);
+    }
+
+    #[proptest]
+    fn vk_serde_yaml_roundtrip(vk: App) {
+        let yaml_str = serde_yaml::to_string(&vk).unwrap();
+        // dbg!(&yaml_str);
+        let vk2 = serde_yaml::from_str(&yaml_str).unwrap();
         prop_assert_eq!(vk, vk2);
     }
 

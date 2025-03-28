@@ -224,7 +224,12 @@ fn append_witness_data(
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn norm_spell(tx: &Transaction) -> Option<NormalizedSpell> {
-    charms_client::tx::extract_and_verify_spell(&tx, SPELL_VK).ok()
+    charms_client::tx::extract_and_verify_spell(&tx, SPELL_VK)
+        .map_err(|e| {
+            tracing::debug!("spell verification failed: {:?}", e);
+            e
+        })
+        .ok()
 }
 
 #[tracing::instrument(level = "debug", skip_all)]

@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 6da5ad73ab57994b035f7e6f7b9f5083c7479bd5e4a8ece0ec3f09a0a150153e # shrinks to txid = TxId([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])
+cc 43c9fee3aa3ebed0b3877aaf4219d765476e88bb84352d9782ca445272fc7e60 # shrinks to input = _VkSerdeJsonRoundtripArgs { vk: App(//0000000000000000000000000000000000000000000000000000000000000000/0000000000000000000000000000000000000000000000000000000000000000) }

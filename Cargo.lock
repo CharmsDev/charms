@@ -1249,6 +1249,8 @@ dependencies = [
  "proptest",
  "proptest-derive",
  "serde",
+ "serde_json",
+ "serde_yaml",
  "test-strategy",
 ]
 
