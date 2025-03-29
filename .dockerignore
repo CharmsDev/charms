@@ -6,4 +6,4 @@
 /elf
 /target
 /tmp
-Dockerfile
+*.Dockerfile
