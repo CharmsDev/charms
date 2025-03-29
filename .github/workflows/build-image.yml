@@ -1,4 +1,4 @@
-name: Create and publish Docker images
+name: Create and publish Docker image
 
 on:
   push:
@@ -36,8 +36,8 @@ jobs:
       # Build with the prover feature
       - name: Build the application
         run: |
-          cargo install --locked --bin charms --features prover --root ./prover/
-          cargo install --locked --bin charms                   --root .
+          cargo install --path . --locked --bin charms --features prover --root ./prover/
+          cargo install --path . --locked --bin charms                   --root .
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
