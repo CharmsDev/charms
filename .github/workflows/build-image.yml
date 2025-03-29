@@ -32,11 +32,11 @@ jobs:
         with:
           cache-key: ${{env.MY_RUNNER}}
 
-      # Install system dependencies
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y build-essential pkg-config clang libclang-dev libssl-dev
+      #      # Install system dependencies
+      #      - name: Install dependencies
+      #        run: |
+      #          sudo apt update
+      #          sudo apt install -y build-essential pkg-config clang libclang-dev libssl-dev
 
       # Build with the prover feature
       - name: Build the application
