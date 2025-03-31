@@ -864,6 +864,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
+dependencies = [
+ "bincode_derive",
+ "serde",
+ "unty",
+]
+
+[[package]]
+name = "bincode_derive"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf95709a440f45e986983918d0e8a1f30a9b1df04918fc828670606804ac3c09"
+dependencies = [
+ "virtue",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.70.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1197,7 +1217,7 @@ version = "0.5.4"
 dependencies = [
  "anyhow",
  "axum 0.8.3",
- "bincode",
+ "bincode 2.0.1",
  "bitcoin",
  "bitcoincore-rpc",
  "charms-client",
@@ -4806,7 +4826,7 @@ version = "4.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e10afc7d810ddf67b1a7f73630b2d3b475d5ee82b6db3d6e1d522b2b5c3776d4"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "bytemuck",
  "clap",
  "elf",
@@ -4845,7 +4865,7 @@ version = "4.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36b54ed5c0f799c7a97d52adf5a01f7cc71e0019fc3cd5ce559c5dc095233ab4"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "cbindgen",
  "cc",
  "cfg-if",
@@ -4901,7 +4921,7 @@ version = "4.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "70e308eaa531e29325429647de47a115e973752ac39baa0b1561620f9cc92140"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "ctrlc",
  "prost",
  "serde",
@@ -4950,7 +4970,7 @@ version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a5729da1b05d56c01457e5ecabdc77f1cc941df23f2921163a2f325aec22428"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "serde",
 ]
 
@@ -4960,7 +4980,7 @@ version = "4.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39daf1e0f52792dfc4d65fb904a3ece0125895e6e43ebb4284ffa5a08087bde6"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "elliptic-curve",
  "serde",
  "sp1-primitives",
@@ -4972,7 +4992,7 @@ version = "4.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c856b3fdcf7f380c16dc2c23e5b21df5107d4c1568475722d4256b9a416bca39"
 dependencies = [
- "bincode",
+ "bincode 1.3.3",
  "hex",
  "lazy_static",
  "num-bigint 0.4.6",
@@ -4991,7 +5011,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2002b44e97590f554cac88fccb267bce73b9b8ee64ec5774316cf317c62fae0a"
 dependencies = [
  "anyhow",
- "bincode",
+ "bincode 1.3.3",
  "clap",
  "dirs",
  "downloader",
@@ -5146,7 +5166,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ce6d98a0ca00b95138da2ae97c513c6a5cc0ed7605fa83782b22fd51fdde775"
 dependencies = [
  "anyhow",
- "bincode",
+ "bincode 1.3.3",
  "bindgen",
  "cc",
  "cfg-if",
@@ -5178,7 +5198,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "backoff",
- "bincode",
+ "bincode 1.3.3",
  "cfg-if",
  "dirs",
  "futures",
@@ -6012,6 +6032,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
+name = "unty"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
+
+[[package]]
 name = "url"
 version = "2.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6066,6 +6092,12 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "virtue"
+version = "0.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "wait-timeout"
