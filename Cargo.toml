@@ -37,7 +37,7 @@ sp1-primitives = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
 tokio = { version = "1.44", features = ["full"] }
-tower-http = { version = "0.6.2", features = ["cors"] }
+tower-http = { version = "0.6.4", features = ["cors"] }
 tracing = { workspace = true }
 tracing-forest = { version = "0.1.6" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
