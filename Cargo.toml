@@ -23,7 +23,7 @@ bitcoincore-rpc = { version = "0.19.0" }
 charms-client = { path = "./charms-client", version = "0.5.7" }
 charms-data = { path = "./charms-data", version = "0.5.7" }
 clap = { version = "4.5.36", features = ["derive"] }
-clap_complete = { version = "4.5.47" }
+clap_complete = { version = "4.5.54" }
 hex = { workspace = true }
 reqwest = { version = "0.12.15", features = ["json"] }
 serde = { workspace = true, features = ["derive"] }
