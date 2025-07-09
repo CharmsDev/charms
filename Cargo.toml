@@ -40,7 +40,7 @@ sp1-cuda = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
-tokio = { version = "1.45", features = ["full"] }
+tokio = { version = "1.46", features = ["full"] }
 toml = { version = "0.8.23" }
 tower-http = { version = "0.6.6", features = ["cors"] }
 tracing = { workspace = true }
