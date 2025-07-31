@@ -292,8 +292,9 @@ pub struct AppProverOutput {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct BitcoinFinalityInput {
     pub expected_tx: TxId,
-    pub pmt_proof: Vec<u8>,
-    pub block_bytes: Vec<u8>,
+    pub block_height: u32,
+    pub consensus_proof: Vec<u8>,
+    
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

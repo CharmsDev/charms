@@ -1,0 +1,11 @@
+[package]
+name = "btc-finality"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+blite-lib = { git = "https://github.com/bitsnark/b-lite.git", branch = "btc_rpc" }
+blite-script = { git = "https://github.com/bitsnark/b-lite.git", branch = "btc_rpc", package = "script" }

@@ -10,13 +10,13 @@ use crate::{
     cli::{
         server::Server,
         spell::{Check, Prove, SpellCli},
-        tx::{fetch_btc_finality_proof_input, write_object_as_json},
         wallet::{List, WalletCli},
     },
     spell::{CharmsFee, Prover},
     utils::{self, BoxedSP1Prover, Shared},
 };
 use bitcoin::{address::NetworkUnchecked, Address};
+use btc_finality::{prove_consensus, prove_tx_inclusion};
 use charms_app_runner::AppRunner;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
@@ -196,15 +196,29 @@ pub enum TxCommands {
         #[arg(long)]
         json: bool,
     },
-    #[command(name = "fetch-btc-finality")]
-    FetchBitcoinFinalityData {
-        // TxId of expected transaction
+    #[command(name = "prove-btc-consensus")]
+    ProveBitcoinConsensus {
+        // Path to previous proof (if not genesis case)
+        #[arg(long)]
+        previous_proof: Option<String>,
+
+        // Number of headers to validate after previous block
+        #[arg(long)]
+        block_height: u32,
+    },
+    #[command(name = "prove-btc-inclusion")]
+    ProveBitcoinInclusion {
+        // TxId included in given block root
         #[arg(long)]
         tx: String,
 
-        // Block Root hex in which expected transaction is mined
+        // Consensus proof at given block root
         #[arg(long)]
-        block_root: String,
+        consensus_proof: String,
+
+        // Height at given block root
+        #[arg(long)]
+        block_height: u32,
     },
 }
 
@@ -306,12 +320,15 @@ pub async fn run() -> anyhow::Result<()> {
         }
         Commands::Tx { command } => match command {
             TxCommands::ShowSpell { chain, tx, json } => tx::tx_show_spell(chain, tx, json),
-            TxCommands::FetchBitcoinFinalityData { tx, block_root } => {
-                let btc_data = fetch_btc_finality_proof_input(tx, block_root)?;
-                write_object_as_json(btc_data, PathBuf::from(DEFAULT_BTC_FINALITY_PATH))?;
-
-                Ok(())
-            }
+            TxCommands::ProveBitcoinConsensus {
+                previous_proof,
+                block_height,
+            } => prove_consensus(previous_proof, block_height),
+            TxCommands::ProveBitcoinInclusion {
+                tx,
+                consensus_proof,
+                block_height,
+            } => prove_tx_inclusion(tx, consensus_proof, block_height),
         },
         Commands::App { command } => match command {
             AppCommands::New { name } => app::new(&name),
@@ -498,32 +515,7 @@ fn print_output<T: Serialize>(output: &T, json: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
-    use crate::cli::{tx::fetch_btc_finality_proof_input, TxCommands};
 
     #[test]
     fn dummy() {}
-
-    #[test]
-    fn test_fetch_btc_finality_command() {
-        // Given values exist in testnet
-        let tx_id = "75905e70f660f19c7a785edd9ce4a7a3ff837d948e32977607ee090ea908f37b".to_string();
-        let block_root =
-            "00000000000000000366c11e195318fd96ccce10b527c46560f9aa325f9e4bee".to_string();
-
-        let cmd = TxCommands::FetchBitcoinFinalityData {
-            tx: tx_id.clone(),
-            block_root: block_root.clone(),
-        };
-
-        match cmd {
-            TxCommands::FetchBitcoinFinalityData { tx, block_root } => {
-                let result = fetch_btc_finality_proof_input(tx, block_root);
-                assert!(
-                    result.is_ok(),
-                    "Expected success from fetch_btc_inclusion_proof_input"
-                );
-            }
-            _ => panic!("Expected FetchBitcoinFinalityData variant"),
-        }
-    }
 }

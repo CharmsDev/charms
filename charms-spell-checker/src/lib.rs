@@ -1,5 +1,4 @@
 pub mod app;
-pub mod btc_finality;
 pub mod spell_checker;
 
 use crate::app::to_public_values;
