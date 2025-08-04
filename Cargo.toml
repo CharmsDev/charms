@@ -87,7 +87,7 @@ sp1-cuda = { version = "5.1.0" }
 sp1-primitives = { version = "5.1.0" }
 sp1-prover = { version = "5.1.0" }
 sp1-sdk = { version = "5.1.0" }
-sp1-verifier = { version = "5.1.0" }
+sp1-verifier = { version = "5.1.1" }
 sp1-zkvm = { version = "5.1.0" }
 test-strategy = { version = "0.4.3" }
 tracing = { version = "0.1" }
