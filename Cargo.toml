@@ -53,7 +53,7 @@ tokio = { version = "1.47", features = ["full"] }
 toml = { version = "0.8.23" }
 tower-http = { version = "0.6.6", features = ["cors"] }
 tracing = { workspace = true }
-tracing-forest = { version = "0.1.6" }
+tracing-forest = { version = "0.2.0" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 twirp = { package = "twirp-rs", version = "0.13.0-succinct" }
 
