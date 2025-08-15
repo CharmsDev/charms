@@ -1,16 +1,17 @@
 use crate::{
     spell,
-    spell::{CharmsFee, Spell},
+    spell::{CharmsFee, KeyedCharms, Spell},
 };
 use anyhow::{Error, anyhow, bail};
 use charms_client::{
     cardano_tx::{CardanoTx, tx_hash, tx_id},
     tx::Tx,
 };
-use charms_data::{TxId, UtxoId};
+use charms_data::{App, TxId, UtxoId};
 use cml_chain::{
-    Coin, SetTransactionInput,
+    Coin, SetTransactionInput, Value,
     address::Address,
+    assets::MultiAsset,
     fees::{LinearFee, min_no_script_fee},
     plutus::PlutusData,
     transaction::{
@@ -37,7 +38,10 @@ fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
 
 pub const ONE_ADA: u64 = 1000000;
 
-fn tx_output(outs: &[spell::Output]) -> anyhow::Result<Vec<TransactionOutput>> {
+fn tx_output(
+    outs: &[spell::Output],
+    apps: &BTreeMap<String, App>,
+) -> anyhow::Result<Vec<TransactionOutput>> {
     outs.iter()
         .map(|output| {
             let Some(address) = output.address.as_ref() else {
@@ -45,14 +49,20 @@ fn tx_output(outs: &[spell::Output]) -> anyhow::Result<Vec<TransactionOutput>> {
             };
             let address = Address::from_bech32(address).map_err(|e| anyhow!("{}", e))?;
             let amount = output.amount.unwrap_or(ONE_ADA);
-            Ok(TransactionOutput::new(address, amount.into(), None, None))
+            let multiasset = multi_asset(&output.charms, apps);
+            let value = Value::new(amount.into(), multiasset);
+            Ok(TransactionOutput::new(address, value, None, None))
         })
         .collect()
 }
 
+fn multi_asset(spell_output: &Option<KeyedCharms>, apps: &BTreeMap<String, App>) -> MultiAsset {
+    todo!()
+}
+
 pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
     let inputs = tx_input(&spell.ins)?;
-    let outputs = tx_output(&spell.outs)?;
+    let outputs = tx_output(&spell.outs, &spell.apps)?;
 
     let fee: Coin = 0;
 
