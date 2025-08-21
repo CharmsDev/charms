@@ -49,15 +49,27 @@ fn tx_output(
             };
             let address = Address::from_bech32(address).map_err(|e| anyhow!("{}", e))?;
             let amount = output.amount.unwrap_or(ONE_ADA);
-            let multiasset = multi_asset(&output.charms, apps);
+            let multiasset = multi_asset(&output.charms, apps)?;
             let value = Value::new(amount.into(), multiasset);
             Ok(TransactionOutput::new(address, value, None, None))
         })
         .collect()
 }
 
-fn multi_asset(spell_output: &Option<KeyedCharms>, apps: &BTreeMap<String, App>) -> MultiAsset {
-    todo!()
+fn multi_asset(
+    spell_output: &Option<KeyedCharms>,
+    apps: &BTreeMap<String, App>,
+) -> anyhow::Result<MultiAsset> {
+    let mut multi_asset = MultiAsset::new();
+    if let Some(charms) = spell_output {
+        for (k, data) in charms {
+            let Some(app) = apps.get(k) else {
+                bail!("no app present for the key: {}", k);
+            };
+            // TODO multi_asset.set(policy_id, asset_name, value);
+        }
+    };
+    Ok(multi_asset)
 }
 
 pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
@@ -67,11 +79,16 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
     let fee: Coin = 0;
 
     let body = TransactionBody::new(inputs, outputs, fee);
+    let body = add_mint(spell, body);
     let witness_set = TransactionWitnessSet::new();
 
     let tx = Transaction::new(body, witness_set, true, None);
 
     Ok(CardanoTx(tx))
+}
+
+fn add_mint(spell: &Spell, body: TransactionBody) -> TransactionBody {
+    todo!()
 }
 
 fn add_spell(
