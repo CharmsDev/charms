@@ -57,6 +57,7 @@ tracing = { workspace = true }
 tracing-forest = { version = "0.1.6" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 twirp = { package = "twirp-rs", version = "0.13.0-succinct" }
+uplc = { version = "1.1.19" }
 
 [features]
 prover = ["sp1-sdk/native-gnark", "sp1-prover/native-gnark", "redis", "rslock"]
