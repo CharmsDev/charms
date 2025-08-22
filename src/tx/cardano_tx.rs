@@ -88,7 +88,8 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
 }
 
 fn add_mint(spell: &Spell, body: TransactionBody) -> TransactionBody {
-    todo!()
+    // TODO add mint if needed
+    body
 }
 
 fn add_spell(
