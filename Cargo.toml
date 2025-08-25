@@ -50,7 +50,7 @@ sp1-primitives = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
 tokio = { version = "1.47", features = ["full"] }
-toml = { version = "0.8.23" }
+toml = { version = "0.9.5" }
 tower-http = { version = "0.6.6", features = ["cors"] }
 tracing = { workspace = true }
 tracing-forest = { version = "0.1.6" }
