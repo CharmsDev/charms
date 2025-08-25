@@ -38,6 +38,8 @@ fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
 
 pub const ONE_ADA: u64 = 1000000;
 
+pub const MINT_SCRIPT: &[u8] = include_bytes!("../bin/free_mint.free_mint.mint.flat");
+
 fn tx_output(
     outs: &[spell::Output],
     apps: &BTreeMap<String, App>,
