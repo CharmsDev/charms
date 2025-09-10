@@ -9,11 +9,12 @@ use charms_client::{
 };
 use charms_data::{App, TxId, UtxoId};
 use cml_chain::{
-    Coin, SetTransactionInput, Value,
+    Coin, PolicyId, SetTransactionInput, Value,
     address::Address,
     assets::MultiAsset,
+    crypto::ScriptHash,
     fees::{LinearFee, min_no_script_fee},
-    plutus::PlutusData,
+    plutus::{PlutusData, PlutusV3Script},
     transaction::{
         DatumOption, Transaction, TransactionBody, TransactionInput, TransactionOutput,
         TransactionWitnessSet,
@@ -38,7 +39,7 @@ fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
 
 pub const ONE_ADA: u64 = 1000000;
 
-pub const MINT_SCRIPT: &[u8] = include_bytes!("../bin/free_mint.free_mint.mint.flat");
+pub const MINT_SCRIPT: &[u8] = include_bytes!("../bin/free_mint.free_mint.mint.flat.cbor");
 
 fn tx_output(
     outs: &[spell::Output],
@@ -68,7 +69,11 @@ fn multi_asset(
             let Some(app) = apps.get(k) else {
                 bail!("no app present for the key: {}", k);
             };
+            let program = uplc::tx::apply_params_to_script(app.vk.as_ref(), MINT_SCRIPT)
+                .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
+            let policy_id = PlutusV3Script::new(program).hash();
             // TODO multi_asset.set(policy_id, asset_name, value);
+            // multi_asset.set(policy_id, asset_name, value);
         }
     };
     Ok(multi_asset)
