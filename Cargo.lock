@@ -2096,7 +2096,7 @@ dependencies = [
  "toml",
  "tower-http",
  "tracing",
- "tracing-forest",
+ "tracing-forest 0.2.0",
  "tracing-subscriber 0.3.20",
  "twirp-rs",
 ]
@@ -6676,7 +6676,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tracing",
- "tracing-forest",
+ "tracing-forest 0.1.6",
  "tracing-subscriber 0.3.20",
  "typenum",
  "web-time",
@@ -7724,6 +7724,18 @@ dependencies = [
  "ansi_term",
  "smallvec",
  "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+]
+
+[[package]]
+name = "tracing-forest"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3298fe855716711a00474eceb89cc7dc254bbe67f6bc4afafdeec5f0c538771c"
+dependencies = [
+ "smallvec",
+ "thiserror 2.0.16",
  "tracing",
  "tracing-subscriber 0.3.20",
 ]
