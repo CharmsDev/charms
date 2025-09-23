@@ -28,4 +28,4 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 ciborium = { version = "0.2.2" }
-serde_json = { version = "1.0.143" }
+serde_json = { version = "1.0.145" }
