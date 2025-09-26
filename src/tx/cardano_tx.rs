@@ -20,7 +20,7 @@ use cml_chain::{
         TransactionWitnessSet,
     },
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
     let inputs = ins
@@ -52,7 +52,7 @@ fn tx_output(
             };
             let address = Address::from_bech32(address).map_err(|e| anyhow!("{}", e))?;
             let amount = output.amount.unwrap_or(ONE_ADA);
-            let multiasset = multi_asset(&output.charms, apps)?;
+            let (multiasset, scripts) = multi_asset(&output.charms, apps)?;
             let value = Value::new(amount.into(), multiasset);
             Ok(TransactionOutput::new(address, value, None, None))
         })
@@ -62,8 +62,9 @@ fn tx_output(
 fn multi_asset(
     spell_output: &Option<KeyedCharms>,
     apps: &BTreeMap<String, App>,
-) -> anyhow::Result<MultiAsset> {
+) -> anyhow::Result<(MultiAsset, BTreeSet<PlutusV3Script>)> {
     let mut multi_asset = MultiAsset::new();
+    let mut scripts = BTreeSet::new();
     if let Some(charms) = spell_output {
         for (k, data) in charms {
             let Some(app) = apps.get(k) else {
@@ -71,12 +72,14 @@ fn multi_asset(
             };
             let program = uplc::tx::apply_params_to_script(app.vk.as_ref(), MINT_SCRIPT)
                 .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
-            let policy_id = PlutusV3Script::new(program).hash();
+            let script = PlutusV3Script::new(program);
+            let policy_id = script.hash();
+            scripts.insert(script);
             // TODO multi_asset.set(policy_id, asset_name, value);
             // multi_asset.set(policy_id, asset_name, value);
         }
     };
-    Ok(multi_asset)
+    Ok((multi_asset, scripts))
 }
 
 pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
