@@ -7,12 +7,11 @@ use charms_client::{
     cardano_tx::{CardanoTx, tx_hash, tx_id},
     tx::Tx,
 };
-use charms_data::{App, TxId, UtxoId};
+use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
     Coin, PolicyId, SetTransactionInput, Value,
     address::Address,
-    assets::MultiAsset,
-    crypto::ScriptHash,
+    assets::{AssetName, MultiAsset},
     fees::{LinearFee, min_no_script_fee},
     plutus::{PlutusData, PlutusV3Script},
     transaction::{
@@ -41,22 +40,26 @@ pub const ONE_ADA: u64 = 1000000;
 
 pub const MINT_SCRIPT: &[u8] = include_bytes!("../bin/free_mint.free_mint.mint.flat.cbor");
 
-fn tx_output(
+fn tx_outputs(
     outs: &[spell::Output],
     apps: &BTreeMap<String, App>,
-) -> anyhow::Result<Vec<TransactionOutput>> {
-    outs.iter()
+) -> anyhow::Result<(Vec<TransactionOutput>, BTreeSet<PlutusV3Script>)> {
+    let mut scripts = BTreeSet::new();
+    let tx_out = outs
+        .iter()
         .map(|output| {
             let Some(address) = output.address.as_ref() else {
                 bail!("no address in spell output {:?}", &output);
             };
             let address = Address::from_bech32(address).map_err(|e| anyhow!("{}", e))?;
             let amount = output.amount.unwrap_or(ONE_ADA);
-            let (multiasset, scripts) = multi_asset(&output.charms, apps)?;
+            let (multiasset, more_scripts) = multi_asset(&output.charms, apps)?;
+            scripts.extend(more_scripts);
             let value = Value::new(amount.into(), multiasset);
             Ok(TransactionOutput::new(address, value, None, None))
         })
-        .collect()
+        .collect::<anyhow::Result<_>>()?;
+    Ok((tx_out, scripts))
 }
 
 fn multi_asset(
@@ -70,27 +73,60 @@ fn multi_asset(
             let Some(app) = apps.get(k) else {
                 bail!("no app present for the key: {}", k);
             };
-            let program = uplc::tx::apply_params_to_script(app.vk.as_ref(), MINT_SCRIPT)
-                .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
-            let script = PlutusV3Script::new(program);
-            let policy_id = script.hash();
+            if app.tag != TOKEN && app.tag != NFT {
+                continue; // TODO figure what to do with other tags
+            }
+            let (policy_id, script) = policy_id(app)?;
+            let asset_name = asset_name(app)?;
+            let value = get_value(app, data)?;
             scripts.insert(script);
-            // TODO multi_asset.set(policy_id, asset_name, value);
-            // multi_asset.set(policy_id, asset_name, value);
+            multi_asset.set(policy_id, asset_name, value);
         }
     };
     Ok((multi_asset, scripts))
 }
 
+fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
+    let program = uplc::tx::apply_params_to_script(app.vk.as_ref(), MINT_SCRIPT)
+        .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
+    let script = PlutusV3Script::new(program);
+    let policy_id = script.hash();
+    Ok((policy_id, script))
+}
+
+fn asset_name(app: &App) -> anyhow::Result<AssetName> {
+    const FT_LABEL: &[u8] = &[0x00, 0x14, 0xdf, 0x10];
+    const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
+    let label = match app.tag {
+        TOKEN => FT_LABEL,
+        NFT => NFT_LABEL,
+        _ => unreachable!("unsupported tag: {}", app.tag),
+    };
+    Ok(AssetName::new([label, &app.identity.0[4..]].concat())
+        .map_err(|e| anyhow!("error converting to Cardano AssetName: {}", e))?)
+}
+
+fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
+    match app.tag {
+        TOKEN => Ok(data.value()?),
+        NFT => Ok(1),
+        _ => unreachable!("unsupported tag: {}", app.tag),
+    }
+}
+
 pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
     let inputs = tx_input(&spell.ins)?;
-    let outputs = tx_output(&spell.outs, &spell.apps)?;
+    let (outputs, scripts) = tx_outputs(&spell.outs, &spell.apps)?;
 
     let fee: Coin = 0;
 
     let body = TransactionBody::new(inputs, outputs, fee);
     let body = add_mint(spell, body);
-    let witness_set = TransactionWitnessSet::new();
+
+    let mut witness_set = TransactionWitnessSet::new();
+    if !scripts.is_empty() {
+        witness_set.plutus_v3_scripts = Some(scripts.into_iter().collect::<Vec<_>>().into());
+    }
 
     let tx = Transaction::new(body, witness_set, true, None);
 
