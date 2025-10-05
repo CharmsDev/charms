@@ -13,7 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 charms-client = { path = "../charms-client", version = "0.9.3" }
 serde-wasm-bindgen = { version = "0.6.5" }
-wasm-bindgen = { version = "0.2.101" }
+wasm-bindgen = { version = "0.2.104" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
