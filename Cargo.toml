@@ -28,7 +28,6 @@ axum = { version = "0.8.4", features = ["http2"] }
 axum-macros = { version = "0.5.0" }
 bincode = { version = "1.3.3" }
 bitcoin = { workspace = true, features = ["rand", "rand-std"] }
-bitcoincore-rpc = { version = "0.19.0" }
 charms-app-runner = { path = "./charms-app-runner", version = "0.9.3" }
 charms-client = { path = "./charms-client", version = "0.9.3" }
 charms-data = { path = "./charms-data", version = "0.9.3" }
@@ -38,7 +37,6 @@ clap = { version = "4.5.47", features = ["derive"] }
 clap_complete = { version = "4.5.57" }
 cml-chain = { workspace = true }
 const_format = { version = "0.2.34" }
-hex = { workspace = true }
 redis = { version = "0.32.5", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
 reqwest = { version = "0.12.23", features = ["json"] }
@@ -48,10 +46,8 @@ serde_json = { workspace = true }
 serde_with = { version = "3.14.0", features = ["base64"] }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
-sp1-core-executor = { workspace = true }
 sp1-core-machine = { workspace = true }
 sp1-cuda = { workspace = true }
-sp1-primitives = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
 tokio = { version = "1.47", features = ["full"] }
@@ -107,7 +103,6 @@ serde = { version = "1.0" }
 serde_json = { version = "1.0.143" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-core-executor = { version = "5.2.1" }
 sp1-core-machine = { version = "5.2.1" }
 sp1-cuda = { version = "5.2.1" }
 sp1-primitives = { version = "5.2.1" }
