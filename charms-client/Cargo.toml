@@ -15,7 +15,7 @@ ark-groth16 = { workspace = true }
 ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
-charms-data = { path = "../charms-data", version = "0.9.2" }
+charms-data = { path = "../charms-data", version = "0.9.3" }
 cml-chain = { workspace = true }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
