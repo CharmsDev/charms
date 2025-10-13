@@ -114,14 +114,14 @@ fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
     }
 }
 
-pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
+pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow::Result<CardanoTx> {
     let inputs = tx_input(&spell.ins)?;
     let (outputs, scripts) = tx_outputs(&spell.outs, &spell.apps)?;
 
     let fee: Coin = 0;
 
     let body = TransactionBody::new(inputs, outputs, fee);
-    let body = add_mint(spell, body);
+    let body = add_mint(prev_txs_by_id, body);
 
     let mut witness_set = TransactionWitnessSet::new();
     if !scripts.is_empty() {
@@ -133,8 +133,8 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<CardanoTx> {
     Ok(CardanoTx(tx))
 }
 
-fn add_mint(spell: &Spell, body: TransactionBody) -> TransactionBody {
-    // TODO add mint if needed
+fn add_mint(prev_txs_by_id: &BTreeMap<TxId, Tx>, body: TransactionBody) -> TransactionBody {
+    // TODO add mint if needed: mint = total outputs - total inputs
     body
 }
 
@@ -236,7 +236,7 @@ pub fn make_transactions(
 ) -> Result<Vec<Tx>, Error> {
     let change_address =
         Address::from_bech32(change_address).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let tx = from_spell(spell)?;
+    let tx = from_spell(spell, prev_txs_by_id)?;
 
     let transactions = add_spell(
         tx.0,
