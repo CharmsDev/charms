@@ -2,7 +2,7 @@ use crate::{
     spell,
     spell::{CharmsFee, KeyedCharms, Spell},
 };
-use anyhow::{Error, anyhow, bail};
+use anyhow::{Error, anyhow, bail, ensure};
 use charms_client::{
     cardano_tx::{CardanoTx, tx_hash, tx_id},
     tx::Tx,
@@ -11,7 +11,7 @@ use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
     Coin, PolicyId, SetTransactionInput, Value,
     address::Address,
-    assets::{AssetName, MultiAsset},
+    assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     fees::{LinearFee, min_no_script_fee},
     plutus::{PlutusData, PlutusV3Script},
     transaction::{
@@ -121,7 +121,7 @@ pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow:
     let fee: Coin = 0;
 
     let body = TransactionBody::new(inputs, outputs, fee);
-    let body = add_mint(prev_txs_by_id, body);
+    let body = add_mint(prev_txs_by_id, body)?;
 
     let mut witness_set = TransactionWitnessSet::new();
     if !scripts.is_empty() {
@@ -133,9 +133,55 @@ pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow:
     Ok(CardanoTx(tx))
 }
 
-fn add_mint(prev_txs_by_id: &BTreeMap<TxId, Tx>, body: TransactionBody) -> TransactionBody {
-    // TODO add mint if needed: mint = total outputs - total inputs
-    body
+fn add_mint(
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    mut body: TransactionBody,
+) -> anyhow::Result<TransactionBody> {
+    let out_assets_iter = body.outputs.iter().map(|o| o.amount().multiasset.clone());
+    let in_assets_iter = body.inputs.iter().map(|i| {
+        let prev_tx = prev_txs_by_id.get(&TxId(i.transaction_id.into())).unwrap();
+        let Tx::Cardano(CardanoTx(prev_tx)) = prev_tx else {
+            unreachable!()
+        };
+        prev_tx.body.outputs[i.index as usize]
+            .amount()
+            .multiasset
+            .clone()
+    });
+
+    let out_assets = total_assets(out_assets_iter);
+    let in_assets = total_assets(in_assets_iter);
+
+    let minted_assets: AssetBundle<u64> = out_assets.clamped_sub(&in_assets);
+    let burned_assets: AssetBundle<u64> = in_assets.clamped_sub(&out_assets);
+
+    check_asset_amounts(&minted_assets)?;
+    check_asset_amounts(&burned_assets)?;
+
+    let minted_assets: AssetBundle<i64> = unsafe { std::mem::transmute(minted_assets) };
+    let burned_assets: AssetBundle<i64> = unsafe { std::mem::transmute(burned_assets) };
+
+    let mint = minted_assets.clamped_sub(&burned_assets);
+    if !mint.is_empty() {
+        body.mint = Some(mint);
+    }
+
+    Ok(body)
+}
+
+fn total_assets(assets_iter: impl Iterator<Item = MultiAsset>) -> MultiAsset {
+    assets_iter.fold(MultiAsset::new(), |acc, assets| {
+        acc.checked_add(&assets).unwrap()
+    })
+}
+
+fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
+    for (_, assets) in assets.iter() {
+        for (_, amount) in assets.iter() {
+            ensure!(*amount < (1u64 << 63));
+        }
+    }
+    Ok(())
 }
 
 fn add_spell(
