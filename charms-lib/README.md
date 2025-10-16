@@ -21,7 +21,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 In this directory:
 
 ```sh
-RUSTFLAGS="-C target-cpu=generic" cargo build --release --target wasm32-unknown-unknown
+cargo build --release --features wasm --target wasm32-unknown-unknown
 
 wasm-bindgen --out-dir target/wasm-bindgen-nodejs --target nodejs ../target/wasm32-unknown-unknown/release/charms_lib.wasm
 ```

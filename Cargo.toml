@@ -95,7 +95,7 @@ ark-std = { version = "0.5.0" }
 bitcoin = { version = "0.32.7" }
 ciborium = { version = "0.2.2" }
 ciborium-io = { version = "0.2.2" }
-cml-chain = { version = "6.2.0" }
+cml-chain = { version = "6.2.0", default-features = false }
 hex = { version = "0.4.3" }
 proptest = { version = "1.8.0" }
 proptest-derive = { version = "0.5.1" }

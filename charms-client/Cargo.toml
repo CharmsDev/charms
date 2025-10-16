@@ -16,7 +16,7 @@ ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
 charms-data = { path = "../charms-data", version = "0.9.4" }
-cml-chain = { workspace = true }
+cml-chain = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
