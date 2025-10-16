@@ -1,4 +1,7 @@
-pub use charms_client::{NormalizedSpell, tx::Tx};
+pub use charms_client::{
+    NormalizedCharms, NormalizedSpell, NormalizedTransaction,
+    tx::{EnchantedTx, Tx},
+};
 #[cfg(feature = "wasm")]
 use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 
