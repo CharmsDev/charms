@@ -12,6 +12,7 @@ use cml_chain::{
     Coin, PolicyId, SetTransactionInput, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
+    builders::tx_builder::TransactionBuilder,
     fees::{LinearFee, min_no_script_fee},
     plutus::{PlutusData, PlutusV3Script},
     transaction::{
@@ -19,6 +20,8 @@ use cml_chain::{
         TransactionWitnessSet,
     },
 };
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
@@ -38,7 +41,7 @@ fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
 
 pub const ONE_ADA: u64 = 1000000;
 
-pub const MINT_SCRIPT: &[u8] = include_bytes!("../bin/free_mint.free_mint.mint.flat.cbor");
+pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
 
 fn tx_outputs(
     outs: &[spell::Output],
@@ -131,6 +134,24 @@ pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow:
     let tx = Transaction::new(body, witness_set, true, None);
 
     Ok(CardanoTx(tx))
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ProtocolParams {
+    tx_fee_per_byte: u64,
+    tx_fee_fixed: u64,
+
+    max_value_size: u64,
+    max_tx_size: u64,
+
+    utxo_cost_per_byte: u64,
+}
+
+fn transaction_builder() -> TransactionBuilder {
+    const PROTOCOL_JSON: &[u8] = include_bytes!("./protocol.json");
+    let protocol_params: ProtocolParams = serde_json::from_slice(PROTOCOL_JSON).unwrap();
+
+    todo!()
 }
 
 fn add_mint(

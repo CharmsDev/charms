@@ -98,7 +98,7 @@ impl Prove for SpellCli {
                     unreachable!()
                 };
                 let tx_draft = json!({
-                    "type": "Unwitnessed Tx ConwayEra",
+                    "type": "Witnessed Tx ConwayEra",
                     "description": "Ledger Cddl Format",
                     "cborHex": tx_hex,
                 });
