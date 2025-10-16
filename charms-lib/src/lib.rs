@@ -1,5 +1,7 @@
 pub use charms_client::{
     NormalizedCharms, NormalizedSpell, NormalizedTransaction,
+    bitcoin_tx::BitcoinTx,
+    cardano_tx::CardanoTx,
     tx::{EnchantedTx, Tx},
 };
 #[cfg(feature = "wasm")]
