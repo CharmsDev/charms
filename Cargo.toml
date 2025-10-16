@@ -33,13 +33,13 @@ charms-client = { path = "./charms-client", version = "0.9.4" }
 charms-data = { path = "./charms-data", version = "0.9.4" }
 charms-lib = { path = "./charms-lib", version = "0.9.4" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "0.9.4" }
-clap = { version = "4.5.48", features = ["derive"] }
-clap_complete = { version = "4.5.58" }
+clap = { version = "4.5.49", features = ["derive"] }
+clap_complete = { version = "4.5.59" }
 cml-chain = { workspace = true }
-const_format = { version = "0.2.34" }
+const_format = { version = "0.2.35" }
 redis = { version = "0.32.7", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
-reqwest = { version = "0.12.23", features = ["json"] }
+reqwest = { version = "0.12.24", features = ["json"] }
 rslock = { version = "0.7.3", optional = true, features = ["tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -50,7 +50,7 @@ sp1-core-machine = { workspace = true }
 sp1-cuda = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 toml = { version = "0.8.23" }
 tower-http = { version = "0.6.6", features = ["cors"] }
 tracing = { workspace = true }
@@ -103,13 +103,13 @@ serde = { version = "1.0" }
 serde_json = { version = "1.0.145" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-core-machine = { version = "5.2.1" }
-sp1-cuda = { version = "5.2.1" }
-sp1-primitives = { version = "5.2.1" }
-sp1-prover = { version = "5.2.1" }
-sp1-sdk = { version = "5.2.1", default-features = false, features = ["network"] }
-sp1-verifier = { version = "5.2.1" }
-sp1-zkvm = { version = "5.2.1" }
+sp1-core-machine = { version = "5.2.2" }
+sp1-cuda = { version = "5.2.2" }
+sp1-primitives = { version = "5.2.2" }
+sp1-prover = { version = "5.2.2" }
+sp1-sdk = { version = "5.2.2", default-features = false, features = ["network"] }
+sp1-verifier = { version = "5.2.2" }
+sp1-zkvm = { version = "5.2.2" }
 test-strategy = { version = "0.4.3" }
 tracing = { version = "0.1" }
 
