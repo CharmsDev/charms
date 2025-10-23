@@ -9,19 +9,18 @@ use charms_client::{
 };
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
-    Coin, PolicyId, SetTransactionInput, Value,
+    Coin, PolicyId, Rational, SetTransactionInput, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
-    builders::tx_builder::TransactionBuilder,
+    builders::tx_builder::{TransactionBuilder, TransactionBuilderConfigBuilder},
     fees::{LinearFee, min_no_script_fee},
-    plutus::{PlutusData, PlutusV3Script},
+    plutus::{ExUnitPrices, PlutusData, PlutusV3Script},
     transaction::{
         DatumOption, Transaction, TransactionBody, TransactionInput, TransactionOutput,
         TransactionWitnessSet,
     },
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
@@ -137,21 +136,54 @@ pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow:
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ProtocolParams {
     tx_fee_per_byte: u64,
     tx_fee_fixed: u64,
-
-    max_value_size: u64,
-    max_tx_size: u64,
-
+    min_fee_ref_script_cost_per_byte: u64,
+    stake_pool_deposit: u64,
+    stake_address_deposit: u64,
+    max_value_size: u32,
+    max_tx_size: u32,
     utxo_cost_per_byte: u64,
+    collateral_percentage: u32,
+    max_collateral_inputs: u32,
 }
 
 fn transaction_builder() -> TransactionBuilder {
     const PROTOCOL_JSON: &[u8] = include_bytes!("./protocol.json");
     let protocol_params: ProtocolParams = serde_json::from_slice(PROTOCOL_JSON).unwrap();
 
-    todo!()
+    let transaction_builder_config = TransactionBuilderConfigBuilder::new()
+        .fee_algo(LinearFee::new(
+            protocol_params.tx_fee_per_byte,
+            protocol_params.tx_fee_fixed,
+            protocol_params.min_fee_ref_script_cost_per_byte,
+        ))
+        .pool_deposit(protocol_params.stake_pool_deposit)
+        .key_deposit(protocol_params.stake_address_deposit)
+        .max_value_size(protocol_params.max_value_size)
+        .max_tx_size(protocol_params.max_tx_size)
+        .coins_per_utxo_byte(protocol_params.utxo_cost_per_byte)
+        .ex_unit_prices(ExUnitPrices::new(
+            Rational::new(577, 100),
+            Rational::new(721, 100000),
+        ))
+        .collateral_percentage(protocol_params.collateral_percentage)
+        .max_collateral_inputs(protocol_params.max_collateral_inputs)
+        .build()
+        .expect("failed to build transaction builder config");
+    TransactionBuilder::new(transaction_builder_config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_transaction_builder_does_not_panic() {
+        let _ = transaction_builder();
+    }
 }
 
 fn add_mint(
