@@ -10,7 +10,6 @@ use charms_client::{
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
     Coin, PolicyId, Rational, SetTransactionInput, Value,
-    address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::tx_builder::{TransactionBuilder, TransactionBuilderConfigBuilder},
     fees::{LinearFee, min_no_script_fee},
@@ -20,22 +19,28 @@ use cml_chain::{
         TransactionWitnessSet,
     },
 };
+use pallas_addresses::Address;
+use pallas_txbuilder::{Input, Output, StagingTransaction};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn tx_input(ins: &[spell::Input]) -> anyhow::Result<SetTransactionInput> {
+fn tx_input(p_tx: &mut StagingTransaction, ins: &[spell::Input]) -> anyhow::Result<()> {
     let inputs = ins
         .iter()
         .map(|input| {
             let Some(utxo_id) = &input.utxo_id else {
                 bail!("no utxo_id in spell input {:?}", &input);
             };
-            let tx_input = TransactionInput::new(tx_hash(utxo_id.0), utxo_id.1.into());
+            let tx_input = Input::new(tx_hash(utxo_id.0), utxo_id.1.into());
             Ok(tx_input)
         })
-        .collect::<Result<Vec<_>, _>>();
+        .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(inputs?.into())
+    if !inputs.is_empty() {
+        p_tx.inputs = Some(inputs);
+    }
+
+    Ok(())
 }
 
 pub const ONE_ADA: u64 = 1000000;
@@ -43,20 +48,21 @@ pub const ONE_ADA: u64 = 1000000;
 pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
 
 fn tx_outputs(
+    p_tx: &mut StagingTransaction,
     outs: &[spell::Output],
     apps: &BTreeMap<String, App>,
-) -> anyhow::Result<(Vec<TransactionOutput>, BTreeSet<PlutusV3Script>)> {
-    let mut scripts = BTreeSet::new();
+) -> anyhow::Result<()> {
+    // let mut scripts = BTreeSet::new();
     let tx_out = outs
         .iter()
         .map(|output| {
             let Some(address) = output.address.as_ref() else {
                 bail!("no address in spell output {:?}", &output);
             };
-            let address = Address::from_bech32(address).map_err(|e| anyhow!("{}", e))?;
+            let address = Address::from_bech32(address)?;
             let amount = output.amount.unwrap_or(ONE_ADA);
-            let (multiasset, more_scripts) = multi_asset(&output.charms, apps)?;
-            scripts.extend(more_scripts);
+            let (multiasset, more_scripts) = multi_asset(p_tx, &output.charms, apps)?;
+            // TODO add script to p_tx scripts.extend(more_scripts);
             let value = Value::new(amount.into(), multiasset);
             Ok(TransactionOutput::new(address, value, None, None))
         })
@@ -65,6 +71,7 @@ fn tx_outputs(
 }
 
 fn multi_asset(
+    p_tx: &mut StagingTransaction,
     spell_output: &Option<KeyedCharms>,
     apps: &BTreeMap<String, App>,
 ) -> anyhow::Result<(MultiAsset, BTreeSet<PlutusV3Script>)> {
@@ -116,14 +123,20 @@ fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
     }
 }
 
-pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow::Result<CardanoTx> {
-    let inputs = tx_input(&spell.ins)?;
-    let (outputs, scripts) = tx_outputs(&spell.outs, &spell.apps)?;
+pub fn from_spell(
+    spell: &Spell,
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+) -> anyhow::Result<Transaction> {
+    let mut p_tx = StagingTransaction::new();
+
+    tx_input(&mut p_tx, &spell.ins)?;
+
+    tx_outputs(&mut p_tx, &spell.outs, &spell.apps)?;
 
     let fee: Coin = 0;
 
-    let body = TransactionBody::new(inputs, outputs, fee);
-    let body = add_mint(prev_txs_by_id, body)?;
+    // let body = TransactionBody::new(inputs, outputs, fee);
+    // let body = add_mint(prev_txs_by_id, body)?;
 
     let mut witness_set = TransactionWitnessSet::new();
     if !scripts.is_empty() {
@@ -132,7 +145,9 @@ pub fn from_spell(spell: &Spell, prev_txs_by_id: &BTreeMap<TxId, Tx>) -> anyhow:
 
     let tx = Transaction::new(body, witness_set, true, None);
 
-    Ok(CardanoTx(tx))
+    let tx_builder: TransactionBuilder = transaction_builder();
+
+    Ok(tx)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -338,7 +353,7 @@ pub fn make_transactions(
     let tx = from_spell(spell, prev_txs_by_id)?;
 
     let transactions = add_spell(
-        tx.0,
+        tx,
         spell_data,
         funding_utxo,
         funding_utxo_value,

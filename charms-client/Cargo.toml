@@ -19,6 +19,8 @@ charms-data = { path = "../charms-data", version = "0.9.3" }
 cml-chain = { workspace = true }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
+pallas-primitives = { version = "1.0.0-alpha.2" }
+pallas-crypto = { version = "1.0.0-alpha.2" }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { version = "3.15.0" }
 sha2 = { workspace = true }
