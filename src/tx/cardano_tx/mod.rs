@@ -10,8 +10,12 @@ use charms_client::{
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
     Coin, PolicyId, Rational, SetTransactionInput, Value,
+    address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
-    builders::tx_builder::{TransactionBuilder, TransactionBuilderConfigBuilder},
+    builders::{
+        input_builder::SingleInputBuilder,
+        tx_builder::{TransactionBuilder, TransactionBuilderConfigBuilder},
+    },
     fees::{LinearFee, min_no_script_fee},
     plutus::{ExUnitPrices, PlutusData, PlutusV3Script},
     transaction::{
@@ -19,28 +23,49 @@ use cml_chain::{
         TransactionWitnessSet,
     },
 };
-use pallas_addresses::Address;
-use pallas_txbuilder::{Input, Output, StagingTransaction};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn tx_input(p_tx: &mut StagingTransaction, ins: &[spell::Input]) -> anyhow::Result<()> {
-    let inputs = ins
-        .iter()
-        .map(|input| {
-            let Some(utxo_id) = &input.utxo_id else {
-                bail!("no utxo_id in spell input {:?}", &input);
-            };
-            let tx_input = Input::new(tx_hash(utxo_id.0), utxo_id.1.into());
-            Ok(tx_input)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    if !inputs.is_empty() {
-        p_tx.inputs = Some(inputs);
+fn tx_inputs(
+    tx_b: &mut TransactionBuilder,
+    ins: &[spell::Input],
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+) -> anyhow::Result<()> {
+    for input in ins.iter() {
+        let Some(utxo_id) = &input.utxo_id else {
+            bail!("no utxo_id in spell input {:?}", &input);
+        };
+        let input = tx_input(utxo_id);
+        let output = tx_output(prev_txs_by_id, utxo_id)?;
+        let input_builder = SingleInputBuilder::new(input, output);
+        let in_b_result = input_builder.payment_key()?; // TODO impl spending from other addresses
+        tx_b.add_input(in_b_result)?;
     }
 
     Ok(())
+}
+
+fn tx_input(utxo_id: &UtxoId) -> TransactionInput {
+    TransactionInput::new(tx_hash(utxo_id.0), utxo_id.1 as u64)
+}
+
+fn tx_output(
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    utxo_id: &UtxoId,
+) -> anyhow::Result<TransactionOutput> {
+    let tx = prev_txs_by_id
+        .get(&utxo_id.0)
+        .ok_or_else(|| anyhow!("could not find prev_tx by id {}", utxo_id.0))?;
+    let Tx::Cardano(CardanoTx(tx)) = tx else {
+        bail!("expected CardanoTx, got {:?}", tx);
+    };
+    let output = tx
+        .body
+        .outputs
+        .get(utxo_id.1 as usize)
+        .cloned()
+        .ok_or_else(|| anyhow!("could not find output by index {}", utxo_id.1))?;
+    Ok(output)
 }
 
 pub const ONE_ADA: u64 = 1000000;
@@ -48,7 +73,7 @@ pub const ONE_ADA: u64 = 1000000;
 pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
 
 fn tx_outputs(
-    p_tx: &mut StagingTransaction,
+    p_tx: &mut TransactionBuilder,
     outs: &[spell::Output],
     apps: &BTreeMap<String, App>,
 ) -> anyhow::Result<()> {
@@ -123,13 +148,14 @@ fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
     }
 }
 
+/// Build a transaction only dealing with Charms tokens
 pub fn from_spell(
     spell: &Spell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<Transaction> {
-    let mut p_tx = StagingTransaction::new();
+    let mut p_tx = transaction_builder();
 
-    tx_input(&mut p_tx, &spell.ins)?;
+    tx_inputs(&mut p_tx, &spell.ins, prev_txs_by_id)?;
 
     tx_outputs(&mut p_tx, &spell.outs, &spell.apps)?;
 
@@ -345,12 +371,27 @@ pub fn make_transactions(
     change_address: &String,
     spell_data: &[u8],
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    underlying_tx: Option<Tx>,
     _charms_fee: Option<CharmsFee>,
     _total_cycles: u64,
 ) -> Result<Vec<Tx>, Error> {
+    let underlying_tx = underlying_tx
+        .map(|tx| {
+            let Tx::Cardano(CardanoTx(tx)) = tx else {
+                bail!("not a Cardano transaction");
+            };
+            Ok(tx)
+        })
+        .transpose()?;
     let change_address =
         Address::from_bech32(change_address).map_err(|e| anyhow::anyhow!("{}", e))?;
+
     let tx = from_spell(spell, prev_txs_by_id)?;
+
+    let tx = match underlying_tx {
+        Some(u_tx) => combine(u_tx, tx),
+        None => tx,
+    };
 
     let transactions = add_spell(
         tx,
@@ -364,4 +405,8 @@ pub fn make_transactions(
         .into_iter()
         .map(|tx| Tx::Cardano(CardanoTx(tx)))
         .collect())
+}
+
+fn combine(base_tx: Transaction, tx: Transaction) -> Transaction {
+    todo!()
 }

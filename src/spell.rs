@@ -756,6 +756,7 @@ impl ProveSpellTxImpl {
                     &change_address,
                     &spell_data,
                     &prev_txs_by_id,
+                    None,
                     charms_fee,
                     total_cycles,
                 )?;

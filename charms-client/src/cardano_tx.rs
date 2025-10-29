@@ -7,7 +7,6 @@ use cml_chain::{
     plutus::PlutusData,
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
-use pallas_crypto::hash::Hash;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CardanoTx(pub Transaction);
@@ -127,7 +126,7 @@ pub fn tx_id(transaction_hash: TransactionHash) -> TxId {
     tx_id
 }
 
-pub fn tx_hash(tx_id: TxId) -> Hash<32> {
+pub fn tx_hash(tx_id: TxId) -> TransactionHash {
     let mut txid_bytes = tx_id.0;
     txid_bytes.reverse(); // Charms use Bitcoin's reverse byte order for txids
     let tx_hash = txid_bytes.into();

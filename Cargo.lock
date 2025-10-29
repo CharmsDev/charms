@@ -2122,8 +2122,6 @@ dependencies = [
  "cml-chain",
  "enum_dispatch",
  "hex",
- "pallas-crypto 1.0.0-alpha.2",
- "pallas-primitives 1.0.0-alpha.2",
  "serde",
  "serde_json",
  "serde_with",
