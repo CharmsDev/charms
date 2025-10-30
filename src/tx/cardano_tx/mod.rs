@@ -9,12 +9,15 @@ use charms_client::{
 };
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
-    Coin, PolicyId, Rational, SetTransactionInput, Value,
+    Coin, PolicyId, Rational, RequiredSigners, SetTransactionInput, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
         input_builder::SingleInputBuilder,
-        tx_builder::{TransactionBuilder, TransactionBuilderConfigBuilder},
+        mint_builder::SingleMintBuilder,
+        output_builder::{SingleOutputBuilderResult, TransactionOutputBuilder},
+        tx_builder::{ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder},
+        witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
     fees::{LinearFee, min_no_script_fee},
     plutus::{ExUnitPrices, PlutusData, PlutusV3Script},
@@ -31,7 +34,7 @@ fn tx_inputs(
     ins: &[spell::Input],
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
-    for input in ins.iter() {
+    for input in ins {
         let Some(utxo_id) = &input.utxo_id else {
             bail!("no utxo_id in spell input {:?}", &input);
         };
@@ -73,35 +76,39 @@ pub const ONE_ADA: u64 = 1000000;
 pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
 
 fn tx_outputs(
-    p_tx: &mut TransactionBuilder,
+    tx_b: &mut TransactionBuilder,
     outs: &[spell::Output],
     apps: &BTreeMap<String, App>,
-) -> anyhow::Result<()> {
-    // let mut scripts = BTreeSet::new();
-    let tx_out = outs
-        .iter()
-        .map(|output| {
-            let Some(address) = output.address.as_ref() else {
-                bail!("no address in spell output {:?}", &output);
-            };
-            let address = Address::from_bech32(address)?;
-            let amount = output.amount.unwrap_or(ONE_ADA);
-            let (multiasset, more_scripts) = multi_asset(p_tx, &output.charms, apps)?;
-            // TODO add script to p_tx scripts.extend(more_scripts);
-            let value = Value::new(amount.into(), multiasset);
-            Ok(TransactionOutput::new(address, value, None, None))
-        })
-        .collect::<anyhow::Result<_>>()?;
-    Ok((tx_out, scripts))
+) -> anyhow::Result<BTreeMap<PolicyId, PlutusV3Script>> {
+    let mut scripts = BTreeMap::new();
+
+    for output in outs {
+        let Some(address) = output.address.as_ref() else {
+            bail!("no address in spell output {:?}", &output);
+        };
+        let address =
+            Address::from_bech32(address).map_err(|e| anyhow!("Failed to parse address: {}", e))?;
+        let amount = output.amount.unwrap_or(ONE_ADA);
+        let (multiasset, more_scripts) = multi_asset(&output.charms, apps)?;
+
+        let value = Value::new(amount.into(), multiasset);
+        scripts.extend(more_scripts);
+        let out_b = TransactionOutputBuilder::new()
+            .with_address(address)
+            .next()?
+            .with_value(value);
+        tx_b.add_output(out_b.build()?)?;
+    }
+
+    Ok(scripts)
 }
 
 fn multi_asset(
-    p_tx: &mut StagingTransaction,
     spell_output: &Option<KeyedCharms>,
     apps: &BTreeMap<String, App>,
-) -> anyhow::Result<(MultiAsset, BTreeSet<PlutusV3Script>)> {
+) -> anyhow::Result<(MultiAsset, BTreeMap<PolicyId, PlutusV3Script>)> {
     let mut multi_asset = MultiAsset::new();
-    let mut scripts = BTreeSet::new();
+    let mut scripts = BTreeMap::new();
     if let Some(charms) = spell_output {
         for (k, data) in charms {
             let Some(app) = apps.get(k) else {
@@ -113,7 +120,7 @@ fn multi_asset(
             let (policy_id, script) = policy_id(app)?;
             let asset_name = asset_name(app)?;
             let value = get_value(app, data)?;
-            scripts.insert(script);
+            scripts.insert(policy_id, script);
             multi_asset.set(policy_id, asset_name, value);
         }
     };
@@ -152,26 +159,18 @@ fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
 pub fn from_spell(
     spell: &Spell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    change_address: &Address,
 ) -> anyhow::Result<Transaction> {
-    let mut p_tx = transaction_builder();
+    let mut tx_b = transaction_builder();
 
-    tx_inputs(&mut p_tx, &spell.ins, prev_txs_by_id)?;
+    tx_inputs(&mut tx_b, &spell.ins, prev_txs_by_id)?;
 
-    tx_outputs(&mut p_tx, &spell.outs, &spell.apps)?;
+    let scripts = tx_outputs(&mut tx_b, &spell.outs, &spell.apps)?;
 
-    let fee: Coin = 0;
+    add_mint(&mut tx_b, scripts)?;
 
-    // let body = TransactionBody::new(inputs, outputs, fee);
-    // let body = add_mint(prev_txs_by_id, body)?;
-
-    let mut witness_set = TransactionWitnessSet::new();
-    if !scripts.is_empty() {
-        witness_set.plutus_v3_scripts = Some(scripts.into_iter().collect::<Vec<_>>().into());
-    }
-
-    let tx = Transaction::new(body, witness_set, true, None);
-
-    let tx_builder: TransactionBuilder = transaction_builder();
+    let signed_tx_b = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
+    let tx = signed_tx_b.build_unchecked();
 
     Ok(tx)
 }
@@ -228,39 +227,38 @@ mod tests {
 }
 
 fn add_mint(
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-    mut body: TransactionBody,
-) -> anyhow::Result<TransactionBody> {
-    let out_assets_iter = body.outputs.iter().map(|o| o.amount().multiasset.clone());
-    let in_assets_iter = body.inputs.iter().map(|i| {
-        let prev_tx = prev_txs_by_id.get(&TxId(i.transaction_id.into())).unwrap();
-        let Tx::Cardano(CardanoTx(prev_tx)) = prev_tx else {
-            unreachable!()
-        };
-        prev_tx.body.outputs[i.index as usize]
-            .amount()
-            .multiasset
-            .clone()
-    });
-
-    let out_assets = total_assets(out_assets_iter);
-    let in_assets = total_assets(in_assets_iter);
-
-    let minted_assets: AssetBundle<u64> = out_assets.clamped_sub(&in_assets);
-    let burned_assets: AssetBundle<u64> = in_assets.clamped_sub(&out_assets);
+    tx_b: &mut TransactionBuilder,
+    scripts: BTreeMap<PolicyId, PlutusV3Script>,
+) -> anyhow::Result<()> {
+    let out_v = tx_b.get_explicit_output()?.multiasset;
+    let in_v = tx_b.get_explicit_input()?.multiasset;
+    let minted_assets = out_v.clamped_sub(&in_v);
+    let burned_assets = in_v.clamped_sub(&out_v);
 
     check_asset_amounts(&minted_assets)?;
     check_asset_amounts(&burned_assets)?;
-
     let minted_assets: AssetBundle<i64> = unsafe { std::mem::transmute(minted_assets) };
     let burned_assets: AssetBundle<i64> = unsafe { std::mem::transmute(burned_assets) };
 
     let mint = minted_assets.clamped_sub(&burned_assets);
-    if !mint.is_empty() {
-        body.mint = Some(mint);
+
+    for (policy_id, assets) in mint.into_iter() {
+        let mint_b = SingleMintBuilder::new(assets);
+        let script = scripts
+            .get(&policy_id)
+            .expect("scripts MUST contain all token policies");
+        let psw = PlutusScriptWitness::Script(script.clone().into());
+        let ppw = PartialPlutusWitness::new(
+            psw,
+            PlutusData::Bytes {
+                bytes: vec![],
+                bytes_encoding: Default::default(),
+            },
+        );
+        tx_b.add_mint(mint_b.plutus_script(ppw, vec![].into()))?;
     }
 
-    Ok(body)
+    Ok(())
 }
 
 fn total_assets(assets_iter: impl Iterator<Item = MultiAsset>) -> MultiAsset {
@@ -383,10 +381,9 @@ pub fn make_transactions(
             Ok(tx)
         })
         .transpose()?;
-    let change_address =
-        Address::from_bech32(change_address).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let change_address = Address::from_bech32(change_address).map_err(|e| anyhow!("{}", e))?;
 
-    let tx = from_spell(spell, prev_txs_by_id)?;
+    let tx = from_spell(spell, prev_txs_by_id, &change_address)?;
 
     let tx = match underlying_tx {
         Some(u_tx) => combine(u_tx, tx),
