@@ -9,13 +9,13 @@ use charms_client::{
 };
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
-    Coin, PolicyId, Rational, RequiredSigners, SetTransactionInput, Value,
+    Coin, PolicyId, Rational, SetTransactionInput, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
         input_builder::SingleInputBuilder,
         mint_builder::SingleMintBuilder,
-        output_builder::{SingleOutputBuilderResult, TransactionOutputBuilder},
+        output_builder::TransactionOutputBuilder,
         tx_builder::{ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder},
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
@@ -27,7 +27,7 @@ use cml_chain::{
     },
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 fn tx_inputs(
     tx_b: &mut TransactionBuilder,
@@ -242,12 +242,10 @@ fn add_mint(
 
     let mint = minted_assets.clamped_sub(&burned_assets);
 
-    for (policy_id, assets) in mint.into_iter() {
-        let mint_b = SingleMintBuilder::new(assets);
-        let script = scripts
-            .get(&policy_id)
-            .expect("scripts MUST contain all token policies");
-        let psw = PlutusScriptWitness::Script(script.clone().into());
+    for (policy_id, assets) in mint.iter() {
+        let mint_b = SingleMintBuilder::new(assets.clone());
+        let script = scripts[policy_id].clone(); // scripts MUST have all token policies at this point
+        let psw = PlutusScriptWitness::Script(script.into());
         let ppw = PartialPlutusWitness::new(
             psw,
             PlutusData::Bytes {
@@ -259,12 +257,6 @@ fn add_mint(
     }
 
     Ok(())
-}
-
-fn total_assets(assets_iter: impl Iterator<Item = MultiAsset>) -> MultiAsset {
-    assets_iter.fold(MultiAsset::new(), |acc, assets| {
-        acc.checked_add(&assets).unwrap()
-    })
 }
 
 fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
@@ -404,6 +396,6 @@ pub fn make_transactions(
         .collect())
 }
 
-fn combine(base_tx: Transaction, tx: Transaction) -> Transaction {
+fn combine(_base_tx: Transaction, _tx: Transaction) -> Transaction {
     todo!()
 }
