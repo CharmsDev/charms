@@ -188,13 +188,13 @@ pub fn from_spell(
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
-    let fee = tx_b.min_fee(true)?;
+    let fee = tx_b.min_fee(false)?;
 
     ensure!(
         input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
             == Some(std::cmp::Ordering::Greater)
     );
-    add_change_if_needed(&mut tx_b, change_address, true)?; // MUST add an output
+    add_change_if_needed(&mut tx_b, change_address, false)?; // MUST add an output
 
     let signed_tx_b = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
     let tx = signed_tx_b.build_unchecked();
