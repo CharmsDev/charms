@@ -4,26 +4,28 @@ use crate::{
 };
 use anyhow::{Error, anyhow, bail, ensure};
 use charms_client::{
-    cardano_tx::{CardanoTx, tx_hash, tx_id},
+    cardano_tx::{CardanoTx, tx_hash},
     tx::Tx,
 };
-use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
+use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
-    Coin, PolicyId, Rational, SetTransactionInput, Value,
+    PolicyId, Rational, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
         input_builder::SingleInputBuilder,
         mint_builder::SingleMintBuilder,
         output_builder::TransactionOutputBuilder,
-        tx_builder::{ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder},
+        tx_builder::{
+            ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
+            add_change_if_needed,
+        },
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
-    fees::{LinearFee, min_no_script_fee},
+    fees::LinearFee,
     plutus::{ExUnitPrices, PlutusData, PlutusV3Script},
     transaction::{
-        DatumOption, Transaction, TransactionBody, TransactionInput, TransactionOutput,
-        TransactionWitnessSet,
+        ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -72,6 +74,7 @@ fn tx_output(
 }
 
 pub const ONE_ADA: u64 = 1000000;
+pub const TWO_ADA: u64 = 2000000;
 
 pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
 
@@ -88,7 +91,7 @@ fn tx_outputs(
         };
         let address =
             Address::from_bech32(address).map_err(|e| anyhow!("Failed to parse address: {}", e))?;
-        let amount = output.amount.unwrap_or(ONE_ADA);
+        let amount = output.amount.unwrap_or(TWO_ADA);
         let (multiasset, more_scripts) = multi_asset(&output.charms, apps)?;
 
         let value = Value::new(amount.into(), multiasset);
@@ -128,7 +131,7 @@ fn multi_asset(
 }
 
 fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
-    let program = uplc::tx::apply_params_to_script(app.vk.as_ref(), MINT_SCRIPT)
+    let program = uplc::tx::apply_params_to_script(&util::write(&app.vk)?, MINT_SCRIPT)
         .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
     let script = PlutusV3Script::new(program);
     let policy_id = script.hash();
@@ -160,6 +163,9 @@ pub fn from_spell(
     spell: &Spell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     change_address: &Address,
+    spell_data: &[u8],
+    funding_utxo: UtxoId,
+    funding_utxo_value: u64,
 ) -> anyhow::Result<Transaction> {
     let mut tx_b = transaction_builder();
 
@@ -169,10 +175,49 @@ pub fn from_spell(
 
     add_mint(&mut tx_b, scripts)?;
 
+    let funding_utxo_input = TransactionInput::new(tx_hash(funding_utxo.0), funding_utxo.1 as u64);
+    let funding_utxo_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
+        change_address.clone(),
+        funding_utxo_value.into(),
+    ));
+    let funding_input =
+        SingleInputBuilder::new(funding_utxo_input, funding_utxo_output).payment_key()?;
+    tx_b.add_input(funding_input)?;
+
+    add_spell_data(&mut tx_b, spell_data, change_address)?;
+
+    let input_total = tx_b.get_total_input()?;
+    let output_total = tx_b.get_total_output()?;
+    let fee = tx_b.min_fee(true)?;
+
+    ensure!(
+        input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
+            == Some(std::cmp::Ordering::Greater)
+    );
+    add_change_if_needed(&mut tx_b, change_address, true)?; // MUST add an output
+
     let signed_tx_b = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
     let tx = signed_tx_b.build_unchecked();
 
     Ok(tx)
+}
+
+fn add_spell_data(
+    tx_b: &mut TransactionBuilder,
+    spell_data: &[u8],
+    change_address: &Address,
+) -> anyhow::Result<()> {
+    let spell_data_output = TransactionOutputBuilder::new()
+        .with_address(change_address.clone())
+        .with_data(DatumOption::new_datum(PlutusData::new_bytes(
+            spell_data.to_vec(),
+        )))
+        .next()?
+        .with_value(4310 * (227 + spell_data.len() as u64))
+        .build()?;
+
+    tx_b.add_output(spell_data_output)?;
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -268,92 +313,6 @@ fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn add_spell(
-    tx: Transaction,
-    spell_data: &[u8],
-    funding_utxo: UtxoId,
-    funding_utxo_value: u64,
-    change_address: Address,
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-) -> Vec<Transaction> {
-    let tx_body = &tx.body;
-
-    let mut tx_inputs = tx_body.inputs.to_vec();
-    let orig_inputs_amount = inputs_total_amount(&tx_body.inputs, prev_txs_by_id);
-
-    let mut tx_outputs = tx_body.outputs.clone();
-    let orig_outputs_count = tx_outputs.len() as u64;
-    let mut temp_tx_outputs = tx_body.outputs.clone();
-
-    let funding_utxo_input = TransactionInput::new(tx_hash(funding_utxo.0), funding_utxo.1.into());
-    tx_inputs.push(funding_utxo_input);
-
-    let temp_data_output = change_output(spell_data, &change_address, 0u64);
-
-    temp_tx_outputs.push(temp_data_output);
-
-    let temp_tx_body =
-        TransactionBody::new(tx_inputs.clone().into(), temp_tx_outputs, ONE_ADA.into());
-    let temp_tx_witness_set = TransactionWitnessSet::new();
-    let temp_tx = Transaction::new(temp_tx_body, temp_tx_witness_set, true, None);
-
-    let min_fee_a: u64 = 44; // lovelace/byte
-    let min_fee_b: u64 = 155381 + 50000; // lovelace
-    let linear_fee = LinearFee::new(min_fee_a.into(), min_fee_b.into(), 0u64.into());
-
-    let fee = min_no_script_fee(&temp_tx, &linear_fee).unwrap();
-
-    let change = Coin::from(funding_utxo_value + orig_inputs_amount - orig_outputs_count * ONE_ADA)
-        .checked_sub(fee)
-        .unwrap();
-
-    let data_output = change_output(spell_data, &change_address, change);
-
-    tx_outputs.push(data_output);
-
-    let tx_body = TransactionBody::new(tx_inputs.into(), tx_outputs, fee);
-    let tx_witness_set = TransactionWitnessSet::new();
-    let tx = Transaction::new(tx_body, tx_witness_set, true, None);
-
-    vec![tx]
-}
-
-fn change_output(spell_data: &[u8], change_address: &Address, change: u64) -> TransactionOutput {
-    TransactionOutput::new(
-        change_address.clone(),
-        change.into(),
-        Some(DatumOption::Datum {
-            datum: PlutusData::Bytes {
-                bytes: spell_data.to_vec(),
-                bytes_encoding: Default::default(),
-            },
-            len_encoding: Default::default(),
-            tag_encoding: None,
-            datum_tag_encoding: None,
-            datum_bytes_encoding: Default::default(),
-        }),
-        None,
-    )
-}
-
-fn inputs_total_amount(
-    tx_inputs: &SetTransactionInput,
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-) -> u64 {
-    tx_inputs
-        .iter()
-        .map(|tx_input| {
-            let tx_id = tx_id(tx_input.transaction_id);
-            let Some(Tx::Cardano(CardanoTx(tx))) = prev_txs_by_id.get(&tx_id) else {
-                unreachable!("we should already have the tx in the map")
-            };
-            let prev_tx_out = tx.body.outputs.get(tx_input.index as usize).unwrap();
-            let amount: u64 = prev_tx_out.amount().coin.into();
-            amount
-        })
-        .sum()
-}
-
 pub fn make_transactions(
     spell: &Spell,
     funding_utxo: UtxoId,
@@ -375,22 +334,21 @@ pub fn make_transactions(
         .transpose()?;
     let change_address = Address::from_bech32(change_address).map_err(|e| anyhow!("{}", e))?;
 
-    let tx = from_spell(spell, prev_txs_by_id, &change_address)?;
+    let tx = from_spell(
+        spell,
+        prev_txs_by_id,
+        &change_address,
+        spell_data,
+        funding_utxo,
+        funding_utxo_value,
+    )?;
 
     let tx = match underlying_tx {
         Some(u_tx) => combine(u_tx, tx),
         None => tx,
     };
 
-    let transactions = add_spell(
-        tx,
-        spell_data,
-        funding_utxo,
-        funding_utxo_value,
-        change_address,
-        prev_txs_by_id,
-    );
-    Ok(transactions
+    Ok(vec![tx]
         .into_iter()
         .map(|tx| Tx::Cardano(CardanoTx(tx)))
         .collect())
