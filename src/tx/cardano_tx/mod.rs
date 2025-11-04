@@ -9,7 +9,7 @@ use charms_client::{
 };
 use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
-    PolicyId, Rational, Value,
+    OrderedHashMap, PolicyId, Rational, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
@@ -24,7 +24,7 @@ use cml_chain::{
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
     fees::LinearFee,
-    plutus::{ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
+    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
@@ -190,24 +190,27 @@ pub fn from_spell(
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
+
+    for i in 0..scripts_count {
+        tx_b.set_exunits(
+            RedeemerWitnessKey::new(RedeemerTag::Mint, i),
+            ExUnits::new(200, 16100),
+        );
+    }
+
     let fee = tx_b
-        .min_fee(false)
+        .min_fee(true)
         .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
 
     ensure!(
         input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
             == Some(std::cmp::Ordering::Greater)
     );
-    add_change_if_needed(&mut tx_b, change_address, false)?; // MUST add an output
+    add_change_if_needed(&mut tx_b, change_address, true)?; // MUST add an output
 
-    let mut tx_r_b = tx_b.build_for_evaluation(ChangeSelectionAlgo::Default, change_address)?;
-    for i in 0..scripts_count {
-        tx_r_b.set_exunits(
-            RedeemerWitnessKey::new(RedeemerTag::Mint, i),
-            ExUnits::new(200, 16100),
-        );
-    }
-    let tx = tx_r_b.draft_tx()?;
+    let tx = tx_b
+        .build(ChangeSelectionAlgo::Default, change_address)?
+        .build_unchecked();
 
     Ok(tx)
 }
@@ -243,6 +246,7 @@ struct ProtocolParams {
     utxo_cost_per_byte: u64,
     collateral_percentage: u32,
     max_collateral_inputs: u32,
+    cost_models: BTreeMap<String, Vec<i64>>,
 }
 
 fn transaction_builder() -> TransactionBuilder {
@@ -266,6 +270,17 @@ fn transaction_builder() -> TransactionBuilder {
         ))
         .collateral_percentage(protocol_params.collateral_percentage)
         .max_collateral_inputs(protocol_params.max_collateral_inputs)
+        .cost_models(CostModels::new({
+            let mut r = OrderedHashMap::new();
+            protocol_params
+                .cost_models
+                .iter()
+                .enumerate()
+                .for_each(|(i, (_k, v))| {
+                    r.insert(i as u64, v.clone());
+                });
+            r
+        }))
         .build()
         .expect("failed to build transaction builder config");
     TransactionBuilder::new(transaction_builder_config)
