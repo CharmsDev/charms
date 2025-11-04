@@ -2,7 +2,7 @@ use crate::{
     spell,
     spell::{CharmsFee, KeyedCharms, Spell},
 };
-use anyhow::{Error, anyhow, bail, ensure};
+use anyhow::{Context, Error, anyhow, bail, ensure};
 use charms_client::{
     cardano_tx::{CardanoTx, tx_hash},
     tx::Tx,
@@ -16,6 +16,7 @@ use cml_chain::{
         input_builder::SingleInputBuilder,
         mint_builder::SingleMintBuilder,
         output_builder::TransactionOutputBuilder,
+        redeemer_builder::RedeemerWitnessKey,
         tx_builder::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
             add_change_if_needed,
@@ -23,7 +24,7 @@ use cml_chain::{
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
     fees::LinearFee,
-    plutus::{ExUnitPrices, PlutusData, PlutusV3Script},
+    plutus::{ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
@@ -172,6 +173,7 @@ pub fn from_spell(
     tx_inputs(&mut tx_b, &spell.ins, prev_txs_by_id)?;
 
     let scripts = tx_outputs(&mut tx_b, &spell.outs, &spell.apps)?;
+    let scripts_count = scripts.len() as u64;
 
     add_mint(&mut tx_b, scripts)?;
 
@@ -188,18 +190,26 @@ pub fn from_spell(
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
-    let fee = tx_b.min_fee(false)?;
+    let fee = tx_b
+        .min_fee(false)
+        .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
 
     ensure!(
-        input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
+        dbg!(input_total).partial_cmp(&dbg!(output_total).checked_add(&dbg!(fee).into())?)
             == Some(std::cmp::Ordering::Greater)
     );
     add_change_if_needed(&mut tx_b, change_address, false)?; // MUST add an output
 
-    let signed_tx_b = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
-    let tx = signed_tx_b.build_unchecked();
+    let mut tx_r_b = tx_b.build_for_evaluation(ChangeSelectionAlgo::Default, change_address)?;
+    for i in 0..scripts_count {
+        tx_r_b.set_exunits(
+            RedeemerWitnessKey::new(RedeemerTag::Mint, i),
+            ExUnits::new(200, 16100),
+        );
+    }
+    let tx = dbg!(tx_r_b).draft_tx()?;
 
-    Ok(tx)
+    Ok(dbg!(tx))
 }
 
 fn add_spell_data(
@@ -251,8 +261,8 @@ fn transaction_builder() -> TransactionBuilder {
         .max_tx_size(protocol_params.max_tx_size)
         .coins_per_utxo_byte(protocol_params.utxo_cost_per_byte)
         .ex_unit_prices(ExUnitPrices::new(
-            Rational::new(577, 100),
-            Rational::new(721, 100000),
+            Rational::new(577, 10000),
+            Rational::new(721, 10000000),
         ))
         .collateral_percentage(protocol_params.collateral_percentage)
         .max_collateral_inputs(protocol_params.max_collateral_inputs)
