@@ -195,7 +195,7 @@ pub fn from_spell(
         .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
 
     ensure!(
-        dbg!(input_total).partial_cmp(&dbg!(output_total).checked_add(&dbg!(fee).into())?)
+        input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
             == Some(std::cmp::Ordering::Greater)
     );
     add_change_if_needed(&mut tx_b, change_address, false)?; // MUST add an output
@@ -207,9 +207,9 @@ pub fn from_spell(
             ExUnits::new(200, 16100),
         );
     }
-    let tx = dbg!(tx_r_b).draft_tx()?;
+    let tx = tx_r_b.draft_tx()?;
 
-    Ok(dbg!(tx))
+    Ok(tx)
 }
 
 fn add_spell_data(
