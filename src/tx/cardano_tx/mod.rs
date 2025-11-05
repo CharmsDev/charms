@@ -13,7 +13,7 @@ use cml_chain::{
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
-        input_builder::SingleInputBuilder,
+        input_builder::{InputBuilderResult, SingleInputBuilder},
         mint_builder::SingleMintBuilder,
         output_builder::TransactionOutputBuilder,
         redeemer_builder::RedeemerWitnessKey,
@@ -167,7 +167,11 @@ pub fn from_spell(
     spell_data: &[u8],
     funding_utxo: UtxoId,
     funding_utxo_value: u64,
+    collateral_utxo: Option<UtxoId>,
 ) -> anyhow::Result<Transaction> {
+    let Some(collateral_utxo) = collateral_utxo else {
+        unreachable!()
+    };
     let mut tx_b = transaction_builder();
 
     tx_inputs(&mut tx_b, &spell.ins, prev_txs_by_id)?;
@@ -177,16 +181,13 @@ pub fn from_spell(
 
     add_mint(&mut tx_b, scripts)?;
 
-    let funding_utxo_input = TransactionInput::new(tx_hash(funding_utxo.0), funding_utxo.1 as u64);
-    let funding_utxo_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
-        change_address.clone(),
-        funding_utxo_value.into(),
-    ));
-    let funding_input =
-        SingleInputBuilder::new(funding_utxo_input, funding_utxo_output).payment_key()?;
+    let funding_input = input_builder_result(change_address, funding_utxo, funding_utxo_value)?;
+    let collateral_input = input_builder_result(change_address, collateral_utxo, 10_000_000)?;
     tx_b.add_input(funding_input)?;
 
     add_spell_data(&mut tx_b, spell_data, change_address)?;
+
+    tx_b.add_collateral(collateral_input)?;
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
@@ -213,6 +214,21 @@ pub fn from_spell(
         .build_unchecked();
 
     Ok(tx)
+}
+
+fn input_builder_result(
+    address: &Address,
+    utxo_id: UtxoId,
+    utxo_value: u64,
+) -> Result<InputBuilderResult, Error> {
+    let funding_utxo_input = TransactionInput::new(tx_hash(utxo_id.0), utxo_id.1 as u64);
+    let funding_utxo_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
+        address.clone(),
+        utxo_value.into(),
+    ));
+    let funding_input =
+        SingleInputBuilder::new(funding_utxo_input, funding_utxo_output).payment_key()?;
+    Ok(funding_input)
 }
 
 fn add_spell_data(
@@ -348,6 +364,7 @@ pub fn make_transactions(
     underlying_tx: Option<Tx>,
     _charms_fee: Option<CharmsFee>,
     _total_cycles: u64,
+    collateral_utxo: Option<UtxoId>,
 ) -> Result<Vec<Tx>, Error> {
     let underlying_tx = underlying_tx
         .map(|tx| {
@@ -366,6 +383,7 @@ pub fn make_transactions(
         spell_data,
         funding_utxo,
         funding_utxo_value,
+        collateral_utxo,
     )?;
 
     let tx = match underlying_tx {

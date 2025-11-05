@@ -60,12 +60,16 @@ impl Prove for SpellCli {
             fee_rate,
             chain,
             mock,
+            collateral_utxo,
         } = params;
 
         let spell_prover = ProveSpellTxImpl::new(mock);
 
         // Parse funding UTXO early: to fail fast
         let funding_utxo = UtxoId::from_str(&funding_utxo)?;
+        let collateral_utxo = collateral_utxo
+            .map(|utxo| UtxoId::from_str(&utxo))
+            .transpose()?;
 
         ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
@@ -82,6 +86,7 @@ impl Prove for SpellCli {
             change_address,
             fee_rate,
             chain: chain.clone(),
+            collateral_utxo,
         };
         let transactions = spell_prover.prove_spell_tx(prove_request).await?;
 

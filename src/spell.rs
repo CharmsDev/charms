@@ -659,6 +659,7 @@ pub struct ProveRequest {
     pub change_address: String,
     pub fee_rate: f64,
     pub chain: String,
+    pub collateral_utxo: Option<UtxoId>,
 }
 
 pub struct Prover {
@@ -705,7 +706,12 @@ impl ProveSpellTxImpl {
             change_address,
             fee_rate,
             chain,
+            collateral_utxo,
         } = prove_request;
+
+        if chain.as_str() == CARDANO && collateral_utxo.is_none() {
+            bail!("Collateral UTXO is required for Cardano spells");
+        }
 
         let prev_txs = from_hex_txs(&prev_txs)?;
         let prev_txs_by_id = txs_by_txid(&prev_txs);
@@ -759,6 +765,7 @@ impl ProveSpellTxImpl {
                     None,
                     charms_fee,
                     total_cycles,
+                    collateral_utxo,
                 )?;
                 Ok(to_hex_txs(&txs))
             }

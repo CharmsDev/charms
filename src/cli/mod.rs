@@ -134,6 +134,9 @@ pub struct SpellProveParams {
     /// Is mock mode enabled?
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
+
+    #[arg(long, alias = "collateral")]
+    collateral_utxo: Option<String>,
 }
 
 #[derive(Args)]
