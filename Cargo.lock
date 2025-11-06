@@ -2068,6 +2068,7 @@ dependencies = [
  "cml-chain",
  "const_format",
  "hex",
+ "hex-literal",
  "pallas-addresses 1.0.0-alpha.2",
  "pallas-crypto 1.0.0-alpha.2",
  "pallas-primitives 1.0.0-alpha.2",
@@ -3596,6 +3597,12 @@ checksum = "5313b072ce3c597065a808dbf612c4c8e8590bdbf8b579508bf7a762c5eae6cd"
 dependencies = [
  "arrayvec 0.7.6",
 ]
+
+[[package]]
+name = "hex-literal"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e712f64ec3850b98572bffac52e2c6f282b29fe6c5fa6d42334b30be438d95c1"
 
 [[package]]
 name = "hex_lit"

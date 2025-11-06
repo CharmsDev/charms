@@ -7,9 +7,9 @@ use charms_client::{
     cardano_tx::{CardanoTx, tx_hash},
     tx::Tx,
 };
-use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId, util};
+use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Value,
+    OrderedHashMap, PolicyId, Rational, Serialize as CmlChainSerialize, Value,
     address::Address,
     assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
     builders::{
@@ -31,6 +31,7 @@ use cml_chain::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
 };
+use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -79,7 +80,9 @@ fn tx_output(
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-pub const MINT_SCRIPT: &[u8] = include_bytes!("../../bin/free_mint.free_mint.mint.flat.cbor");
+pub const MINT_SCRIPT: &[u8] = &hex!(
+    "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101"
+);
 
 fn tx_outputs(
     tx_b: &mut TransactionBuilder,
@@ -134,10 +137,8 @@ fn multi_asset(
 }
 
 fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
-    let program = hex::decode(
-        "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101",
-    )?;
-    let program = uplc::tx::apply_params_to_script(&util::write(&app.vk.0)?, &program)
+    let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
+    let program = uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), MINT_SCRIPT)
         .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
     let script = PlutusV3Script::new(program);
     let policy_id = script.hash();
@@ -199,8 +200,8 @@ pub fn from_spell(
 
     for i in 0..scripts_count {
         tx_b.set_exunits(
-            RedeemerWitnessKey::new(RedeemerTag::Mint, i),
-            ExUnits::new(132, 20242),
+            RedeemerWitnessKey::new(RedeemerTag::Mint, i as u64),
+            ExUnits::new(14000000, 10000000000),
         );
     }
 

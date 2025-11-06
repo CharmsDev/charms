@@ -38,6 +38,7 @@ clap_complete = { version = "4.5.58" }
 cml-chain = { workspace = true }
 const_format = { version = "0.2.34" }
 hex = { workspace = true }
+hex-literal = { version = "1.1.0" }
 pallas-addresses = { version = "1.0.0-alpha.2" }
 pallas-crypto = { version = "1.0.0-alpha.2" }
 pallas-primitives = { version = "1.0.0-alpha.2" }
