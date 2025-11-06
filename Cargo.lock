@@ -2067,6 +2067,7 @@ dependencies = [
  "clap_complete",
  "cml-chain",
  "const_format",
+ "hex",
  "pallas-addresses 1.0.0-alpha.2",
  "pallas-crypto 1.0.0-alpha.2",
  "pallas-primitives 1.0.0-alpha.2",

@@ -24,7 +24,9 @@ use cml_chain::{
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
     fees::LinearFee,
-    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
+    plutus::{
+        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusMap, PlutusV3Script, RedeemerTag,
+    },
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
@@ -132,7 +134,10 @@ fn multi_asset(
 }
 
 fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
-    let program = uplc::tx::apply_params_to_script(&util::write(&app.vk)?, MINT_SCRIPT)
+    let program = hex::decode(
+        "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101",
+    )?;
+    let program = uplc::tx::apply_params_to_script(&util::write(&app.vk.0)?, &program)
         .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
     let script = PlutusV3Script::new(program);
     let policy_id = script.hash();
@@ -195,7 +200,7 @@ pub fn from_spell(
     for i in 0..scripts_count {
         tx_b.set_exunits(
             RedeemerWitnessKey::new(RedeemerTag::Mint, i),
-            ExUnits::new(200, 16100),
+            ExUnits::new(132, 20242),
         );
     }
 
@@ -332,13 +337,7 @@ fn add_mint(
         let mint_b = SingleMintBuilder::new(assets.clone());
         let script = scripts[policy_id].clone(); // scripts MUST have all token policies at this point
         let psw = PlutusScriptWitness::Script(script.into());
-        let ppw = PartialPlutusWitness::new(
-            psw,
-            PlutusData::Bytes {
-                bytes: vec![],
-                bytes_encoding: Default::default(),
-            },
-        );
+        let ppw = PartialPlutusWitness::new(psw, PlutusData::new_map(PlutusMap::new()));
         tx_b.add_mint(mint_b.plutus_script(ppw, vec![].into()))?;
     }
 
