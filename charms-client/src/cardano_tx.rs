@@ -1,5 +1,5 @@
 use crate::{NormalizedSpell, Proof, tx, tx::EnchantedTx};
-use anyhow::{anyhow, ensure};
+use anyhow::{anyhow, bail, ensure};
 use charms_data::{TxId, UtxoId, util};
 use cml_chain::{
     Deserialize, Serialize, SetTransactionInput,
@@ -43,21 +43,26 @@ impl EnchantedTx for CardanoTx {
         let outputs = &tx.body.outputs;
         ensure!(outputs.len() > 0, "Transaction has no outputs");
 
-        let spell_output = outputs.get(outputs.len() - 1);
-
-        let Some(TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut {
-            datum_option:
-                Some(DatumOption::Datum {
-                    datum:
-                        PlutusData::Bytes {
-                            bytes: spell_data, ..
-                        },
+        let Some(spell_data) = outputs
+            .iter()
+            .rev()
+            .take(2)
+            .find_map(|output| match output {
+                TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut {
+                    datum_option:
+                        Some(DatumOption::Datum {
+                            datum:
+                                PlutusData::Bytes {
+                                    bytes: spell_data, ..
+                                },
+                            ..
+                        }),
                     ..
-                }),
-            ..
-        })) = spell_output
+                }) => Some(spell_data),
+                _ => None,
+            })
         else {
-            return Err(anyhow::anyhow!("Transaction has no spell output"));
+            bail!("Transaction has no spell output");
         };
 
         let (spell, proof): (NormalizedSpell, Proof) = util::read(spell_data.as_slice())
