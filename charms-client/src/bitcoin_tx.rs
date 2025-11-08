@@ -1,4 +1,4 @@
-use crate::{CURRENT_VERSION, NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
     TxIn, TxOut,
