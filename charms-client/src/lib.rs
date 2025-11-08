@@ -76,6 +76,10 @@ pub struct NormalizedTransaction {
     /// Optional mapping from the beamed output index to the destination UtxoId hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_outs: Option<BTreeMap<u32, B32>>,
+
+    /// Amounts of native coin in transaction outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coins: Option<Vec<u64>>,
 }
 
 impl NormalizedTransaction {
@@ -255,6 +259,7 @@ pub fn to_tx(
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
         outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
+        coins: None,
     }
 }
 

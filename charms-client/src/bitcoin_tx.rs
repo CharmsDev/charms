@@ -1,7 +1,7 @@
-use crate::{NormalizedSpell, Proof, tx, tx::EnchantedTx};
+use crate::{CURRENT_VERSION, NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    TxIn,
+    TxIn, TxOut,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
     opcodes::all::{OP_ENDIF, OP_IF},
@@ -45,8 +45,9 @@ impl EnchantedTx for BitcoinTx {
             spell.tx.outs.len() <= tx.output.len(),
             "spell tx outs mismatch"
         );
+        let tx_outs = &tx.output[0..spell.tx.outs.len()];
 
-        let spell = spell_with_ins(spell, tx_ins);
+        let spell = spell_with_ins_and_coins(spell, tx_ins, tx_outs);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -71,7 +72,11 @@ impl EnchantedTx for BitcoinTx {
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn spell_with_ins(spell: NormalizedSpell, spell_tx_ins: &[TxIn]) -> NormalizedSpell {
+pub(crate) fn spell_with_ins_and_coins(
+    mut spell: NormalizedSpell,
+    spell_tx_ins: &[TxIn],
+    tx_outs: &[TxOut],
+) -> NormalizedSpell {
     let tx_ins = spell_tx_ins // exclude spell commitment input
         .iter()
         .map(|tx_in| {
@@ -79,9 +84,12 @@ pub(crate) fn spell_with_ins(spell: NormalizedSpell, spell_tx_ins: &[TxIn]) -> N
             UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
         })
         .collect();
+    let coins = tx_outs.iter().map(|tx_out| tx_out.value.to_sat()).collect();
 
-    let mut spell = spell;
     spell.tx.ins = Some(tx_ins);
+    if spell.version > V7 {
+        spell.tx.coins = Some(coins);
+    }
 
     spell
 }

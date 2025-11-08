@@ -52,6 +52,9 @@ pub struct Transaction {
     pub refs: Vec<(UtxoId, Charms)>,
     /// Output charms.
     pub outs: Vec<Charms>,
+    /// Amounts of native coin in outputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coins: Option<Vec<u64>>,
 }
 
 /// Charms are tokens, NFTs or instances of arbitrary app state.

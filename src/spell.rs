@@ -74,7 +74,11 @@ pub struct Input {
 pub struct Output {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    #[serde(alias = "sats", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "sats",
+        alias = "coins",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub amount: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
@@ -135,7 +139,12 @@ impl Spell {
             .map(|output| self.charms(&output.charms))
             .collect::<Result<_, _>>()?;
 
-        Ok(Transaction { ins, refs, outs })
+        Ok(Transaction {
+            ins,
+            refs,
+            outs,
+            coins: None,
+        })
     }
 
     fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
@@ -243,6 +252,7 @@ impl Spell {
                 refs,
                 outs,
                 beamed_outs,
+                coins: None,
             },
             app_public_inputs,
             mock: false,
