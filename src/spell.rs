@@ -138,12 +138,18 @@ impl Spell {
             .iter()
             .map(|output| self.charms(&output.charms))
             .collect::<Result<_, _>>()?;
+        let coins = self
+            .outs
+            .iter()
+            .map(|output| output.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
+            .collect::<Vec<_>>();
+        let coins = Some(coins);
 
         Ok(Transaction {
             ins,
             refs,
             outs,
-            coins: None,
+            coins,
         })
     }
 
@@ -245,6 +251,12 @@ impl Spell {
             .collect();
         let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
 
+        let coins = self
+            .outs
+            .iter()
+            .map(|o| o.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
+            .collect::<Vec<_>>();
+
         let norm_spell = NormalizedSpell {
             version: self.version,
             tx: NormalizedTransaction {
@@ -252,7 +264,7 @@ impl Spell {
                 refs,
                 outs,
                 beamed_outs,
-                coins: None,
+                coins: Some(coins),
             },
             app_public_inputs,
             mock: false,
@@ -1028,6 +1040,8 @@ fn ensure_all_prev_txs_are_present(
     Ok(())
 }
 
+const DEFAULT_COIN_AMOUNT: u64 = 1000;
+
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(
         &self,
@@ -1103,7 +1117,7 @@ impl ProveSpellTxImpl {
                     .sum();
                 let total_sats_out: u64 = (&prove_request.spell.outs)
                     .iter()
-                    .map(|o| o.amount.unwrap_or(1000))
+                    .map(|o| o.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
                     .sum();
 
                 let funding_utxo_sats = prove_request.funding_utxo_value;

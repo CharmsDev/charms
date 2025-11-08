@@ -259,7 +259,7 @@ pub fn to_tx(
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
         outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
-        coins: None,
+        coins: spell.tx.coins.clone(),
     }
 }
 
