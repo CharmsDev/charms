@@ -495,7 +495,7 @@ impl Prove for Prover {
             .get()
             .prove(&self.proof_wrapper_pk, &stdin, SP1ProofMode::Groth16)
             .map_err(|e| anyhow!("{} SNARK wrapper: {}", TRANSIENT_PROVER_FAILURE, e))?;
-        let norm_spell = clear_inputs(norm_spell);
+        let norm_spell = clear_inputs_and_coins(norm_spell);
         let proof = proof.bytes();
 
         // TODO app_cycles might turn out to be much more expensive than spell_cycles
@@ -508,8 +508,9 @@ fn make_mock(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell
 }
 
-fn clear_inputs(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
+fn clear_inputs_and_coins(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell.tx.ins = None;
+    norm_spell.tx.coins = None;
     norm_spell
 }
 
@@ -565,7 +566,7 @@ impl Prove for MockProver {
 
         let (proof, spell_cycles) = (proof_bytes, 0);
 
-        let norm_spell = clear_inputs(norm_spell);
+        let norm_spell = clear_inputs_and_coins(norm_spell);
 
         Ok((norm_spell, proof, app_cycles + spell_cycles))
     }
