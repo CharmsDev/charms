@@ -1,5 +1,7 @@
 use crate::tx::{EnchantedTx, Tx, extract_and_verify_spell};
-use charms_data::{App, AppInput, B32, Charms, Data, Transaction, TxId, UtxoId, check};
+use charms_data::{
+    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -79,7 +81,7 @@ pub struct NormalizedTransaction {
 
     /// Amounts of native coin in transaction outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub coins: Option<Vec<u64>>,
+    pub coins: Option<Vec<NativeOutput>>,
 }
 
 impl NormalizedTransaction {

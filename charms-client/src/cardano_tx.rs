@@ -1,6 +1,6 @@
-use crate::{NormalizedSpell, Proof, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, ensure};
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{NativeOutput, TxId, UtxoId, util};
 use cml_chain::{
     Deserialize, Serialize, SetTransactionInput,
     crypto::TransactionHash,
@@ -74,7 +74,9 @@ impl EnchantedTx for CardanoTx {
             "spell tx outs mismatch"
         );
 
-        let spell = spell_with_ins(spell, inputs);
+        let outputs = &outputs[0..spell.tx.outs.len()];
+
+        let spell = spell_with_ins_and_coins(spell, inputs, outputs);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -99,7 +101,11 @@ impl EnchantedTx for CardanoTx {
     }
 }
 
-fn spell_with_ins(spell: NormalizedSpell, tx_ins: &SetTransactionInput) -> NormalizedSpell {
+fn spell_with_ins_and_coins(
+    spell: NormalizedSpell,
+    tx_ins: &SetTransactionInput,
+    tx_outs: &[TransactionOutput],
+) -> NormalizedSpell {
     let n = tx_ins.len() - 1;
     let tx_ins: Vec<UtxoId> = tx_ins
         .iter()
@@ -114,6 +120,17 @@ fn spell_with_ins(spell: NormalizedSpell, tx_ins: &SetTransactionInput) -> Norma
 
     let mut spell = spell;
     spell.tx.ins = Some(tx_ins);
+
+    if spell.version > V7 {
+        let coins = tx_outs
+            .iter()
+            .map(|tx_out| NativeOutput {
+                amount: tx_out.amount().coin.into(),
+                dest: tx_out.address().to_raw_bytes(),
+            })
+            .collect();
+        spell.tx.coins = Some(coins);
+    }
 
     spell
 }

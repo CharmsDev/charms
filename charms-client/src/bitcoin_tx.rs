@@ -7,7 +7,7 @@ use bitcoin::{
     opcodes::all::{OP_ENDIF, OP_IF},
     script::{Instruction, PushBytes},
 };
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,10 +84,16 @@ pub(crate) fn spell_with_ins_and_coins(
             UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
         })
         .collect();
-    let coins = tx_outs.iter().map(|tx_out| tx_out.value.to_sat()).collect();
 
     spell.tx.ins = Some(tx_ins);
     if spell.version > V7 {
+        let coins = tx_outs
+            .iter()
+            .map(|tx_out| NativeOutput {
+                amount: tx_out.value.to_sat(),
+                dest: tx_out.script_pubkey.to_bytes(),
+            })
+            .collect();
         spell.tx.coins = Some(coins);
     }
 

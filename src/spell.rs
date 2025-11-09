@@ -30,7 +30,8 @@ pub use charms_client::{
 };
 use charms_client::{MOCK_SPELL_VK, bitcoin_tx::BitcoinTx, tx::Tx, well_formed};
 use charms_data::{
-    App, AppInput, B32, Charms, Data, TOKEN, Transaction, TxId, UtxoId, is_simple_transfer, util,
+    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
+    is_simple_transfer, util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -138,18 +139,13 @@ impl Spell {
             .iter()
             .map(|output| self.charms(&output.charms))
             .collect::<Result<_, _>>()?;
-        let coins = self
-            .outs
-            .iter()
-            .map(|output| output.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
-            .collect::<Vec<_>>();
-        let coins = Some(coins);
+        let coins = get_coins(&self.outs)?;
 
         Ok(Transaction {
             ins,
             refs,
             outs,
-            coins,
+            coins: Some(coins),
         })
     }
 
@@ -251,11 +247,7 @@ impl Spell {
             .collect();
         let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
 
-        let coins = self
-            .outs
-            .iter()
-            .map(|o| o.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
-            .collect::<Vec<_>>();
+        let coins = get_coins(&self.outs)?;
 
         let norm_spell = NormalizedSpell {
             version: self.version,
@@ -370,6 +362,29 @@ impl Spell {
             outs,
         })
     }
+}
+
+fn get_coins(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
+    outs.iter()
+        .map(|output| {
+            Ok(NativeOutput {
+                amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
+                dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn from_bech32(address: &str) -> anyhow::Result<Vec<u8>> {
+    // Bitcoin
+    if let Ok(addr) = bitcoin::Address::from_str(address) {
+        return Ok(addr.assume_checked().script_pubkey().to_bytes());
+    }
+    // Cardano
+    if let Ok(addr) = cml_chain::address::Address::from_bech32(address) {
+        return Ok(addr.to_raw_bytes());
+    }
+    bail!("invalid address: {}", address);
 }
 
 fn app_inputs(
