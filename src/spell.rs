@@ -1064,21 +1064,28 @@ fn ensure_all_prev_txs_are_present(
     tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
-    ensure!(spell.tx.ins.as_ref().is_some_and(|ins| {
-        ins.iter()
-            .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
-    }));
-    ensure!(spell.tx.refs.as_ref().is_none_or(|ins| {
-        ins.iter()
-            .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
-    }));
+    ensure!(
+        dbg!(spell.tx.ins.as_ref()).is_some_and(|ins| {
+            ins.iter()
+                .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
+        }),
+        "prev_txs MUST contain transactions creating input UTXOs"
+    );
+    ensure!(
+        spell.tx.refs.as_ref().is_none_or(|ins| {
+            ins.iter()
+                .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
+        }),
+        "prev_txs MUST contain transactions creating ref UTXOs"
+    );
     ensure!(
         tx_ins_beamed_source_utxos
             .iter()
             .all(|(utxo_id, beaming_source_utxo_id)| {
                 prev_txs_by_id.contains_key(&utxo_id.0)
                     && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
-            })
+            }),
+        "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
     );
     Ok(())
 }
