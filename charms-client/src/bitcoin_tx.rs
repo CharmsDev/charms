@@ -45,7 +45,7 @@ impl EnchantedTx for BitcoinTx {
             spell.tx.outs.len() <= tx.output.len(),
             "spell tx outs mismatch"
         );
-        let spell = spell_with_ins_and_coins(self, spell);
+        let spell = spell_with_committed_ins_and_coins(self, spell);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -78,7 +78,7 @@ impl EnchantedTx for BitcoinTx {
             .collect()
     }
 
-    fn coin_outs(&self) -> Vec<NativeOutput> {
+    fn all_coin_outs(&self) -> Vec<NativeOutput> {
         self.0
             .output
             .iter()
@@ -91,7 +91,7 @@ impl EnchantedTx for BitcoinTx {
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn spell_with_ins_and_coins(
+pub(crate) fn spell_with_committed_ins_and_coins(
     tx: &BitcoinTx,
     mut spell: NormalizedSpell,
 ) -> NormalizedSpell {
@@ -99,7 +99,8 @@ pub(crate) fn spell_with_ins_and_coins(
 
     spell.tx.ins = Some(tx_ins);
     if spell.version > V7 {
-        let coins = tx.coin_outs();
+        let mut coins = tx.all_coin_outs();
+        coins.truncate(spell.tx.outs.len());
         spell.tx.coins = Some(coins);
     }
 

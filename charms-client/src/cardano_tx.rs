@@ -74,7 +74,7 @@ impl EnchantedTx for CardanoTx {
             "spell tx outs mismatch"
         );
 
-        let spell = spell_with_ins_and_coins(spell, self);
+        let spell = spell_with_committed_ins_and_coins(spell, self);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -110,7 +110,7 @@ impl EnchantedTx for CardanoTx {
             .collect()
     }
 
-    fn coin_outs(&self) -> Vec<NativeOutput> {
+    fn all_coin_outs(&self) -> Vec<NativeOutput> {
         (self.0.body.outputs)
             .iter()
             .map(|tx_out| NativeOutput {
@@ -121,14 +121,15 @@ impl EnchantedTx for CardanoTx {
     }
 }
 
-fn spell_with_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {
+fn spell_with_committed_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {
     let tx_ins: Vec<UtxoId> = tx.spell_ins();
 
     let mut spell = spell;
     spell.tx.ins = Some(tx_ins);
 
     if spell.version > V7 {
-        let coins = tx.coin_outs();
+        let mut coins = tx.all_coin_outs();
+        coins.truncate(spell.tx.outs.len());
         spell.tx.coins = Some(coins);
     }
 

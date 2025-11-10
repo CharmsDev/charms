@@ -19,7 +19,7 @@ pub fn extract_and_verify_spell_js(tx: JsValue, mock: bool) -> Result<JsValue, J
 }
 
 pub fn extract_and_verify_spell(tx: &Tx, mock: bool) -> Result<NormalizedSpell, String> {
-    let norm_spell = charms_client::tx::extract_and_verify_spell(SPELL_VK, tx, mock)
+    let norm_spell = charms_client::tx::committed_normalized_spell(SPELL_VK, tx, mock)
         .map_err(|e| e.to_string())?;
     Ok(norm_spell)
 }

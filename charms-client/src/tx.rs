@@ -22,7 +22,7 @@ pub trait EnchantedTx {
     fn tx_id(&self) -> TxId;
     fn hex(&self) -> String;
     fn spell_ins(&self) -> Vec<UtxoId>;
-    fn coin_outs(&self) -> Vec<NativeOutput>;
+    fn all_coin_outs(&self) -> Vec<NativeOutput>;
 }
 
 serde_with::serde_conv!(
@@ -75,7 +75,7 @@ impl Tx {
 /// Extract a [`NormalizedSpell`] from a transaction and verify it.
 /// Incorrect spells are rejected.
 #[tracing::instrument(level = "debug", skip_all)]
-pub fn extract_and_verify_spell(
+pub fn committed_normalized_spell(
     spell_vk: &str,
     tx: &Tx,
     mock: bool,
@@ -88,16 +88,14 @@ pub fn extract_and_verify_spell(
 pub fn extended_normalized_spell(spell_vk: &str, tx: &Tx, mock: bool) -> NormalizedSpell {
     match tx.extract_and_verify_spell(spell_vk, mock) {
         Ok(mut spell) => {
-            if spell.tx.coins.is_none() {
-                spell.tx.coins = Some(tx.coin_outs());
-            }
+            spell.tx.coins = Some(tx.all_coin_outs());
             spell
         }
         Err(_) => {
             let mut spell = NormalizedSpell::default();
             spell.tx.ins = Some(tx.spell_ins());
             spell.tx.outs = vec![];
-            spell.tx.coins = Some(tx.coin_outs());
+            spell.tx.coins = Some(tx.all_coin_outs());
             spell
         }
     }
