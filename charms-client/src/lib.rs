@@ -254,6 +254,14 @@ pub fn to_tx(
     let from_normalized_charms =
         |n_charms: &NormalizedCharms| -> Charms { charms(spell, n_charms) };
 
+    let coin_from_input = |utxo_id: &UtxoId| -> NativeOutput {
+        let (prev_spell, _) = &prev_spells[&utxo_id.0];
+        let prev_coins = prev_spell.tx.coins.as_ref().expect(
+            "coins MUST NOT be none: we used `extended_normalized_spell` to get prev_spells",
+        );
+        prev_coins[utxo_id.1 as usize].clone()
+    };
+
     let Some(tx_ins) = &spell.tx.ins else {
         unreachable!("self.tx.ins MUST be Some at this point");
     };
@@ -261,7 +269,8 @@ pub fn to_tx(
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
         outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
-        coins: spell.tx.coins.clone(),
+        coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
+        coin_outs: spell.tx.coins.clone(),
     }
 }
 

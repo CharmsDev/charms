@@ -66,6 +66,15 @@ pub struct Input {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub utxo_id: Option<UtxoId>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(
+        alias = "sats",
+        alias = "coin",
+        alias = "coins",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub amount: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_from: Option<UtxoId>,
@@ -77,6 +86,7 @@ pub struct Output {
     pub address: Option<String>,
     #[serde(
         alias = "sats",
+        alias = "coin",
         alias = "coins",
         skip_serializing_if = "Option::is_none"
     )]
@@ -139,13 +149,15 @@ impl Spell {
             .iter()
             .map(|output| self.charms(&output.charms))
             .collect::<Result<_, _>>()?;
-        let coins = get_coins(&self.outs)?;
+        let coin_outs = get_coin_outs(&self.outs)?;
+        let coin_ins = get_coin_ins(&self.ins)?;
 
         Ok(Transaction {
             ins,
             refs,
             outs,
-            coins: Some(coins),
+            coin_ins: Some(coin_ins),
+            coin_outs: Some(coin_outs),
         })
     }
 
@@ -247,7 +259,7 @@ impl Spell {
             .collect();
         let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
 
-        let coins = get_coins(&self.outs)?;
+        let coins = get_coin_outs(&self.outs)?;
 
         let norm_spell = NormalizedSpell {
             version: self.version,
@@ -313,6 +325,8 @@ impl Spell {
             .iter()
             .map(|utxo_id| Input {
                 utxo_id: Some(utxo_id.clone()),
+                address: None, // TODO: impl
+                amount: None,  // TODO: impl
                 charms: None,
                 beamed_from: None,
             })
@@ -322,6 +336,8 @@ impl Spell {
             refs.iter()
                 .map(|utxo_id| Input {
                     utxo_id: Some(utxo_id.clone()),
+                    address: None, // TODO: impl
+                    amount: None,  // TODO: impl
                     charms: None,
                     beamed_from: None,
                 })
@@ -364,7 +380,18 @@ impl Spell {
     }
 }
 
-fn get_coins(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
+fn get_coin_ins(ins: &[Input]) -> anyhow::Result<Vec<NativeOutput>> {
+    ins.iter()
+        .map(|input| {
+            Ok(NativeOutput {
+                amount: input.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
+                dest: from_bech32(&input.address.as_ref().expect("address is expected"))?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
     outs.iter()
         .map(|output| {
             Ok(NativeOutput {

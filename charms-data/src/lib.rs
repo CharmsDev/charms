@@ -52,9 +52,12 @@ pub struct Transaction {
     pub refs: Vec<(UtxoId, Charms)>,
     /// Output charms.
     pub outs: Vec<Charms>,
+    /// Amounts of native coin in inputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coin_ins: Option<Vec<NativeOutput>>,
     /// Amounts of native coin in outputs
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub coins: Option<Vec<NativeOutput>>,
+    pub coin_outs: Option<Vec<NativeOutput>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
