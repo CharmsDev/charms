@@ -57,7 +57,7 @@ pub const CURRENT_VERSION: u32 = V8;
 pub type NormalizedCharms = BTreeMap<u32, Data>;
 
 /// Normalized representation of a Charms transaction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct NormalizedTransaction {
     /// (Optional) input UTXO list. Is None when serialized in the transaction: the transaction
     /// already lists all inputs. **Must** be in the order of the transaction inputs.
@@ -110,6 +110,17 @@ pub struct NormalizedSpell {
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub mock: bool,
+}
+
+impl Default for NormalizedSpell {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            tx: Default::default(),
+            app_public_inputs: Default::default(),
+            mock: false,
+        }
+    }
 }
 
 pub fn utxo_id_hash(utxo_id: &UtxoId) -> B32 {

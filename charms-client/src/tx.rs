@@ -4,7 +4,7 @@ use crate::{
     V7_SPELL_VK, ark, bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
-use charms_data::{TxId, util};
+use charms_data::{NativeOutput, TxId, UtxoId, util};
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
@@ -21,6 +21,8 @@ pub trait EnchantedTx {
     fn tx_outs_len(&self) -> usize;
     fn tx_id(&self) -> TxId;
     fn hex(&self) -> String;
+    fn spell_ins(&self) -> Vec<UtxoId>;
+    fn coin_outs(&self) -> Vec<NativeOutput>;
 }
 
 serde_with::serde_conv!(
@@ -79,6 +81,26 @@ pub fn extract_and_verify_spell(
     mock: bool,
 ) -> anyhow::Result<NormalizedSpell> {
     tx.extract_and_verify_spell(spell_vk, mock)
+}
+
+/// Extract and verify [`NormalizedSpell`] from a transaction. Return an empty spell if the
+/// transaction does not have one. Extend with native coin output amounts if necessary.
+pub fn extended_normalized_spell(spell_vk: &str, tx: &Tx, mock: bool) -> NormalizedSpell {
+    match tx.extract_and_verify_spell(spell_vk, mock) {
+        Ok(mut spell) => {
+            if spell.tx.coins.is_none() {
+                spell.tx.coins = Some(tx.coin_outs());
+            }
+            spell
+        }
+        Err(_) => {
+            let mut spell = NormalizedSpell::default();
+            spell.tx.ins = Some(tx.spell_ins());
+            spell.tx.outs = vec![];
+            spell.tx.coins = Some(tx.coin_outs());
+            spell
+        }
+    }
 }
 
 pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Result<&str> {

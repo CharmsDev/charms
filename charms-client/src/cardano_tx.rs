@@ -2,7 +2,7 @@ use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, ensure};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use cml_chain::{
-    Deserialize, Serialize, SetTransactionInput,
+    Deserialize, Serialize,
     crypto::TransactionHash,
     plutus::PlutusData,
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
@@ -74,9 +74,7 @@ impl EnchantedTx for CardanoTx {
             "spell tx outs mismatch"
         );
 
-        let outputs = &outputs[0..spell.tx.outs.len()];
-
-        let spell = spell_with_ins_and_coins(spell, inputs, outputs);
+        let spell = spell_with_ins_and_coins(spell, self);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -99,36 +97,38 @@ impl EnchantedTx for CardanoTx {
     fn hex(&self) -> String {
         hex::encode(self.0.to_canonical_cbor_bytes())
     }
-}
 
-fn spell_with_ins_and_coins(
-    spell: NormalizedSpell,
-    tx_ins: &SetTransactionInput,
-    tx_outs: &[TransactionOutput],
-) -> NormalizedSpell {
-    let n = tx_ins.len() - 1;
-    let tx_ins: Vec<UtxoId> = tx_ins
-        .iter()
-        .take(n)
-        .map(|tx_in| {
-            let tx_id = tx_id(tx_in.transaction_id);
-            let index = tx_in.index as u32;
+    fn spell_ins(&self) -> Vec<UtxoId> {
+        self.0.body.inputs[..self.0.body.inputs.len() - 1] // exclude the funding input
+            .iter()
+            .map(|tx_in| {
+                let tx_id = tx_id(tx_in.transaction_id);
+                let index = tx_in.index as u32;
 
-            UtxoId(tx_id, index)
-        })
-        .collect();
+                UtxoId(tx_id, index)
+            })
+            .collect()
+    }
 
-    let mut spell = spell;
-    spell.tx.ins = Some(tx_ins);
-
-    if spell.version > V7 {
-        let coins = tx_outs
+    fn coin_outs(&self) -> Vec<NativeOutput> {
+        (self.0.body.outputs)
             .iter()
             .map(|tx_out| NativeOutput {
                 amount: tx_out.amount().coin.into(),
                 dest: tx_out.address().to_raw_bytes(),
             })
-            .collect();
+            .collect()
+    }
+}
+
+fn spell_with_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {
+    let tx_ins: Vec<UtxoId> = tx.spell_ins();
+
+    let mut spell = spell;
+    spell.tx.ins = Some(tx_ins);
+
+    if spell.version > V7 {
+        let coins = tx.coin_outs();
         spell.tx.coins = Some(coins);
     }
 

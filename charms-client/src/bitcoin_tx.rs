@@ -1,7 +1,7 @@
 use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    TxIn, TxOut,
+    TxIn,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
     opcodes::all::{OP_ENDIF, OP_IF},
@@ -28,7 +28,7 @@ impl EnchantedTx for BitcoinTx {
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = &self.0;
 
-        let Some((spell_tx_in, tx_ins)) = tx.input.split_last() else {
+        let Some((spell_tx_in, _tx_ins)) = tx.input.split_last() else {
             bail!("transaction does not have inputs")
         };
 
@@ -45,9 +45,7 @@ impl EnchantedTx for BitcoinTx {
             spell.tx.outs.len() <= tx.output.len(),
             "spell tx outs mismatch"
         );
-        let tx_outs = &tx.output[0..spell.tx.outs.len()];
-
-        let spell = spell_with_ins_and_coins(spell, tx_ins, tx_outs);
+        let spell = spell_with_ins_and_coins(self, spell);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -69,31 +67,39 @@ impl EnchantedTx for BitcoinTx {
     fn hex(&self) -> String {
         serialize_hex(&self.0)
     }
-}
 
-#[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn spell_with_ins_and_coins(
-    mut spell: NormalizedSpell,
-    spell_tx_ins: &[TxIn],
-    tx_outs: &[TxOut],
-) -> NormalizedSpell {
-    let tx_ins = spell_tx_ins // exclude spell commitment input
-        .iter()
-        .map(|tx_in| {
-            let out_point = tx_in.previous_output;
-            UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
-        })
-        .collect();
+    fn spell_ins(&self) -> Vec<UtxoId> {
+        self.0.input[..self.0.input.len() - 1] // exclude spell commitment input
+            .iter()
+            .map(|tx_in| {
+                let out_point = tx_in.previous_output;
+                UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
+            })
+            .collect()
+    }
 
-    spell.tx.ins = Some(tx_ins);
-    if spell.version > V7 {
-        let coins = tx_outs
+    fn coin_outs(&self) -> Vec<NativeOutput> {
+        self.0
+            .output
             .iter()
             .map(|tx_out| NativeOutput {
                 amount: tx_out.value.to_sat(),
                 dest: tx_out.script_pubkey.to_bytes(),
             })
-            .collect();
+            .collect()
+    }
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub(crate) fn spell_with_ins_and_coins(
+    tx: &BitcoinTx,
+    mut spell: NormalizedSpell,
+) -> NormalizedSpell {
+    let tx_ins = tx.spell_ins();
+
+    spell.tx.ins = Some(tx_ins);
+    if spell.version > V7 {
+        let coins = tx.coin_outs();
         spell.tx.coins = Some(coins);
     }
 
