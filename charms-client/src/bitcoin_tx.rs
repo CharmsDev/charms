@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
     TxIn,
@@ -7,7 +7,7 @@ use bitcoin::{
     opcodes::all::{OP_ENDIF, OP_IF},
     script::{Instruction, PushBytes},
 };
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ impl EnchantedTx for BitcoinTx {
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = &self.0;
 
-        let Some((spell_tx_in, tx_ins)) = tx.input.split_last() else {
+        let Some((spell_tx_in, _tx_ins)) = tx.input.split_last() else {
             bail!("transaction does not have inputs")
         };
 
@@ -45,8 +45,7 @@ impl EnchantedTx for BitcoinTx {
             spell.tx.outs.len() <= tx.output.len(),
             "spell tx outs mismatch"
         );
-
-        let spell = spell_with_ins(spell, tx_ins);
+        let spell = spell_with_committed_ins_and_coins(self, spell);
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -68,20 +67,42 @@ impl EnchantedTx for BitcoinTx {
     fn hex(&self) -> String {
         serialize_hex(&self.0)
     }
+
+    fn spell_ins(&self) -> Vec<UtxoId> {
+        self.0.input[..self.0.input.len() - 1] // exclude spell commitment input
+            .iter()
+            .map(|tx_in| {
+                let out_point = tx_in.previous_output;
+                UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
+            })
+            .collect()
+    }
+
+    fn all_coin_outs(&self) -> Vec<NativeOutput> {
+        self.0
+            .output
+            .iter()
+            .map(|tx_out| NativeOutput {
+                amount: tx_out.value.to_sat(),
+                dest: tx_out.script_pubkey.to_bytes(),
+            })
+            .collect()
+    }
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn spell_with_ins(spell: NormalizedSpell, spell_tx_ins: &[TxIn]) -> NormalizedSpell {
-    let tx_ins = spell_tx_ins // exclude spell commitment input
-        .iter()
-        .map(|tx_in| {
-            let out_point = tx_in.previous_output;
-            UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
-        })
-        .collect();
+pub(crate) fn spell_with_committed_ins_and_coins(
+    tx: &BitcoinTx,
+    mut spell: NormalizedSpell,
+) -> NormalizedSpell {
+    let tx_ins = tx.spell_ins();
 
-    let mut spell = spell;
     spell.tx.ins = Some(tx_ins);
+    if spell.version > V7 {
+        let mut coins = tx.all_coin_outs();
+        coins.truncate(spell.tx.outs.len());
+        spell.tx.coins = Some(coins);
+    }
 
     spell
 }

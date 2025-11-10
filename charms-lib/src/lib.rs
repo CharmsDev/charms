@@ -7,7 +7,7 @@ use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 
 /// Verification key for the current `charms-spell-checker` binary
 /// (and the current protocol version).
-pub const SPELL_VK: &str = "0x008a8304ec713c680c523a0e1137712200724e58143efe8997e62355cb965f0d";
+pub const SPELL_VK: &str = "0x007711539eeb91da0a599a84197863c9477b06568cba7684ae27c3da6f490e09";
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "extractAndVerifySpell")]
@@ -19,7 +19,7 @@ pub fn extract_and_verify_spell_js(tx: JsValue, mock: bool) -> Result<JsValue, J
 }
 
 pub fn extract_and_verify_spell(tx: &Tx, mock: bool) -> Result<NormalizedSpell, String> {
-    let norm_spell = charms_client::tx::extract_and_verify_spell(SPELL_VK, tx, mock)
+    let norm_spell = charms_client::tx::committed_normalized_spell(SPELL_VK, tx, mock)
         .map_err(|e| e.to_string())?;
     Ok(norm_spell)
 }

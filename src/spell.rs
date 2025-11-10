@@ -30,7 +30,8 @@ pub use charms_client::{
 };
 use charms_client::{MOCK_SPELL_VK, bitcoin_tx::BitcoinTx, tx::Tx, well_formed};
 use charms_data::{
-    App, AppInput, B32, Charms, Data, TOKEN, Transaction, TxId, UtxoId, is_simple_transfer, util,
+    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
+    is_simple_transfer, util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -65,6 +66,15 @@ pub struct Input {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub utxo_id: Option<UtxoId>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(
+        alias = "sats",
+        alias = "coin",
+        alias = "coins",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub amount: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_from: Option<UtxoId>,
@@ -74,7 +84,12 @@ pub struct Input {
 pub struct Output {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
-    #[serde(alias = "sats", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        alias = "sats",
+        alias = "coin",
+        alias = "coins",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub amount: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
@@ -134,8 +149,16 @@ impl Spell {
             .iter()
             .map(|output| self.charms(&output.charms))
             .collect::<Result<_, _>>()?;
+        let coin_outs = get_coin_outs(&self.outs)?;
+        let coin_ins = get_coin_ins(&self.ins)?;
 
-        Ok(Transaction { ins, refs, outs })
+        Ok(Transaction {
+            ins,
+            refs,
+            outs,
+            coin_ins: Some(coin_ins),
+            coin_outs: Some(coin_outs),
+        })
     }
 
     fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
@@ -236,6 +259,8 @@ impl Spell {
             .collect();
         let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
 
+        let coins = get_coin_outs(&self.outs)?;
+
         let norm_spell = NormalizedSpell {
             version: self.version,
             tx: NormalizedTransaction {
@@ -243,6 +268,7 @@ impl Spell {
                 refs,
                 outs,
                 beamed_outs,
+                coins: Some(coins),
             },
             app_public_inputs,
             mock: false,
@@ -299,6 +325,8 @@ impl Spell {
             .iter()
             .map(|utxo_id| Input {
                 utxo_id: Some(utxo_id.clone()),
+                address: None, // TODO: impl
+                amount: None,  // TODO: impl
                 charms: None,
                 beamed_from: None,
             })
@@ -308,6 +336,8 @@ impl Spell {
             refs.iter()
                 .map(|utxo_id| Input {
                     utxo_id: Some(utxo_id.clone()),
+                    address: None, // TODO: impl
+                    amount: None,  // TODO: impl
                     charms: None,
                     beamed_from: None,
                 })
@@ -348,6 +378,40 @@ impl Spell {
             outs,
         })
     }
+}
+
+fn get_coin_ins(ins: &[Input]) -> anyhow::Result<Vec<NativeOutput>> {
+    ins.iter()
+        .map(|input| {
+            Ok(NativeOutput {
+                amount: input.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
+                dest: from_bech32(&input.address.as_ref().expect("address is expected"))?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
+    outs.iter()
+        .map(|output| {
+            Ok(NativeOutput {
+                amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
+                dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+}
+
+fn from_bech32(address: &str) -> anyhow::Result<Vec<u8>> {
+    // Bitcoin
+    if let Ok(addr) = bitcoin::Address::from_str(address) {
+        return Ok(addr.assume_checked().script_pubkey().to_bytes());
+    }
+    // Cardano
+    if let Ok(addr) = cml_chain::address::Address::from_bech32(address) {
+        return Ok(addr.to_raw_bytes());
+    }
+    bail!("invalid address: {}", address);
 }
 
 fn app_inputs(
@@ -473,7 +537,7 @@ impl Prove for Prover {
             .get()
             .prove(&self.proof_wrapper_pk, &stdin, SP1ProofMode::Groth16)
             .map_err(|e| anyhow!("{} SNARK wrapper: {}", TRANSIENT_PROVER_FAILURE, e))?;
-        let norm_spell = clear_inputs(norm_spell);
+        let norm_spell = clear_inputs_and_coins(norm_spell);
         let proof = proof.bytes();
 
         // TODO app_cycles might turn out to be much more expensive than spell_cycles
@@ -486,8 +550,9 @@ fn make_mock(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell
 }
 
-fn clear_inputs(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
+fn clear_inputs_and_coins(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell.tx.ins = None;
+    norm_spell.tx.coins = None;
     norm_spell
 }
 
@@ -543,7 +608,7 @@ impl Prove for MockProver {
 
         let (proof, spell_cycles) = (proof_bytes, 0);
 
-        let norm_spell = clear_inputs(norm_spell);
+        let norm_spell = clear_inputs_and_coins(norm_spell);
 
         Ok((norm_spell, proof, app_cycles + spell_cycles))
     }
@@ -999,24 +1064,33 @@ fn ensure_all_prev_txs_are_present(
     tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
-    ensure!(spell.tx.ins.as_ref().is_some_and(|ins| {
-        ins.iter()
-            .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
-    }));
-    ensure!(spell.tx.refs.as_ref().is_none_or(|ins| {
-        ins.iter()
-            .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
-    }));
+    ensure!(
+        dbg!(spell.tx.ins.as_ref()).is_some_and(|ins| {
+            ins.iter()
+                .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
+        }),
+        "prev_txs MUST contain transactions creating input UTXOs"
+    );
+    ensure!(
+        spell.tx.refs.as_ref().is_none_or(|ins| {
+            ins.iter()
+                .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
+        }),
+        "prev_txs MUST contain transactions creating ref UTXOs"
+    );
     ensure!(
         tx_ins_beamed_source_utxos
             .iter()
             .all(|(utxo_id, beaming_source_utxo_id)| {
                 prev_txs_by_id.contains_key(&utxo_id.0)
                     && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
-            })
+            }),
+        "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
     );
     Ok(())
 }
+
+const DEFAULT_COIN_AMOUNT: u64 = 1000;
 
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(
@@ -1093,7 +1167,7 @@ impl ProveSpellTxImpl {
                     .sum();
                 let total_sats_out: u64 = (&prove_request.spell.outs)
                     .iter()
-                    .map(|o| o.amount.unwrap_or(1000))
+                    .map(|o| o.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
                     .sum();
 
                 let funding_utxo_sats = prove_request.funding_utxo_value;
