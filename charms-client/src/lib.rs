@@ -1,5 +1,7 @@
-use crate::tx::{EnchantedTx, Tx, extract_and_verify_spell};
-use charms_data::{App, AppInput, B32, Charms, Data, Transaction, TxId, UtxoId, check};
+use crate::tx::{EnchantedTx, Tx, extended_normalized_spell};
+use charms_data::{
+    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +27,8 @@ pub const V4_SPELL_VK: &str = "0x00c707a155bf8dc18dc41db2994c214e93e906a3e97b458
 pub const V5_SPELL_VK: &str = "0x00e98665c417bd2e6e81c449af63b26ed5ad5c400ef55811b592450bf62c67cd";
 /// Verification key for version `6` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V6_SPELL_VK: &str = "0x005a1df17094445572e4dd474b3e5dd9093936cba62ca3a62bb2ce63d9db8cba";
+/// Verification key for version `6` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V7_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -42,16 +46,18 @@ pub const V5: u32 = 5;
 pub const V6: u32 = 6;
 /// Version `7` of the protocol.
 pub const V7: u32 = 7;
+/// Version `8` of the protocol.
+pub const V8: u32 = 8;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V7;
+pub const CURRENT_VERSION: u32 = V8;
 
 /// Maps the index of the charm's app (in [`NormalizedSpell`].`app_public_inputs`) to the charm's
 /// data.
 pub type NormalizedCharms = BTreeMap<u32, Data>;
 
 /// Normalized representation of a Charms transaction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct NormalizedTransaction {
     /// (Optional) input UTXO list. Is None when serialized in the transaction: the transaction
     /// already lists all inputs. **Must** be in the order of the transaction inputs.
@@ -72,6 +78,10 @@ pub struct NormalizedTransaction {
     /// Optional mapping from the beamed output index to the destination UtxoId hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_outs: Option<BTreeMap<u32, B32>>,
+
+    /// Amounts of native coin in transaction outputs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coins: Option<Vec<NativeOutput>>,
 }
 
 impl NormalizedTransaction {
@@ -102,6 +112,17 @@ pub struct NormalizedSpell {
     pub mock: bool,
 }
 
+impl Default for NormalizedSpell {
+    fn default() -> Self {
+        Self {
+            version: CURRENT_VERSION,
+            tx: Default::default(),
+            app_public_inputs: Default::default(),
+            mock: false,
+        }
+    }
+}
+
 pub fn utxo_id_hash(utxo_id: &UtxoId) -> B32 {
     let hash = Sha256::digest(utxo_id.to_bytes());
     B32(hash.into())
@@ -113,7 +134,7 @@ pub fn prev_spells(
     prev_txs: &Vec<Tx>,
     spell_vk: &str,
     mock: bool,
-) -> BTreeMap<TxId, (Option<NormalizedSpell>, usize)> {
+) -> BTreeMap<TxId, (NormalizedSpell, usize)> {
     prev_txs
         .iter()
         .map(|tx| {
@@ -121,11 +142,7 @@ pub fn prev_spells(
             (
                 tx_id,
                 (
-                    extract_and_verify_spell(spell_vk, tx, mock)
-                        .map_err(|e| {
-                            tracing::info!("no correct spell in tx {}: {}", tx_id, e);
-                        })
-                        .ok(),
+                    extended_normalized_spell(spell_vk, tx, mock),
                     tx.tx_outs_len(),
                 ),
             )
@@ -137,7 +154,7 @@ pub fn prev_spells(
 #[tracing::instrument(level = "debug", skip(spell, prev_spells))]
 pub fn well_formed(
     spell: &NormalizedSpell,
-    prev_spells: &BTreeMap<TxId, (Option<NormalizedSpell>, usize)>,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
     tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
 ) -> bool {
     check!(spell.version == CURRENT_VERSION);
@@ -145,12 +162,10 @@ pub fn well_formed(
         let tx_id = utxo_id.0;
         prev_spells
             .get(&tx_id)
-            .is_some_and(|(n_spell_opt, num_tx_outs)| {
+            .is_some_and(|(n_spell, num_tx_outs)| {
                 let utxo_index = utxo_id.1;
 
-                let is_beamed_out = n_spell_opt
-                    .as_ref()
-                    .and_then(|n_spell| n_spell.tx.beamed_outs.as_ref())
+                let is_beamed_out = (n_spell.tx.beamed_outs.as_ref())
                     .and_then(|beamed_outs| beamed_outs.get(&utxo_index))
                     .is_some();
 
@@ -184,26 +199,25 @@ pub fn well_formed(
         .all(|(tx_in_utxo_id, beaming_source_utxo_id)| {
             let prev_txid = tx_in_utxo_id.0;
             let prev_tx = prev_spells.get(&prev_txid);
-            let Some((prev_spell_opt, _tx_outs)) = prev_tx else {
+            let Some((prev_spell, _tx_outs)) = prev_tx else {
                 // prev_tx should be provided, so we know it doesn't carry a spell
                 return false;
             };
-            // prev_tx must exist but not carry a spell
-            check!(prev_spell_opt.is_none());
+            // tx_in_utxo must exist but not have any Charms
+            check!(
+                (prev_spell.tx.outs)
+                    .get(tx_in_utxo_id.1 as usize)
+                    .is_none_or(|charms| charms.is_empty())
+            );
 
             let beaming_txid = beaming_source_utxo_id.0;
             let beaming_utxo_index = beaming_source_utxo_id.1;
 
             prev_spells
                 .get(&beaming_txid)
-                .and_then(|(n_spell_opt, _tx_outs)| {
-                    n_spell_opt.as_ref().and_then(|n_spell| {
-                        n_spell
-                            .tx
-                            .beamed_outs
-                            .as_ref()
-                            .and_then(|beamed_outs| beamed_outs.get(&beaming_utxo_index))
-                    })
+                .and_then(|(n_spell, _tx_outs)| {
+                    (n_spell.tx.beamed_outs.as_ref())
+                        .and_then(|beamed_outs| beamed_outs.get(&beaming_utxo_index))
                 })
                 .is_some_and(|dest_utxo_hash| dest_utxo_hash == &utxo_id_hash(tx_in_utxo_id))
         });
@@ -219,22 +233,18 @@ pub fn apps(spell: &NormalizedSpell) -> Vec<App> {
 /// Convert normalized spell to [`charms_data::Transaction`].
 pub fn to_tx(
     spell: &NormalizedSpell,
-    prev_spells: &BTreeMap<TxId, (Option<NormalizedSpell>, usize)>,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
     tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
 ) -> Transaction {
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
-        let (prev_spell_opt, _) = &prev_spells[&utxo_id.0];
-        let charms = prev_spell_opt
-            .as_ref()
-            .and_then(|prev_spell| charms_in_utxo(prev_spell, utxo_id))
+        let (prev_spell, _) = &prev_spells[&utxo_id.0];
+        let charms = charms_in_utxo(prev_spell, utxo_id)
             .or_else(|| {
                 tx_ins_beamed_source_utxos
                     .get(utxo_id)
                     .and_then(|beam_source_utxo_id| {
-                        prev_spells[&beam_source_utxo_id.0]
-                            .0
-                            .as_ref()
-                            .and_then(|prev_spell| charms_in_utxo(prev_spell, beam_source_utxo_id))
+                        let prev_spell = &prev_spells[&beam_source_utxo_id.0].0;
+                        charms_in_utxo(&prev_spell, beam_source_utxo_id)
                     })
             })
             .unwrap_or_default();
@@ -244,6 +254,14 @@ pub fn to_tx(
     let from_normalized_charms =
         |n_charms: &NormalizedCharms| -> Charms { charms(spell, n_charms) };
 
+    let coin_from_input = |utxo_id: &UtxoId| -> NativeOutput {
+        let (prev_spell, _) = &prev_spells[&utxo_id.0];
+        let prev_coins = prev_spell.tx.coins.as_ref().expect(
+            "coins MUST NOT be none: we used `extended_normalized_spell` to get prev_spells",
+        );
+        prev_coins[utxo_id.1 as usize].clone()
+    };
+
     let Some(tx_ins) = &spell.tx.ins else {
         unreachable!("self.tx.ins MUST be Some at this point");
     };
@@ -251,13 +269,13 @@ pub fn to_tx(
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
         outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
+        coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
+        coin_outs: spell.tx.coins.clone(),
     }
 }
 
 fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
-    prev_spell
-        .tx
-        .outs
+    (prev_spell.tx.outs)
         .get(utxo_id.1 as usize)
         .map(|n_charms| charms(prev_spell, n_charms))
 }
