@@ -82,6 +82,8 @@ impl EnchantedTx for CardanoTx {
 
         let spell = spell_with_committed_ins_and_coins(spell, self);
 
+        native_outs_comply(&spell)?;
+
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
         let public_values = tx::to_serialized_pv(spell.version, &(spell_vk, &spell));
@@ -125,6 +127,11 @@ impl EnchantedTx for CardanoTx {
             })
             .collect()
     }
+}
+
+/// Native outputs contain CNTs representing Charms
+fn native_outs_comply(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    todo!()
 }
 
 fn spell_with_committed_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {
