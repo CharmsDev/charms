@@ -3,7 +3,7 @@ use crate::utils::block_on;
 use crate::{
     PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK, app,
     cli::{BITCOIN, CARDANO, charms_fee_settings, prove_impl},
-    tx::{bitcoin_tx, bitcoin_tx::from_spell, cardano_tx, txs_by_txid},
+    tx::{bitcoin_tx, bitcoin_tx::from_spell, cardano_tx},
     utils,
     utils::{BoxedSP1Prover, Shared, TRANSIENT_PROVER_FAILURE},
 };
@@ -28,7 +28,12 @@ pub use charms_client::{
     CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, Proof,
     SpellProverInput, to_tx,
 };
-use charms_client::{MOCK_SPELL_VK, bitcoin_tx::BitcoinTx, tx::Tx, well_formed};
+use charms_client::{
+    MOCK_SPELL_VK,
+    bitcoin_tx::BitcoinTx,
+    tx::{Tx, by_txid},
+    well_formed,
+};
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
     is_simple_transfer, util,
@@ -494,7 +499,12 @@ impl Prove for Prover {
         );
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, false);
-        let tx = to_tx(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos);
+        let tx = to_tx(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            by_txid(&prev_txs),
+        );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
 
@@ -568,7 +578,12 @@ impl Prove for MockProver {
         let norm_spell = make_mock(norm_spell);
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, true);
-        let tx = to_tx(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos);
+        let tx = to_tx(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            by_txid(&prev_txs),
+        );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
 
@@ -773,7 +788,7 @@ impl ProveSpellTxImpl {
         } = prove_request;
 
         let prev_txs = from_hex_txs(&prev_txs)?;
-        let prev_txs_by_id = txs_by_txid(&prev_txs);
+        let prev_txs_by_id = by_txid(&prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
 
@@ -1099,7 +1114,7 @@ impl ProveSpellTxImpl {
     ) -> anyhow::Result<(NormalizedSpell, u64)> {
         let prev_txs = &prove_request.prev_txs;
         let prev_txs = from_hex_txs(&prev_txs)?;
-        let prev_txs_by_id = txs_by_txid(&prev_txs);
+        let prev_txs_by_id = by_txid(&prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
             prove_request.spell.normalized()?;
@@ -1108,7 +1123,12 @@ impl ProveSpellTxImpl {
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, self.mock);
 
-        let tx = to_tx(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos);
+        let tx = to_tx(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            by_txid(&prev_txs),
+        );
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(
             &prove_request.binaries,

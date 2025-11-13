@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use sp1_primitives::io::SP1PublicValues;
 use sp1_verifier::Groth16Verifier;
+use std::collections::BTreeMap;
 
 #[enum_dispatch]
 pub trait EnchantedTx {
@@ -180,6 +181,13 @@ pub fn verify_snark_proof(
             .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
+}
+
+pub fn by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
+    prev_txs
+        .iter()
+        .map(|prev_tx| (prev_tx.tx_id(), prev_tx.clone()))
+        .collect::<BTreeMap<_, _>>()
 }
 
 #[cfg(test)]

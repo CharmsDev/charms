@@ -235,6 +235,7 @@ pub fn to_tx(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
     tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    prev_txs: BTreeMap<TxId, Tx>,
 ) -> Transaction {
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
@@ -265,12 +266,19 @@ pub fn to_tx(
     let Some(tx_ins) = &spell.tx.ins else {
         unreachable!("self.tx.ins MUST be Some at this point");
     };
+
+    let prev_txs = prev_txs
+        .into_iter()
+        .map(|(tx_id, tx)| (tx_id, (&tx).into()))
+        .collect();
+
     Transaction {
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
         outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
         coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
         coin_outs: spell.tx.coins.clone(),
+        prev_txs,
     }
 }
 

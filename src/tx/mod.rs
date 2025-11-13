@@ -27,10 +27,3 @@ pub fn spell(tx: &Tx, mock: bool) -> anyhow::Result<Option<Spell>> {
         None => Ok(None),
     }
 }
-
-pub fn txs_by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
-    prev_txs
-        .iter()
-        .map(|prev_tx| (prev_tx.tx_id(), prev_tx.clone()))
-        .collect::<BTreeMap<_, _>>()
-}
