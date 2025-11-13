@@ -145,7 +145,7 @@ impl Spell {
     }
 
     /// Get a [`Transaction`] for the spell.
-    pub fn to_tx(&self) -> anyhow::Result<Transaction> {
+    pub fn to_tx(&self, prev_txs: BTreeMap<TxId, Tx>) -> anyhow::Result<Transaction> {
         let ins = self.strings_of_charms(&self.ins)?;
         let empty_vec = vec![];
         let refs = self.strings_of_charms(self.refs.as_ref().unwrap_or(&empty_vec))?;
@@ -157,12 +157,18 @@ impl Spell {
         let coin_outs = get_coin_outs(&self.outs)?;
         let coin_ins = get_coin_ins(&self.ins)?;
 
+        let prev_txs = prev_txs
+            .into_iter()
+            .map(|(tx_id, tx)| (tx_id, (&tx).into()))
+            .collect();
+
         Ok(Transaction {
             ins,
             refs,
             outs,
             coin_ins: Some(coin_ins),
             coin_outs: Some(coin_outs),
+            prev_txs,
         })
     }
 

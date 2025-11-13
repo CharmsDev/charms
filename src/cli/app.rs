@@ -94,7 +94,7 @@ pub fn run(spell: PathBuf, path: Option<PathBuf>) -> Result<()> {
     let spell: Spell = serde_yaml::from_slice(
         &fs::read(&spell).map_err(|e| anyhow!("error reading {:?}: {}", &spell, e))?,
     )?;
-    let tx = spell.to_tx()?;
+    let tx = spell.to_tx(BTreeMap::new())?; // TODO pass prev_txs OR remove app run command
 
     let public_inputs = spell.public_args.unwrap_or_default();
     let private_inputs = spell.private_args.unwrap_or_default();
