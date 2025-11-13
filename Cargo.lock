@@ -2102,7 +2102,6 @@ dependencies = [
  "cml-chain",
  "const_format",
  "hex",
- "hex-literal",
  "proptest",
  "proptest-derive",
  "redis",
@@ -2125,7 +2124,6 @@ dependencies = [
  "tracing-forest",
  "tracing-subscriber 0.3.20",
  "twirp-rs",
- "uplc",
 ]
 
 [[package]]

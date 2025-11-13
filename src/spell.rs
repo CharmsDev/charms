@@ -161,7 +161,7 @@ impl Spell {
         })
     }
 
-    fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
+    pub fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
         inputs
             .iter()
             .map(|input| {
@@ -175,7 +175,7 @@ impl Spell {
             .collect::<Result<_, _>>()
     }
 
-    fn charms(&self, charms_opt: &Option<KeyedCharms>) -> anyhow::Result<Charms> {
+    pub fn charms(&self, charms_opt: &Option<KeyedCharms>) -> anyhow::Result<Charms> {
         charms_opt
             .as_ref()
             .ok_or(anyhow!("missing charms field"))?

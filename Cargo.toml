@@ -39,7 +39,6 @@ clap_complete = { version = "4.5.60" }
 cml-chain = { workspace = true }
 const_format = { version = "0.2.35" }
 hex = { workspace = true }
-hex-literal = { version = "1.1.0" }
 redis = { version = "0.32.7", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
 reqwest = { version = "0.12.24", features = ["json"] }
@@ -60,7 +59,6 @@ tracing = { workspace = true }
 tracing-forest = { version = "0.1.6" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 twirp = { package = "twirp-rs", version = "0.13.0-succinct" }
-uplc = { version = "1.1.19" }
 
 [features]
 prover = ["sp1-sdk/native-gnark", "sp1-prover/native-gnark", "redis", "rslock"]

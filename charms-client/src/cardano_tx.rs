@@ -165,7 +165,9 @@ pub fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
     }
 }
 
-pub fn multi_asset(charms: &Charms) -> anyhow::Result<MultiAsset> {
+pub fn multi_asset(
+    charms: &Charms,
+) -> anyhow::Result<(MultiAsset, BTreeMap<PolicyId, PlutusV3Script>)> {
     let mut multi_asset = MultiAsset::new();
     let mut scripts = BTreeMap::new();
     for (app, data) in charms {
@@ -178,7 +180,7 @@ pub fn multi_asset(charms: &Charms) -> anyhow::Result<MultiAsset> {
         scripts.insert(policy_id, script);
         multi_asset.set(policy_id, asset_name, value);
     }
-    Ok(multi_asset)
+    Ok((multi_asset, scripts))
 }
 
 /// Native outputs contain CNTs representing Charms
@@ -193,7 +195,7 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         .enumerate()
     {
         let tx_multi_asset = &native_out.amount().multiasset;
-        let expected_multi_asset = multi_asset(&charms(spell, spell_out))?;
+        let (expected_multi_asset, _) = multi_asset(&charms(spell, spell_out))?;
 
         let remainder = tx_multi_asset
             .checked_sub(&expected_multi_asset)

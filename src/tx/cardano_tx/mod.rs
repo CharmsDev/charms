@@ -1,17 +1,17 @@
 use crate::{
     spell,
-    spell::{CharmsFee, KeyedCharms, Spell},
+    spell::{CharmsFee, Spell},
 };
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use charms_client::{
-    cardano_tx::{CardanoTx, tx_hash},
+    cardano_tx::{CardanoTx, multi_asset, tx_hash},
     tx::Tx,
 };
-use charms_data::{App, Data, NFT, TOKEN, TxId, UtxoId};
+use charms_data::{TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Serialize as CmlChainSerialize, Value,
+    OrderedHashMap, PolicyId, Rational, Value,
     address::Address,
-    assets::{AssetBundle, AssetName, ClampedSub, MultiAsset},
+    assets::{AssetBundle, ClampedSub},
     builders::{
         input_builder::{InputBuilderResult, SingleInputBuilder},
         mint_builder::SingleMintBuilder,
@@ -31,7 +31,6 @@ use cml_chain::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
 };
-use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -80,15 +79,12 @@ fn tx_output(
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-pub const MINT_SCRIPT: &[u8] = &hex!(
-    "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101"
-);
-
 fn tx_outputs(
     tx_b: &mut TransactionBuilder,
-    outs: &[spell::Output],
-    apps: &BTreeMap<String, App>,
+    spell: &Spell,
 ) -> anyhow::Result<BTreeMap<PolicyId, PlutusV3Script>> {
+    let outs = &spell.outs;
+
     let mut scripts = BTreeMap::new();
 
     for output in outs {
@@ -98,7 +94,7 @@ fn tx_outputs(
         let address =
             Address::from_bech32(address).map_err(|e| anyhow!("Failed to parse address: {}", e))?;
         let amount = output.amount.unwrap_or(TWO_ADA);
-        let (multiasset, more_scripts) = multi_asset(&output.charms, apps)?;
+        let (multiasset, more_scripts) = multi_asset(&spell.charms(&output.charms)?)?;
 
         let value = Value::new(amount.into(), multiasset);
         scripts.extend(more_scripts);
@@ -110,59 +106,6 @@ fn tx_outputs(
     }
 
     Ok(scripts)
-}
-
-fn multi_asset(
-    spell_output: &Option<KeyedCharms>,
-    apps: &BTreeMap<String, App>,
-) -> anyhow::Result<(MultiAsset, BTreeMap<PolicyId, PlutusV3Script>)> {
-    let mut multi_asset = MultiAsset::new();
-    let mut scripts = BTreeMap::new();
-    if let Some(charms) = spell_output {
-        for (k, data) in charms {
-            let Some(app) = apps.get(k) else {
-                bail!("no app present for the key: {}", k);
-            };
-            if app.tag != TOKEN && app.tag != NFT {
-                continue; // TODO figure what to do with other tags
-            }
-            let (policy_id, script) = policy_id(app)?;
-            let asset_name = asset_name(app)?;
-            let value = get_value(app, data)?;
-            scripts.insert(policy_id, script);
-            multi_asset.set(policy_id, asset_name, value);
-        }
-    };
-    Ok((multi_asset, scripts))
-}
-
-fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
-    let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
-    let program = uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), MINT_SCRIPT)
-        .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
-    let script = PlutusV3Script::new(program);
-    let policy_id = script.hash();
-    Ok((policy_id, script))
-}
-
-fn asset_name(app: &App) -> anyhow::Result<AssetName> {
-    const FT_LABEL: &[u8] = &[0x00, 0x14, 0xdf, 0x10];
-    const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
-    let label = match app.tag {
-        TOKEN => FT_LABEL,
-        NFT => NFT_LABEL,
-        _ => unreachable!("unsupported tag: {}", app.tag),
-    };
-    Ok(AssetName::new([label, &app.identity.0[4..]].concat())
-        .map_err(|e| anyhow!("error converting to Cardano AssetName: {}", e))?)
-}
-
-fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
-    match app.tag {
-        TOKEN => Ok(data.value()?),
-        NFT => Ok(1),
-        _ => unreachable!("unsupported tag: {}", app.tag),
-    }
 }
 
 /// Build a transaction only dealing with Charms tokens
@@ -182,7 +125,7 @@ pub fn from_spell(
 
     tx_inputs(&mut tx_b, &spell.ins, prev_txs_by_id)?;
 
-    let scripts = tx_outputs(&mut tx_b, &spell.outs, &spell.apps)?;
+    let scripts = tx_outputs(&mut tx_b, spell)?;
     let scripts_count = scripts.len() as u64;
 
     add_mint(&mut tx_b, scripts)?;
