@@ -2154,6 +2154,7 @@ dependencies = [
  "cml-chain",
  "enum_dispatch",
  "hex",
+ "hex-literal",
  "serde",
  "serde_json",
  "serde_with",
@@ -2161,6 +2162,7 @@ dependencies = [
  "sp1-primitives",
  "sp1-verifier",
  "tracing",
+ "uplc",
 ]
 
 [[package]]

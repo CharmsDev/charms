@@ -1,12 +1,15 @@
-use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
-use anyhow::{anyhow, bail, ensure};
-use charms_data::{NativeOutput, TxId, UtxoId, util};
+use crate::{NormalizedSpell, Proof, V7, charms, tx, tx::EnchantedTx};
+use anyhow::{Context, anyhow, bail, ensure};
+use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
-    Deserialize, Serialize,
+    Deserialize, PolicyId, Serialize,
+    assets::{AssetName, ClampedSub, MultiAsset},
     crypto::TransactionHash,
-    plutus::PlutusData,
+    plutus::{PlutusData, PlutusV3Script},
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
+use hex_literal::hex;
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CardanoTx(pub Transaction);
@@ -82,7 +85,7 @@ impl EnchantedTx for CardanoTx {
 
         let spell = spell_with_committed_ins_and_coins(spell, self);
 
-        native_outs_comply(&spell)?;
+        native_outs_comply(&spell, self)?;
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -129,9 +132,79 @@ impl EnchantedTx for CardanoTx {
     }
 }
 
+pub const MINT_SCRIPT: &[u8] = &hex!(
+    "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101"
+);
+
+pub fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
+    let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
+    let program = uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), MINT_SCRIPT)
+        .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
+    let script = PlutusV3Script::new(program);
+    let policy_id = script.hash();
+    Ok((policy_id, script))
+}
+
+pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
+    const FT_LABEL: &[u8] = &[0x00, 0x14, 0xdf, 0x10];
+    const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
+    let label = match app.tag {
+        TOKEN => FT_LABEL,
+        NFT => NFT_LABEL,
+        _ => unreachable!("unsupported tag: {}", app.tag),
+    };
+    Ok(AssetName::new([label, &app.identity.0[4..]].concat())
+        .map_err(|e| anyhow!("error converting to Cardano AssetName: {}", e))?)
+}
+
+pub fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
+    match app.tag {
+        TOKEN => Ok(data.value()?),
+        NFT => Ok(1),
+        _ => unreachable!("unsupported tag: {}", app.tag),
+    }
+}
+
+pub fn multi_asset(charms: &Charms) -> anyhow::Result<MultiAsset> {
+    let mut multi_asset = MultiAsset::new();
+    let mut scripts = BTreeMap::new();
+    for (app, data) in charms {
+        if app.tag != TOKEN && app.tag != NFT {
+            continue; // TODO figure what to do with other tags
+        }
+        let (policy_id, script) = policy_id(app)?;
+        let asset_name = asset_name(app)?;
+        let value = get_value(app, data)?;
+        scripts.insert(policy_id, script);
+        multi_asset.set(policy_id, asset_name, value);
+    }
+    Ok(multi_asset)
+}
+
 /// Native outputs contain CNTs representing Charms
-fn native_outs_comply(spell: &NormalizedSpell) -> anyhow::Result<()> {
-    todo!()
+fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result<()> {
+    // for each spell output, check that the corresponding native output has CNTs corresponding to
+    // charms in it
+    for (i, (spell_out, native_out)) in spell
+        .tx
+        .outs
+        .iter()
+        .zip(tx.0.body.outputs.iter())
+        .enumerate()
+    {
+        let tx_multi_asset = &native_out.amount().multiasset;
+        let expected_multi_asset = multi_asset(&charms(spell, spell_out))?;
+
+        let remainder = tx_multi_asset
+            .checked_sub(&expected_multi_asset)
+            .context(format!("Output {i} missing CNTs"))?;
+        let unexpected = expected_multi_asset.clamped_sub(&remainder);
+        ensure!(
+            expected_multi_asset.clamped_sub(&remainder).is_empty(),
+            "Output {i} has unexpected Charms CNTs: {unexpected:?}"
+        );
+    }
+    Ok(())
 }
 
 fn spell_with_committed_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {

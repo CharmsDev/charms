@@ -19,12 +19,14 @@ charms-data = { path = "../charms-data", version = "0.10.0" }
 cml-chain = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
+hex-literal = { version = "1.1.0" }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { version = "3.15.1" }
 sha2 = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true }
 tracing = { workspace = true }
+uplc = { version = "1.1.19" }
 
 [dev-dependencies]
 ciborium = { version = "0.2.2" }
