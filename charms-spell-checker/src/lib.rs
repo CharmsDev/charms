@@ -1,7 +1,10 @@
 pub mod bin;
 
-use charms_client::{NormalizedSpell, tx::Tx};
-use charms_data::{AppInput, Transaction, UtxoId, check, is_simple_transfer};
+use charms_client::{
+    NormalizedSpell,
+    tx::{Tx, by_txid},
+};
+use charms_data::{App, AppInput, Data, Transaction, UtxoId, check, is_simple_transfer};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Check if the spell is correct.
@@ -32,22 +35,33 @@ pub(crate) fn is_correct(
 
     let apps = charms_client::apps(spell);
 
-    let charms_tx = charms_client::to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos);
+    let charms_tx = charms_client::to_tx(
+        spell,
+        &prev_spells,
+        tx_ins_beamed_source_utxos,
+        by_txid(&prev_txs),
+    );
     let tx_is_simple_transfer_or_app_contracts_satisfied =
         apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()
-            || app_input.is_some_and(|app_input| apps_satisfied(&app_input, &charms_tx));
+            || app_input.is_some_and(|app_input| {
+                apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
+            });
     check!(tx_is_simple_transfer_or_app_contracts_satisfied);
 
     true
 }
 
-fn apps_satisfied(app_input: &AppInput, tx: &Transaction) -> bool {
+fn apps_satisfied(
+    app_input: &AppInput,
+    app_public_inputs: &BTreeMap<App, Data>,
+    tx: &Transaction,
+) -> bool {
     let app_runner = charms_app_runner::AppRunner::new(false);
     app_runner
         .run_all(
             &app_input.app_binaries,
             &tx,
-            &app_input.app_public_inputs,
+            app_public_inputs,
             &app_input.app_private_inputs,
         )
         .expect("all apps should run successfully");

@@ -5,7 +5,10 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use charms_app_runner::AppRunner;
-use charms_client::{CURRENT_VERSION, tx::Tx};
+use charms_client::{
+    CURRENT_VERSION,
+    tx::{Tx, by_txid},
+};
 use charms_data::UtxoId;
 use charms_lib::SPELL_VK;
 use serde_json::json;
@@ -160,7 +163,7 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let charms_tx = spell.to_tx()?;
+        let charms_tx = spell.to_tx(by_txid(&prev_txs))?;
         let cycles_spent = self.app_runner.run_all(
             &binaries,
             &charms_tx,
