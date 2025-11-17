@@ -518,7 +518,6 @@ impl Prove for Prover {
             true => None,
             false => Some(AppInput {
                 app_binaries,
-                app_public_inputs: norm_spell.app_public_inputs.clone(),
                 app_private_inputs,
             }),
         };
