@@ -162,6 +162,21 @@ impl Spell {
             .map(|(tx_id, tx)| (tx_id, (&tx).into()))
             .collect();
 
+        let app_public_inputs = self
+            .apps
+            .iter()
+            .map(|(k, app)| {
+                (
+                    app.clone(),
+                    self.public_args
+                        .as_ref()
+                        .and_then(|public_args| public_args.get(k))
+                        .cloned()
+                        .unwrap_or_default(),
+                )
+            })
+            .collect();
+
         Ok(Transaction {
             ins,
             refs,
@@ -169,6 +184,7 @@ impl Spell {
             coin_ins: Some(coin_ins),
             coin_outs: Some(coin_outs),
             prev_txs,
+            app_public_inputs,
         })
     }
 

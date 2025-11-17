@@ -58,7 +58,10 @@ pub struct Transaction {
     /// Amounts of native coin in outputs
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coin_outs: Option<Vec<NativeOutput>>,
+    /// Previous transactions (creating outputs spent by this transaction) by transaction ID.
     pub prev_txs: BTreeMap<TxId, Data>,
+    /// All apps used in this transaction with their public inputs.
+    pub app_public_inputs: BTreeMap<App, Data>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

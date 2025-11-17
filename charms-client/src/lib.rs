@@ -279,6 +279,7 @@ pub fn to_tx(
         coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
         coin_outs: spell.tx.coins.clone(),
         prev_txs,
+        app_public_inputs: spell.app_public_inputs.clone(),
     }
 }
 
