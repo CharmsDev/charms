@@ -10,19 +10,12 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tower_http::cors::{Any, CorsLayer};
 
 pub struct Server {
     pub config: ServerConfig,
     pub prover: Arc<ProveSpellTxImpl>,
-}
-
-// Types
-#[derive(Debug, Serialize, Deserialize)]
-struct ShowSpellRequest {
-    tx_hex: String,
 }
 
 /// Creates a permissive CORS configuration layer for the API server.

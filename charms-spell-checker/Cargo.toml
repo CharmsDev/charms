@@ -11,7 +11,7 @@ license = "MIT"
 charms-app-runner = { path = "../charms-app-runner", version = "0.10.0" }
 charms-data = { path = "../charms-data", version = "0.10.0" }
 charms-client = { path = "../charms-client", version = "0.10.0" }
-sp1-zkvm = { version = "5.2.2", features = ["verify"] }
+sp1-zkvm = { version = "5.2.3", features = ["verify"] }
 
 [profile.release]
 codegen-units = 1
