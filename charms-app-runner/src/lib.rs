@@ -6,7 +6,7 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store};
+use wasmi::{Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store};
 
 #[derive(Clone)]
 pub struct AppRunner {
@@ -235,6 +235,7 @@ impl AppRunner {
         if count_cycles {
             config.consume_fuel(true);
         }
+        config.compilation_mode(CompilationMode::Lazy);
         Self {
             count_cycles,
             engine: Engine::new(&config),
