@@ -30,7 +30,6 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
-    bitcoin_tx::BitcoinTx,
     tx::{Tx, by_txid},
     well_formed,
 };
