@@ -71,15 +71,6 @@ pub struct Input {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub utxo_id: Option<UtxoId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(
-        alias = "sats",
-        alias = "coin",
-        alias = "coins",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub amount: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_from: Option<UtxoId>,
@@ -308,8 +299,6 @@ impl Spell {
             .iter()
             .map(|utxo_id| Input {
                 utxo_id: Some(utxo_id.clone()),
-                address: None, // TODO: impl
-                amount: None,  // TODO: impl
                 charms: None,
                 beamed_from: None,
             })
@@ -319,8 +308,6 @@ impl Spell {
             refs.iter()
                 .map(|utxo_id| Input {
                     utxo_id: Some(utxo_id.clone()),
-                    address: None, // TODO: impl
-                    amount: None,  // TODO: impl
                     charms: None,
                     beamed_from: None,
                 })
