@@ -163,7 +163,13 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let charms_tx = spell.to_tx(by_txid(&prev_txs))?;
+        let charms_tx = charms_client::to_tx(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            by_txid(&prev_txs),
+        );
+
         let cycles_spent = self.app_runner.run_all(
             &binaries,
             &charms_tx,

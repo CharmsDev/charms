@@ -218,16 +218,6 @@ pub enum AppCommands {
         /// Path to the app's Wasm binary.
         path: Option<PathBuf>,
     },
-
-    /// Test the app for a spell.
-    Run {
-        /// Path to spell source file (YAML/JSON).
-        #[arg(long, default_value = "/dev/stdin")]
-        spell: PathBuf,
-
-        /// Path to the app's Wasm binary.
-        path: Option<PathBuf>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -278,7 +268,6 @@ pub async fn run() -> anyhow::Result<()> {
             AppCommands::New { name } => app::new(&name),
             AppCommands::Vk { path } => app::vk(path),
             AppCommands::Build => app::build(),
-            AppCommands::Run { spell, path } => app::run(spell, path),
         },
         Commands::Wallet { command } => {
             let wallet_cli = wallet_cli();

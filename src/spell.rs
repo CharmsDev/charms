@@ -144,50 +144,6 @@ impl Spell {
         }
     }
 
-    /// Get a [`Transaction`] for the spell.
-    pub fn to_tx(&self, prev_txs: BTreeMap<TxId, Tx>) -> anyhow::Result<Transaction> {
-        let ins = self.strings_of_charms(&self.ins)?;
-        let empty_vec = vec![];
-        let refs = self.strings_of_charms(self.refs.as_ref().unwrap_or(&empty_vec))?;
-        let outs = self
-            .outs
-            .iter()
-            .map(|output| self.charms(&output.charms))
-            .collect::<Result<_, _>>()?;
-        let coin_outs = get_coin_outs(&self.outs)?;
-        let coin_ins = get_coin_ins(&self.ins)?;
-
-        let prev_txs = prev_txs
-            .into_iter()
-            .map(|(tx_id, tx)| (tx_id, (&tx).into()))
-            .collect();
-
-        let app_public_inputs = self
-            .apps
-            .iter()
-            .map(|(k, app)| {
-                (
-                    app.clone(),
-                    self.public_args
-                        .as_ref()
-                        .and_then(|public_args| public_args.get(k))
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-
-        Ok(Transaction {
-            ins,
-            refs,
-            outs,
-            coin_ins: Some(coin_ins),
-            coin_outs: Some(coin_outs),
-            prev_txs,
-            app_public_inputs,
-        })
-    }
-
     pub fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
         inputs
             .iter()
@@ -405,17 +361,6 @@ impl Spell {
             outs,
         })
     }
-}
-
-fn get_coin_ins(ins: &[Input]) -> anyhow::Result<Vec<NativeOutput>> {
-    ins.iter()
-        .map(|input| {
-            Ok(NativeOutput {
-                amount: input.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
-                dest: from_bech32(&input.address.as_ref().expect("address is expected"))?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
