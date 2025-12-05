@@ -306,7 +306,6 @@ pub struct SpellProverInput {
     pub prev_txs: Vec<Tx>,
     pub spell: NormalizedSpell,
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
-    /// indices of apps in the spell that have contract proofs
     pub app_input: Option<AppInput>,
 }
 
