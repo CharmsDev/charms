@@ -167,7 +167,7 @@ impl Spell {
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
-        BTreeMap<UtxoId, UtxoId>,
+        BTreeMap<usize, UtxoId>,
     )> {
         ensure!(self.version == CURRENT_VERSION);
 
@@ -254,16 +254,12 @@ impl Spell {
         let tx_ins_beamed_source_utxos = self
             .ins
             .iter()
-            .filter_map(|input| {
-                let tx_in = input
-                    .utxo_id
-                    .as_ref()
-                    .expect("inputs are expected to have utxo_id set")
-                    .clone();
+            .enumerate()
+            .filter_map(|(i, input)| {
                 input
                     .beamed_from
                     .as_ref()
-                    .map(|beam_source_utxo_id| (tx_in, beam_source_utxo_id.clone()))
+                    .map(|beam_source_utxo_id| (i, beam_source_utxo_id.clone()))
             })
             .collect();
 
@@ -434,7 +430,7 @@ pub trait Prove: Send + Sync {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)>;
 }
 
@@ -445,7 +441,7 @@ impl Prove for Prover {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         ensure!(
             !norm_spell.mock,
@@ -457,7 +453,7 @@ impl Prove for Prover {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &by_txid(&prev_txs),
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -526,7 +522,7 @@ impl Prove for MockProver {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         let norm_spell = make_mock(norm_spell);
 
@@ -535,7 +531,7 @@ impl Prove for MockProver {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &by_txid(&prev_txs),
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -1037,7 +1033,7 @@ pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()
 
 fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
     ensure!(
@@ -1057,7 +1053,8 @@ fn ensure_all_prev_txs_are_present(
     ensure!(
         tx_ins_beamed_source_utxos
             .iter()
-            .all(|(utxo_id, beaming_source_utxo_id)| {
+            .all(|(&i, beaming_source_utxo_id)| {
+                let utxo_id = &spell.tx.ins.as_ref().unwrap()[i];
                 prev_txs_by_id.contains_key(&utxo_id.0)
                     && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
             }),
@@ -1084,11 +1081,17 @@ impl ProveSpellTxImpl {
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, self.mock);
 
+        ensure!(well_formed(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos
+        ));
+
         let tx = to_tx(
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &prev_txs_by_id,
         );
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(
@@ -1098,11 +1101,6 @@ impl ProveSpellTxImpl {
             &app_private_inputs,
         )?;
         let total_cycles = cycles.iter().sum();
-        ensure!(well_formed(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos
-        ));
 
         match prove_request.chain.as_str() {
             BITCOIN => {

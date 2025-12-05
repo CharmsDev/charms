@@ -155,7 +155,7 @@ pub fn prev_spells(
 pub fn well_formed(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
 ) -> bool {
     check!(spell.version == CURRENT_VERSION);
     let directly_created_by_prev_txns = |utxo_id: &UtxoId| -> bool {
@@ -196,7 +196,8 @@ pub fn well_formed(
     );
     let beamed_source_utxos_point_to_placeholder_dest_utxos = tx_ins_beamed_source_utxos
         .iter()
-        .all(|(tx_in_utxo_id, beaming_source_utxo_id)| {
+        .all(|(&i, beaming_source_utxo_id)| {
+            let tx_in_utxo_id = &tx_ins[i];
             let prev_txid = tx_in_utxo_id.0;
             let prev_tx = prev_spells.get(&prev_txid);
             let Some((prev_spell, _tx_outs)) = prev_tx else {
@@ -234,9 +235,18 @@ pub fn apps(spell: &NormalizedSpell) -> Vec<App> {
 pub fn to_tx(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
-    prev_txs: BTreeMap<TxId, Tx>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    prev_txs: &BTreeMap<TxId, Tx>,
 ) -> Transaction {
+    let Some(tx_ins) = &spell.tx.ins else {
+        unreachable!("self.tx.ins MUST be Some at this point");
+    };
+
+    let tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId> = tx_ins_beamed_source_utxos
+        .iter()
+        .map(|(&i, utxo_id)| (tx_ins[i].clone(), utxo_id.clone()))
+        .collect();
+
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
         let charms = charms_in_utxo(prev_spell, utxo_id)
@@ -263,13 +273,9 @@ pub fn to_tx(
         prev_coins[utxo_id.1 as usize].clone()
     };
 
-    let Some(tx_ins) = &spell.tx.ins else {
-        unreachable!("self.tx.ins MUST be Some at this point");
-    };
-
     let prev_txs = prev_txs
-        .into_iter()
-        .map(|(tx_id, tx)| (tx_id, (&tx).into()))
+        .iter()
+        .map(|(tx_id, tx)| (tx_id.clone(), tx.into()))
         .collect();
 
     Transaction {
@@ -303,7 +309,7 @@ pub struct SpellProverInput {
     pub self_spell_vk: String,
     pub prev_txs: Vec<Tx>,
     pub spell: NormalizedSpell,
-    pub tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+    pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     /// indices of apps in the spell that have contract proofs
     pub app_input: Option<AppInput>,
 }

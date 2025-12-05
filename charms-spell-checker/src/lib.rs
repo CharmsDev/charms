@@ -13,7 +13,7 @@ pub(crate) fn is_correct(
     prev_txs: &Vec<Tx>,
     app_input: Option<AppInput>,
     spell_vk: &String,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
 ) -> bool {
     let prev_spells = charms_client::prev_spells(prev_txs, spell_vk, false);
 
@@ -39,7 +39,7 @@ pub(crate) fn is_correct(
         spell,
         &prev_spells,
         tx_ins_beamed_source_utxos,
-        by_txid(&prev_txs),
+        &by_txid(&prev_txs),
     );
     let tx_is_simple_transfer_or_app_contracts_satisfied =
         apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()

@@ -167,7 +167,7 @@ impl Check for SpellCli {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &by_txid(&prev_txs),
         );
 
         let cycles_spent = self.app_runner.run_all(
