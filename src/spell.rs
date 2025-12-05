@@ -1130,8 +1130,9 @@ impl ProveSpellTxImpl {
                         prev_txs_by_id
                             .get(&utxo_id.0)
                             .and_then(|prev_tx| {
-                                if let Tx::Bitcoin(BitcoinTx(prev_tx)) = prev_tx {
-                                    prev_tx
+                                if let Tx::Bitcoin(bitcoin_tx) = prev_tx {
+                                    bitcoin_tx
+                                        .inner()
                                         .output
                                         .get(utxo_id.1 as usize)
                                         .map(|o| o.value.to_sat())
@@ -1152,12 +1153,12 @@ impl ProveSpellTxImpl {
                 let funding_utxo_sats = prove_request.funding_utxo_value;
 
                 let bitcoin_tx = from_spell(&prove_request.spell)?;
-                let tx_size = bitcoin_tx.0.vsize();
+                let tx_size = bitcoin_tx.inner().vsize();
                 let (mut norm_spell, ..) = prove_request.spell.normalized()?;
                 norm_spell.tx.ins = None;
                 let proof_dummy: Vec<u8> = vec![0xff; 128];
                 let spell_cbor = util::write(&(norm_spell, proof_dummy))?;
-                let num_inputs = bitcoin_tx.0.input.len();
+                let num_inputs = bitcoin_tx.inner().input.len();
                 let estimated_bitcoin_fee: u64 = (111
                     + (spell_cbor.len() as u64 + 372) / 4
                     + tx_size as u64

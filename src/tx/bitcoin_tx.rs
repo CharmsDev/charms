@@ -243,7 +243,7 @@ pub fn tx_total_amount_in(prev_txs: &BTreeMap<TxId, Tx>, tx: &Transaction) -> Am
             let Tx::Bitcoin(tx) = prev_txs[&txid].clone() else {
                 unreachable!()
             };
-            tx.0.output[i as usize].value
+            tx.inner().output[i as usize].value
         })
         .sum::<Amount>()
 }
@@ -305,7 +305,7 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<BitcoinTx> {
         input,
         output,
     };
-    Ok(BitcoinTx(tx))
+    Ok(BitcoinTx::Simple(tx))
 }
 
 pub fn make_transactions(
@@ -350,10 +350,13 @@ pub fn make_transactions(
     let fee_rate = FeeRate::from_sat_per_kwu((fee_rate * 250.0) as u64);
 
     let tx = from_spell(&spell)?;
+    let BitcoinTx::Simple(tx) = tx else {
+        bail!("expected simple transaction")
+    };
 
     // Call the add_spell function
     let transactions = add_spell(
-        tx.0,
+        tx,
         spell_data,
         funding_utxo,
         Amount::from_sat(funding_utxo_value),
@@ -365,6 +368,6 @@ pub fn make_transactions(
     );
     Ok(transactions
         .into_iter()
-        .map(|tx| Tx::Bitcoin(BitcoinTx(tx)))
+        .map(|tx| Tx::Bitcoin(BitcoinTx::Simple(tx)))
         .collect())
 }

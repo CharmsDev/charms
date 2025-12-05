@@ -11,13 +11,30 @@ use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+#[serde_as]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BitcoinTx(pub bitcoin::Transaction);
+#[serde(untagged)]
+pub enum BitcoinTx {
+    Simple(bitcoin::Transaction),
+    WithProof {
+        tx: bitcoin::Transaction,
+
+        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
+        block_proof: Vec<Proof>,
+    },
+}
 
 impl BitcoinTx {
     pub fn from_hex(hex: &str) -> anyhow::Result<Self> {
         let tx = deserialize_hex(hex)?;
-        Ok(Self(tx))
+        Ok(Self::Simple(tx))
+    }
+
+    pub fn inner(&self) -> &bitcoin::Transaction {
+        match self {
+            BitcoinTx::Simple(tx) => tx,
+            BitcoinTx::WithProof { tx, .. } => tx,
+        }
     }
 }
 
@@ -27,7 +44,7 @@ impl EnchantedTx for BitcoinTx {
         spell_vk: &str,
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell> {
-        let tx = &self.0;
+        let tx = self.inner();
 
         let Some((spell_tx_in, _tx_ins)) = tx.input.split_last() else {
             bail!("transaction does not have inputs")
@@ -58,19 +75,20 @@ impl EnchantedTx for BitcoinTx {
     }
 
     fn tx_outs_len(&self) -> usize {
-        self.0.output.len()
+        self.inner().output.len()
     }
 
     fn tx_id(&self) -> TxId {
-        TxId(self.0.compute_txid().to_byte_array())
+        TxId(self.inner().compute_txid().to_byte_array())
     }
 
     fn hex(&self) -> String {
-        serialize_hex(&self.0)
+        serialize_hex(self.inner())
     }
 
     fn spell_ins(&self) -> Vec<UtxoId> {
-        self.0.input[..self.0.input.len() - 1] // exclude spell commitment input
+        let tx = self.inner();
+        tx.input[..tx.input.len() - 1] // exclude spell commitment input
             .iter()
             .map(|tx_in| {
                 let out_point = tx_in.previous_output;
@@ -80,7 +98,7 @@ impl EnchantedTx for BitcoinTx {
     }
 
     fn all_coin_outs(&self) -> Vec<NativeOutput> {
-        self.0
+        self.inner()
             .output
             .iter()
             .map(|tx_out| NativeOutput {
@@ -91,7 +109,10 @@ impl EnchantedTx for BitcoinTx {
     }
 
     fn has_finality_proof(&self) -> bool {
-        false
+        match self {
+            BitcoinTx::Simple(_) => false,
+            BitcoinTx::WithProof { .. } => todo!(),
+        }
     }
 }
 

@@ -57,7 +57,7 @@ impl Tx {
     }
 
     pub fn from_hex(hex: &str) -> anyhow::Result<Self> {
-        if let Ok(b_tx @ BitcoinTx(_)) = BitcoinTx::from_hex(hex) {
+        if let Ok(b_tx) = BitcoinTx::from_hex(hex) {
             Ok(Self::Bitcoin(b_tx))
         } else if let Ok(c_tx @ CardanoTx(_)) = CardanoTx::from_hex(hex) {
             Ok(Self::Cardano(c_tx))
