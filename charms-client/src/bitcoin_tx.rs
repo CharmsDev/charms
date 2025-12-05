@@ -9,6 +9,7 @@ use bitcoin::{
 };
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BitcoinTx(pub bitcoin::Transaction);
