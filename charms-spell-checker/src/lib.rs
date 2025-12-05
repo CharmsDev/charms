@@ -1,9 +1,6 @@
 pub mod bin;
 
-use charms_client::{
-    NormalizedSpell,
-    tx::{Tx, by_txid},
-};
+use charms_client::{NormalizedSpell, tx::Tx};
 use charms_data::{App, AppInput, Data, Transaction, UtxoId, check, is_simple_transfer};
 use std::collections::{BTreeMap, BTreeSet};
 
