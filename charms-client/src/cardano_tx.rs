@@ -130,6 +130,10 @@ impl EnchantedTx for CardanoTx {
             })
             .collect()
     }
+
+    fn has_finality_proof(&self) -> bool {
+        false
+    }
 }
 
 pub const MINT_SCRIPT: &[u8] = &hex!(

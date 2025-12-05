@@ -24,6 +24,7 @@ pub trait EnchantedTx {
     fn hex(&self) -> String;
     fn spell_ins(&self) -> Vec<UtxoId>;
     fn all_coin_outs(&self) -> Vec<NativeOutput>;
+    fn has_finality_proof(&self) -> bool;
 }
 
 serde_with::serde_conv!(

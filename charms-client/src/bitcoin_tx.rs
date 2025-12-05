@@ -88,6 +88,10 @@ impl EnchantedTx for BitcoinTx {
             })
             .collect()
     }
+
+    fn has_finality_proof(&self) -> bool {
+        false
+    }
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
