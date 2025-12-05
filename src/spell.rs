@@ -453,7 +453,7 @@ impl Prove for Prover {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            &by_txid(&prev_txs),
+            &prev_txs,
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -531,7 +531,7 @@ impl Prove for MockProver {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            &by_txid(&prev_txs),
+            &prev_txs,
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -1091,7 +1091,7 @@ impl ProveSpellTxImpl {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            &prev_txs_by_id,
+            &prev_txs,
         );
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(

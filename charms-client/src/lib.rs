@@ -131,16 +131,15 @@ pub fn utxo_id_hash(utxo_id: &UtxoId) -> B32 {
 /// Extract spells from previous transactions.
 #[tracing::instrument(level = "debug", skip(prev_txs, spell_vk))]
 pub fn prev_spells(
-    prev_txs: &Vec<Tx>,
+    prev_txs: &[Tx],
     spell_vk: &str,
     mock: bool,
 ) -> BTreeMap<TxId, (NormalizedSpell, usize)> {
     prev_txs
         .iter()
         .map(|tx| {
-            let tx_id = tx.tx_id();
             (
-                tx_id,
+                tx.tx_id(),
                 (
                     extended_normalized_spell(spell_vk, tx, mock),
                     tx.tx_outs_len(),
@@ -236,7 +235,7 @@ pub fn to_tx(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
-    prev_txs: &BTreeMap<TxId, Tx>,
+    prev_txs: &[Tx],
 ) -> Transaction {
     let Some(tx_ins) = &spell.tx.ins else {
         unreachable!("self.tx.ins MUST be Some at this point");
@@ -273,10 +272,7 @@ pub fn to_tx(
         prev_coins[utxo_id.1 as usize].clone()
     };
 
-    let prev_txs = prev_txs
-        .iter()
-        .map(|(tx_id, tx)| (tx_id.clone(), tx.into()))
-        .collect();
+    let prev_txs = prev_txs.iter().map(|tx| (tx.tx_id(), tx.into())).collect();
 
     Transaction {
         ins: tx_ins.iter().map(from_utxo_id).collect(),
