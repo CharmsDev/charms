@@ -1161,12 +1161,17 @@ impl ProveSpellTxImpl {
 }
 
 pub fn from_hex_txs(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
-    // TODO parse txs with finality proofs
     prev_txs
         .iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|tx_hex| serde_yaml::from_str(tx_hex).context("failed to parse tx"))
+        .map(|tx_hex| {
+            Tx::try_from(tx_hex)
+                .context("failed to convert from hex")
+                .or_else(|_| {
+                    serde_yaml::from_str(tx_hex).context("failed to convert from YAML/JSON")
+                })
+        })
         .collect()
 }
 

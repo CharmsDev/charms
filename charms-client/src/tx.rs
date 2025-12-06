@@ -40,13 +40,10 @@ pub enum Tx {
     Cardano(CardanoTx),
 }
 
-impl Tx {
-    pub fn new(tx: impl Into<Tx>) -> Self {
-        tx.into()
-    }
+impl TryFrom<&str> for Tx {
+    type Error = anyhow::Error;
 
-    #[cfg(test)]
-    pub(crate) fn from_hex(hex: &str) -> anyhow::Result<Self> {
+    fn try_from(hex: &str) -> Result<Self, Self::Error> {
         if let Ok(b_tx) = BitcoinTx::from_hex(hex) {
             Ok(Self::Bitcoin(b_tx))
         } else if let Ok(c_tx) = CardanoTx::from_hex(hex) {
@@ -54,6 +51,12 @@ impl Tx {
         } else {
             bail!("invalid hex")
         }
+    }
+}
+
+impl Tx {
+    pub fn new(tx: impl Into<Tx>) -> Self {
+        tx.into()
     }
 
     pub fn hex(&self) -> String {
@@ -197,11 +200,11 @@ mod tests {
 
         let b_tx_hex = "0200000000010115ccf0534b7969e5ac0f4699e51bf7805168244057059caa333397fcf8a9acdd0000000000fdffffff027a6faf85150000001600147b458433d0c04323426ef88365bd4cfef141ac7520a107000000000022512087a397fc19d816b6f938dad182a54c778d2d5db8b31f4528a758b989d42f0b78024730440220072d64b2e3bbcd27bd79cb8859c83ca524dad60dc6310569c2a04c997d116381022071d4df703d037a9fe16ccb1a2b8061f10cda86ccbb330a49c5dcc95197436c960121030db9616d96a7b7a8656191b340f77e905ee2885a09a7a1e80b9c8b64ec746fb300000000";
 
-        let c_tx = Tx::from_hex(c_tx_hex).unwrap();
+        let c_tx: Tx = Tx::try_from(c_tx_hex).unwrap();
         let Tx::Cardano(_) = c_tx.clone() else {
             unreachable!("not a cardano tx: {c_tx:?}")
         };
-        let b_tx = Tx::from_hex(b_tx_hex).unwrap();
+        let b_tx: Tx = Tx::try_from(b_tx_hex).unwrap();
         let Tx::Bitcoin(_) = b_tx.clone() else {
             unreachable!("not a bitcoin tx: {b_tx:?}")
         };
@@ -217,8 +220,8 @@ mod tests {
 
         let b_tx_hex = "0200000000010115ccf0534b7969e5ac0f4699e51bf7805168244057059caa333397fcf8a9acdd0000000000fdffffff027a6faf85150000001600147b458433d0c04323426ef88365bd4cfef141ac7520a107000000000022512087a397fc19d816b6f938dad182a54c778d2d5db8b31f4528a758b989d42f0b78024730440220072d64b2e3bbcd27bd79cb8859c83ca524dad60dc6310569c2a04c997d116381022071d4df703d037a9fe16ccb1a2b8061f10cda86ccbb330a49c5dcc95197436c960121030db9616d96a7b7a8656191b340f77e905ee2885a09a7a1e80b9c8b64ec746fb300000000";
 
-        let c_tx = Tx::from_hex(c_tx_hex).unwrap();
-        let b_tx = Tx::from_hex(b_tx_hex).unwrap();
+        let c_tx: Tx = Tx::try_from(c_tx_hex).unwrap();
+        let b_tx: Tx = Tx::try_from(b_tx_hex).unwrap();
 
         let v0 = vec![b_tx, c_tx];
         let v0_cbor = ciborium::Value::serialized(&v0).unwrap();
