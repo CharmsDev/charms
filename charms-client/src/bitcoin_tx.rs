@@ -1,8 +1,12 @@
 use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    TxIn,
-    consensus::encode::{deserialize_hex, serialize_hex},
+    CompactTarget, MerkleBlock, Target, Transaction, TxIn, Txid,
+    block::Header,
+    consensus::{
+        Decodable,
+        encode::{deserialize_hex, serialize_hex},
+    },
     hashes::Hash,
     opcodes::all::{OP_ENDIF, OP_IF},
     script::{Instruction, PushBytes},
@@ -15,12 +19,15 @@ use serde_with::serde_as;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BitcoinTx {
-    Simple(bitcoin::Transaction),
-    WithProof {
-        tx: bitcoin::Transaction,
+    Simple(Transaction),
+    WithBlockProof {
+        tx: Transaction,
+
+        #[serde_as(as = "serde_with::hex::Hex")]
+        proof: Proof,
 
         #[serde_as(as = "Vec<serde_with::hex::Hex>")]
-        block_proof: Vec<Proof>,
+        headers: Vec<Proof>,
     },
 }
 
@@ -33,7 +40,7 @@ impl BitcoinTx {
     pub fn inner(&self) -> &bitcoin::Transaction {
         match self {
             BitcoinTx::Simple(tx) => tx,
-            BitcoinTx::WithProof { tx, .. } => tx,
+            BitcoinTx::WithBlockProof { tx, .. } => tx,
         }
     }
 }
@@ -111,9 +118,54 @@ impl EnchantedTx for BitcoinTx {
     fn has_finality_proof(&self) -> bool {
         match self {
             BitcoinTx::Simple(_) => false,
-            BitcoinTx::WithProof { .. } => todo!(),
+            BitcoinTx::WithBlockProof { tx, proof, headers } => {
+                verify_finality_proof(tx, proof, headers).is_ok()
+            }
         }
     }
+}
+
+const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bits (6 blocks)
+
+fn verify_finality_proof(
+    tx: &Transaction,
+    block_proof: &Proof,
+    headers: &[Proof],
+) -> anyhow::Result<()> {
+    let tx_block_proof = MerkleBlock::consensus_decode(&mut block_proof.as_slice())?;
+
+    let txid = tx.compute_txid();
+
+    block_has_tx(&tx_block_proof, txid)?;
+
+    let tx_block_header = tx_block_proof.header;
+    let _ = tx_block_header.validate_pow(tx_block_header.target())?;
+
+    let finality_target = Target::from_compact(CompactTarget::from_consensus(FINALITY_TARGET_BITS));
+    let total_required_work = finality_target.to_work();
+
+    let (_, cumulative_work) = headers.iter().try_fold(
+        (tx_block_header, tx_block_header.work()),
+        |(prev_header, prev_work), header| {
+            let header = Header::consensus_decode(&mut header.as_slice())?;
+            ensure!(header.prev_blockhash == prev_header.block_hash());
+            Ok((header, prev_work + header.work()))
+        },
+    )?;
+
+    ensure!(cumulative_work >= total_required_work, "insufficient work");
+
+    Ok(())
+}
+
+fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> {
+    let mut txs = vec![];
+    {
+        let mut _indexes = vec![];
+        tx_block_proof.extract_matches(&mut txs, &mut _indexes)?;
+    }
+    ensure!(txs.first() == Some(&txid));
+    Ok(())
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
@@ -180,4 +232,40 @@ pub fn parse_spell_and_proof(spell_tx_in: &TxIn) -> anyhow::Result<(NormalizedSp
     let (spell, proof): (NormalizedSpell, Proof) = util::read(spell_data.as_slice())
         .map_err(|e| anyhow!("could not parse spell and proof: {}", e))?;
     Ok((spell, proof))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compute_finality_target(target_bits: u32) -> CompactTarget {
+        let compact = CompactTarget::from_consensus(target_bits);
+        let work = Target::from_compact(compact).to_work();
+        let required = work + work + work + work + work + work;
+        required.to_target().to_compact_lossy()
+    }
+
+    const TARGET_BITS: u32 = 0x1701e2a0;
+
+    #[test]
+    fn test_target_bits() {
+        let finality_target_bits = compute_finality_target(TARGET_BITS);
+        dbg!(format!("0x{:x}", finality_target_bits));
+        assert_eq!(
+            FINALITY_TARGET_BITS,
+            finality_target_bits.to_consensus() + 1,
+        );
+    }
+
+    #[test]
+    fn cumulative_work_test() {
+        let finality_target =
+            Target::from_compact(CompactTarget::from_consensus(FINALITY_TARGET_BITS));
+
+        let work = Target::from_compact(CompactTarget::from_consensus(TARGET_BITS)).to_work();
+        let cumulative_work = work + work + work + work + work + work;
+
+        let required_work = finality_target.to_work();
+        assert!(dbg!(cumulative_work) >= dbg!(required_work));
+    }
 }
