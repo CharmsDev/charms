@@ -28,13 +28,6 @@ pub trait EnchantedTx {
 }
 
 serde_with::serde_conv!(
-    BitcoinTxHex,
-    BitcoinTx,
-    |tx: &BitcoinTx| tx.hex(),
-    |s: String| BitcoinTx::from_hex(&s)
-);
-
-serde_with::serde_conv!(
     CardanoTxHex,
     CardanoTx,
     |tx: &CardanoTx| tx.hex(),
@@ -46,7 +39,7 @@ serde_with::serde_conv!(
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Tx {
     #[serde(alias = "bitcoin")]
-    Bitcoin(#[serde_as(as = "BitcoinTxHex")] BitcoinTx),
+    Bitcoin(BitcoinTx),
     #[serde(alias = "cardano")]
     Cardano(#[serde_as(as = "CardanoTxHex")] CardanoTx),
 }

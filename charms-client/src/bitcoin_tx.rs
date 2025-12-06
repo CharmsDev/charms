@@ -3,10 +3,7 @@ use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
     CompactTarget, MerkleBlock, Target, Transaction, TxIn, Txid,
     block::Header,
-    consensus::{
-        Decodable,
-        encode::{deserialize_hex, serialize_hex},
-    },
+    consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
     opcodes::all::{OP_ENDIF, OP_IF},
     script::{Instruction, PushBytes},
@@ -15,19 +12,41 @@ use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+serde_with::serde_conv!(
+    TransactionHex,
+    Transaction,
+    |tx: &Transaction| serialize_hex(tx),
+    |s: String| deserialize_hex(&s)
+);
+
+serde_with::serde_conv!(
+    MerkleBlockHex,
+    MerkleBlock,
+    |tx: &MerkleBlock| serialize_hex(tx),
+    |s: String| deserialize_hex(&s)
+);
+
+serde_with::serde_conv!(
+    HeaderHex,
+    Header,
+    |tx: &Header| serialize_hex(tx),
+    |s: String| deserialize_hex(&s)
+);
+
 #[serde_as]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum BitcoinTx {
-    Simple(Transaction),
+    Simple(#[serde_as(as = "TransactionHex")] Transaction),
     WithBlockProof {
+        #[serde_as(as = "TransactionHex")]
         tx: Transaction,
 
-        #[serde_as(as = "serde_with::hex::Hex")]
-        proof: Proof,
+        #[serde_as(as = "MerkleBlockHex")]
+        proof: MerkleBlock,
 
-        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
-        headers: Vec<Proof>,
+        #[serde_as(as = "Vec<HeaderHex>")]
+        headers: Vec<Header>,
     },
 }
 
@@ -129,16 +148,12 @@ const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bits (6
 
 fn verify_finality_proof(
     tx: &Transaction,
-    block_proof: &Proof,
-    headers: &[Proof],
+    tx_block_proof: &MerkleBlock,
+    headers: &[Header],
 ) -> anyhow::Result<()> {
-    let tx_block_proof = MerkleBlock::consensus_decode(&mut block_proof.as_slice())?;
+    block_has_tx(&tx_block_proof, tx.compute_txid())?;
 
-    let txid = tx.compute_txid();
-
-    block_has_tx(&tx_block_proof, txid)?;
-
-    let tx_block_header = tx_block_proof.header;
+    let tx_block_header = &tx_block_proof.header;
     let _ = tx_block_header.validate_pow(tx_block_header.target())?;
 
     let finality_target = Target::from_compact(CompactTarget::from_consensus(FINALITY_TARGET_BITS));
@@ -147,7 +162,6 @@ fn verify_finality_proof(
     let (_, cumulative_work) = headers.iter().try_fold(
         (tx_block_header, tx_block_header.work()),
         |(prev_header, prev_work), header| {
-            let header = Header::consensus_decode(&mut header.as_slice())?;
             ensure!(header.prev_blockhash == prev_header.block_hash());
             Ok((header, prev_work + header.work()))
         },
