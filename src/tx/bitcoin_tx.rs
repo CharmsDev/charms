@@ -1,5 +1,4 @@
 use crate::{
-    cli::BITCOIN,
     script::{control_block, data_script, taproot_spend_info},
     spell,
     spell::{CharmsFee, Input, Output, Spell},
@@ -17,7 +16,10 @@ use bitcoin::{
     taproot::LeafVersion,
     transaction::Version,
 };
-use charms_client::{bitcoin_tx::BitcoinTx, tx::Tx};
+use charms_client::{
+    bitcoin_tx::BitcoinTx,
+    tx::{Chain, Tx},
+};
 use charms_data::{TxId, UtxoId};
 use std::{collections::BTreeMap, str::FromStr};
 
@@ -336,7 +338,7 @@ pub fn make_transactions(
 
     let charms_fee_pubkey = charms_fee
         .as_ref()
-        .and_then(|charms_fee| charms_fee.fee_address(BITCOIN, network))
+        .and_then(|charms_fee| charms_fee.fee_address(&Chain::Bitcoin, network))
         .and_then(|fee_address| {
             Address::from_str(fee_address)
                 .ok()

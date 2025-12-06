@@ -21,15 +21,13 @@ use crate::{
 };
 use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
+use charms_client::tx::Chain;
 use charms_data::check;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
-
-pub const BITCOIN: &str = "bitcoin";
-pub const CARDANO: &str = "cardano";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -129,7 +127,7 @@ pub struct SpellProveParams {
 
     /// Target chain, defaults to `bitcoin`.
     #[arg(long, default_value = "bitcoin")]
-    chain: String,
+    chain: Chain,
 
     /// Is mock mode enabled?
     #[arg(long, default_value = "false", hide_env = true)]
@@ -180,7 +178,7 @@ pub enum SpellCommands {
 #[derive(Args)]
 pub struct ShowSpellParams {
     #[arg(long, default_value = "bitcoin")]
-    chain: String,
+    chain: Chain,
 
     /// Hex-encoded transaction.
     #[arg(long)]
@@ -321,7 +319,7 @@ pub(crate) fn charms_fee_settings() -> Option<CharmsFee> {
     .expect("should be able to parse the fee settings file");
 
     assert!(
-        fee_settings.fee_addresses[BITCOIN]
+        fee_settings.fee_addresses[&Chain::Bitcoin]
             .iter()
             .all(|(network, address)| {
                 let network = Network::from_core_arg(network)

@@ -2,7 +2,7 @@
 use crate::utils::block_on;
 use crate::{
     PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK, app,
-    cli::{BITCOIN, CARDANO, charms_fee_settings, prove_impl},
+    cli::{charms_fee_settings, prove_impl},
     tx::{bitcoin_tx, bitcoin_tx::from_spell, cardano_tx},
     utils,
     utils::{BoxedSP1Prover, Shared, TRANSIENT_PROVER_FAILURE},
@@ -30,7 +30,7 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
-    tx::{Tx, by_txid},
+    tx::{Chain, Tx, by_txid},
     well_formed,
 };
 use charms_data::{
@@ -658,7 +658,7 @@ pub type FeeAddressForNetwork = BTreeMap<String, String>;
 pub struct CharmsFee {
     /// Fee addresses for each chain (bitcoin, cardano, etc.) further broken down by network
     /// (mainnet, testnet, etc.).
-    pub fee_addresses: BTreeMap<String, FeeAddressForNetwork>,
+    pub fee_addresses: BTreeMap<Chain, FeeAddressForNetwork>,
     /// Fee rate in sats per mega cycle.
     pub fee_rate: u64,
     /// Base fee in sats.
@@ -666,7 +666,7 @@ pub struct CharmsFee {
 }
 
 impl CharmsFee {
-    pub fn fee_address(&self, chain: &str, network: &str) -> Option<&str> {
+    pub fn fee_address(&self, chain: &Chain, network: &str) -> Option<&str> {
         self.fee_addresses.get(chain).and_then(|fee_addresses| {
             fee_addresses
                 .get(network)
@@ -686,7 +686,7 @@ pub struct ProveRequest {
     pub funding_utxo_value: u64,
     pub change_address: String,
     pub fee_rate: f64,
-    pub chain: String,
+    pub chain: Chain,
     pub collateral_utxo: Option<UtxoId>,
 }
 
@@ -737,7 +737,7 @@ impl ProveSpellTxImpl {
             collateral_utxo,
         } = prove_request;
 
-        if chain.as_str() == CARDANO && collateral_utxo.is_none() {
+        if chain == Chain::Cardano && collateral_utxo.is_none() {
             bail!("Collateral UTXO is required for Cardano spells");
         }
 
@@ -766,8 +766,8 @@ impl ProveSpellTxImpl {
 
         let charms_fee = self.charms_fee_settings.clone();
 
-        match chain.as_str() {
-            BITCOIN => {
+        match chain {
+            Chain::Bitcoin => {
                 let txs = bitcoin_tx::make_transactions(
                     &spell,
                     funding_utxo,
@@ -781,7 +781,7 @@ impl ProveSpellTxImpl {
                 )?;
                 Ok(txs)
             }
-            CARDANO => {
+            Chain::Cardano => {
                 let txs = cardano_tx::make_transactions(
                     &spell,
                     funding_utxo,
@@ -796,7 +796,6 @@ impl ProveSpellTxImpl {
                 )?;
                 Ok(txs)
             }
-            _ => bail!("unsupported chain: {}", chain),
         }
     }
 }
@@ -1075,8 +1074,8 @@ impl ProveSpellTxImpl {
         )?;
         let total_cycles = cycles.iter().sum();
 
-        match prove_request.chain.as_str() {
-            BITCOIN => {
+        match prove_request.chain {
+            Chain::Bitcoin => {
                 let change_address = bitcoin::Address::from_str(&prove_request.change_address)?;
 
                 let network = match &change_address {
@@ -1152,11 +1151,10 @@ impl ProveSpellTxImpl {
                     "total inputs value must be greater than total outputs value plus fees"
                 );
             }
-            CARDANO => {
+            Chain::Cardano => {
                 // TODO
                 tracing::warn!("spell validation for cardano is not yet implemented");
             }
-            _ => bail!("unsupported chain: {}", prove_request.chain.as_str()),
         }
         Ok((norm_spell, total_cycles))
     }

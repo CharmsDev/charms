@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sp1_primitives::io::SP1PublicValues;
 use sp1_verifier::Groth16Verifier;
 use std::collections::BTreeMap;
-use strum::{EnumDiscriminants, IntoStaticStr};
+use strum::{AsRefStr, EnumDiscriminants, EnumString};
 
 #[enum_dispatch]
 pub trait EnchantedTx {
@@ -28,9 +28,12 @@ pub trait EnchantedTx {
 }
 
 #[enum_dispatch(EnchantedTx)]
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, EnumDiscriminants, IntoStaticStr)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, EnumDiscriminants)]
 #[serde(rename_all = "snake_case")]
-#[strum_discriminants(name(Chains), derive(IntoStaticStr))]
+#[strum_discriminants(
+    name(Chain),
+    derive(AsRefStr, EnumString, Ord, PartialOrd, Serialize, Deserialize)
+)]
 #[strum_discriminants(strum(serialize_all = "snake_case"))]
 pub enum Tx {
     Bitcoin(BitcoinTx),
@@ -183,10 +186,8 @@ mod tests {
 
     #[test]
     fn chain_names() {
-        let b: &str = Chains::Bitcoin.into();
-        let c: &str = Chains::Cardano.into();
-        assert_eq!(b, "bitcoin");
-        assert_eq!(c, "cardano");
+        assert_eq!(Chain::Bitcoin.as_ref(), "bitcoin");
+        assert_eq!(Chain::Cardano.as_ref(), "cardano");
     }
 
     #[test]

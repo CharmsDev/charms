@@ -1,6 +1,6 @@
 use crate::{
     cli,
-    cli::{BITCOIN, CARDANO, SpellCheckParams, SpellProveParams},
+    cli::{SpellCheckParams, SpellProveParams},
     spell::{
         ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
         from_hex_txs,
@@ -10,7 +10,7 @@ use anyhow::{Result, ensure};
 use charms_app_runner::AppRunner;
 use charms_client::{
     CURRENT_VERSION, ensure_no_zero_amounts,
-    tx::{Tx, by_txid},
+    tx::{Chain, Tx, by_txid},
 };
 use charms_data::UtxoId;
 use charms_lib::SPELL_VK;
@@ -93,20 +93,20 @@ impl Prove for SpellCli {
             funding_utxo_value,
             change_address,
             fee_rate,
-            chain: chain.clone(),
+            chain,
             collateral_utxo,
         };
         let transactions = spell_prover.prove_spell_tx(prove_request).await?;
 
-        match chain.as_str() {
-            BITCOIN => {
+        match chain {
+            Chain::Bitcoin => {
                 // Convert transactions to hex and create JSON array
                 let hex_txs: Vec<Tx> = transactions;
 
                 // Print JSON array of transaction hexes
                 println!("{}", serde_json::to_string(&hex_txs)?);
             }
-            CARDANO => {
+            Chain::Cardano => {
                 let Some(tx) = transactions.into_iter().next() else {
                     unreachable!()
                 };
@@ -117,7 +117,6 @@ impl Prove for SpellCli {
                 });
                 println!("{}", tx_draft);
             }
-            _ => unreachable!(),
         }
 
         Ok(())
