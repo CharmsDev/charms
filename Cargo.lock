@@ -2128,6 +2128,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "ark-snark",
  "bitcoin",
+ "charms-app-runner",
  "charms-data",
  "ciborium",
  "cml-chain",

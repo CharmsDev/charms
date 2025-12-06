@@ -535,6 +535,7 @@ dependencies = [
  "ark-serialize",
  "ark-snark",
  "bitcoin",
+ "charms-app-runner",
  "charms-data",
  "cml-chain",
  "enum_dispatch",
@@ -565,7 +566,6 @@ dependencies = [
 name = "charms-spell-checker"
 version = "0.10.0"
 dependencies = [
- "charms-app-runner",
  "charms-client",
  "charms-data",
  "sp1-zkvm",

@@ -1,6 +1,8 @@
 use crate::tx::{EnchantedTx, Tx, extended_normalized_spell};
+use charms_app_runner::AppRunner;
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
+    is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -307,6 +309,58 @@ pub struct SpellProverInput {
     pub spell: NormalizedSpell,
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     pub app_input: Option<AppInput>,
+}
+
+/// Check if the spell is correct.
+pub fn is_correct(
+    spell: &NormalizedSpell,
+    prev_txs: &Vec<Tx>,
+    app_input: Option<AppInput>,
+    spell_vk: &String,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+) -> bool {
+    let prev_spells = prev_spells(&prev_txs, spell_vk, false);
+
+    check!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
+
+    let Some(prev_txids) = spell.tx.prev_txids() else {
+        unreachable!("the spell is well formed: tx.ins MUST be Some");
+    };
+    let all_prev_txids: BTreeSet<_> = tx_ins_beamed_source_utxos
+        .values()
+        .map(|u| &u.0)
+        .chain(prev_txids)
+        .collect();
+    check!(all_prev_txids == prev_spells.keys().collect());
+
+    let apps = apps(spell);
+
+    let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
+    let tx_is_simple_transfer_or_app_contracts_satisfied =
+        apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()
+            || app_input.is_some_and(|app_input| {
+                apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
+            });
+    check!(tx_is_simple_transfer_or_app_contracts_satisfied);
+
+    true
+}
+
+fn apps_satisfied(
+    app_input: &AppInput,
+    app_public_inputs: &BTreeMap<App, Data>,
+    tx: &Transaction,
+) -> bool {
+    let app_runner = AppRunner::new(false);
+    app_runner
+        .run_all(
+            &app_input.app_binaries,
+            &tx,
+            app_public_inputs,
+            &app_input.app_private_inputs,
+        )
+        .expect("all apps should run successfully");
+    true
 }
 
 #[cfg(test)]
