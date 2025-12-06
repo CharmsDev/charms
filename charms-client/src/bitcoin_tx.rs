@@ -134,7 +134,7 @@ impl EnchantedTx for BitcoinTx {
             .collect()
     }
 
-    fn has_finality_proof(&self) -> bool {
+    fn proven_final(&self) -> bool {
         match self {
             BitcoinTx::Simple(_) => false,
             BitcoinTx::WithBlockProof { tx, proof, headers } => {

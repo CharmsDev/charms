@@ -1,4 +1,4 @@
-use crate::tx::{EnchantedTx, Tx, extended_normalized_spell};
+use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
 use charms_app_runner::AppRunner;
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
@@ -318,8 +318,14 @@ pub fn is_correct(
     app_input: Option<AppInput>,
     spell_vk: &String,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    mock: bool,
 ) -> bool {
-    let prev_spells = prev_spells(&prev_txs, spell_vk, false);
+    check!(beaming_txs_have_finality_proofs(
+        prev_txs,
+        tx_ins_beamed_source_utxos
+    ));
+
+    let prev_spells = prev_spells(&prev_txs, spell_vk, mock);
 
     check!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 
@@ -344,6 +350,22 @@ pub fn is_correct(
     check!(tx_is_simple_transfer_or_app_contracts_satisfied);
 
     true
+}
+
+fn beaming_txs_have_finality_proofs(
+    prev_txs: &Vec<Tx>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+) -> bool {
+    let prev_txs_by_txid: BTreeMap<TxId, Tx> = by_txid(prev_txs);
+    let beaming_source_txids: BTreeSet<&TxId> = tx_ins_beamed_source_utxos
+        .values()
+        .map(|u| &u.0)
+        .collect::<BTreeSet<_>>();
+    beaming_source_txids.iter().all(|&txid| {
+        prev_txs_by_txid
+            .get(txid)
+            .is_some_and(|tx| tx.proven_final())
+    })
 }
 
 fn apps_satisfied(

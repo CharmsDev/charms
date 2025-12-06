@@ -131,7 +131,7 @@ impl EnchantedTx for CardanoTx {
             .collect()
     }
 
-    fn has_finality_proof(&self) -> bool {
+    fn proven_final(&self) -> bool {
         false
     }
 }
