@@ -9,10 +9,20 @@ use cml_chain::{
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
 use hex_literal::hex;
+use serde_with::serde_as;
 use std::collections::BTreeMap;
 
+serde_with::serde_conv!(
+    TransactionHex,
+    Transaction,
+    |tx: &Transaction| hex::encode(tx.to_canonical_cbor_bytes()),
+    |s: String| Transaction::from_cbor_bytes(&hex::decode(s.as_bytes())?)
+        .map_err(|e| anyhow!("{}", e))
+);
+
+#[serde_as]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct CardanoTx(pub Transaction);
+pub struct CardanoTx(#[serde_as(as = "TransactionHex")] pub Transaction);
 
 impl PartialEq for CardanoTx {
     fn eq(&self, other: &Self) -> bool {
