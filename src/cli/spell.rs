@@ -1,11 +1,14 @@
 use crate::{
     cli,
     cli::{BITCOIN, CARDANO, SpellCheckParams, SpellProveParams},
-    spell::{ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_no_zero_amounts},
+    spell::{ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present},
 };
 use anyhow::{Result, ensure};
 use charms_app_runner::AppRunner;
-use charms_client::{CURRENT_VERSION, tx::Tx};
+use charms_client::{
+    CURRENT_VERSION, ensure_no_zero_amounts,
+    tx::{Tx, by_txid},
+};
 use charms_data::UtxoId;
 use charms_lib::SPELL_VK;
 use serde_json::json;
@@ -147,11 +150,16 @@ impl Check for SpellCli {
             .map(|tx_hex| Tx::from_hex(tx_hex))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, &SPELL_VK, mock);
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
 
         ensure_no_zero_amounts(&norm_spell)?;
+        ensure_all_prev_txs_are_present(
+            &norm_spell,
+            &tx_ins_beamed_source_utxos,
+            &by_txid(&prev_txs),
+        )?;
 
         ensure!(
             charms_client::well_formed(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos),

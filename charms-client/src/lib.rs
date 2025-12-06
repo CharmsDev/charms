@@ -1,7 +1,8 @@
 use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
+use anyhow::{anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
+    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
     is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
@@ -159,6 +160,7 @@ pub fn well_formed(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
 ) -> bool {
     check!(spell.version == CURRENT_VERSION);
+    check!(ensure_no_zero_amounts(spell).is_ok());
     let directly_created_by_prev_txns = |utxo_id: &UtxoId| -> bool {
         let tx_id = utxo_id.0;
         prev_spells
@@ -188,12 +190,7 @@ pub fn well_formed(
     };
     check!(
         tx_ins.iter().all(directly_created_by_prev_txns)
-            && spell
-                .tx
-                .refs
-                .iter()
-                .flatten()
-                .all(directly_created_by_prev_txns)
+            && (spell.tx.refs.iter().flatten()).all(directly_created_by_prev_txns)
     );
     let beamed_source_utxos_point_to_placeholder_dest_utxos = tx_ins_beamed_source_utxos
         .iter()
@@ -316,7 +313,7 @@ pub fn is_correct(
     spell: &NormalizedSpell,
     prev_txs: &Vec<Tx>,
     app_input: Option<AppInput>,
-    spell_vk: &String,
+    spell_vk: &str,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     mock: bool,
 ) -> bool {
@@ -383,6 +380,29 @@ fn apps_satisfied(
         )
         .expect("all apps should run successfully");
     true
+}
+
+pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let apps: Vec<_> = norm_spell
+        .app_public_inputs
+        .iter()
+        .map(|(app, _)| app)
+        .collect();
+    for out in &norm_spell.tx.outs {
+        for (i, data) in out {
+            let app = apps
+                .get(*i as usize)
+                .ok_or(anyhow!("no app for index {}", i))?;
+            if app.tag == TOKEN {
+                ensure!(
+                    data.value::<u64>()? != 0,
+                    "zero output amount for app {}",
+                    app
+                );
+            };
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

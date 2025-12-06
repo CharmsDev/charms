@@ -34,8 +34,8 @@ use charms_client::{
     well_formed,
 };
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
-    is_simple_transfer, util,
+    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
+    util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -1007,30 +1007,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 }
 
-pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
-    let apps: Vec<_> = norm_spell
-        .app_public_inputs
-        .iter()
-        .map(|(app, _)| app)
-        .collect();
-    for out in &norm_spell.tx.outs {
-        for (i, data) in out {
-            let app = apps
-                .get(*i as usize)
-                .ok_or(anyhow!("no app for index {}", i))?;
-            if app.tag == TOKEN {
-                ensure!(
-                    data.value::<u64>()? != 0,
-                    "zero output amount for app {}",
-                    app
-                );
-            };
-        }
-    }
-    Ok(())
-}
-
-fn ensure_all_prev_txs_are_present(
+pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
@@ -1075,7 +1052,7 @@ impl ProveSpellTxImpl {
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
             prove_request.spell.normalized()?;
-        ensure_no_zero_amounts(&norm_spell)?;
+        charms_client::ensure_no_zero_amounts(&norm_spell)?;
         ensure_all_prev_txs_are_present(&norm_spell, &tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, self.mock);
