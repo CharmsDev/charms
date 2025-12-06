@@ -7,7 +7,7 @@ use crate::{
     utils,
     utils::{BoxedSP1Prover, Shared, TRANSIENT_PROVER_FAILURE},
 };
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 use ark_bls12_381::Bls12_381;
 use ark_ec::pairing::Pairing;
 use ark_ff::{Field, ToConstraintField};
@@ -635,7 +635,7 @@ pub trait ProveSpellTx: Send + Sync {
     fn prove_spell_tx(
         &self,
         prove_request: ProveRequest,
-    ) -> impl Future<Output = anyhow::Result<Vec<String>>>;
+    ) -> impl Future<Output = anyhow::Result<Vec<Tx>>>;
 }
 
 pub struct ProveSpellTxImpl {
@@ -681,7 +681,7 @@ pub struct ProveRequest {
     pub spell: Spell,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
-    pub prev_txs: Vec<String>,
+    pub prev_txs: Vec<Tx>,
     pub funding_utxo: UtxoId,
     pub funding_utxo_value: u64,
     pub change_address: String,
@@ -723,7 +723,7 @@ impl ProveSpellTxImpl {
         &self,
         prove_request: ProveRequest,
         app_cycles: u64,
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> anyhow::Result<Vec<Tx>> {
         let total_app_cycles = app_cycles;
         let ProveRequest {
             spell,
@@ -741,7 +741,6 @@ impl ProveSpellTxImpl {
             bail!("Collateral UTXO is required for Cardano spells");
         }
 
-        let prev_txs = from_hex_txs(&prev_txs)?;
         let prev_txs_by_id = by_txid(&prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
@@ -780,7 +779,7 @@ impl ProveSpellTxImpl {
                     charms_fee,
                     total_cycles,
                 )?;
-                Ok(to_hex_txs(&txs))
+                Ok(txs)
             }
             CARDANO => {
                 let txs = cardano_tx::make_transactions(
@@ -795,7 +794,7 @@ impl ProveSpellTxImpl {
                     total_cycles,
                     collateral_utxo,
                 )?;
-                Ok(to_hex_txs(&txs))
+                Ok(txs)
             }
             _ => bail!("unsupported chain: {}", chain),
         }
@@ -844,7 +843,7 @@ pub enum ProofState {
     },
     Done {
         request_data: RequestData,
-        result: Vec<String>,
+        result: Vec<Tx>,
     },
 }
 
@@ -901,7 +900,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 
     #[cfg(feature = "prover")]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<String>> {
+    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
         let (norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
@@ -925,7 +924,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                     let mut con = con.clone();
                     let request_key = request_key.clone();
 
-                    let result: Vec<String> = lock_manager
+                    let result: Vec<Tx> = lock_manager
                         .using(lock_key.as_bytes(), LOCK_TTL, || async move {
                             match con.get(request_key.as_str()).await? {
                                 Some(ProofState::Done { request_data, .. })
@@ -949,8 +948,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                                 },
                             ))?;
 
-                            let r: Vec<String> =
-                                self.do_prove_spell_tx(prove_request, app_cycles)?;
+                            let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles)?;
 
                             let _: () = block_on(con.set(
                                 request_key.as_str(),
@@ -978,7 +976,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
 
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<String>> {
+    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
         let (_norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
         if self.mock {
             return Self::do_prove_spell_tx(self, prove_request, app_cycles);
@@ -1002,7 +1000,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
             let body = response.text().await?;
             bail!("client error: {}: {}", status, body);
         }
-        let txs: Vec<String> = response.json().await?;
+        let txs: Vec<Tx> = response.json().await?;
         Ok(txs)
     }
 }
@@ -1047,15 +1045,14 @@ impl ProveSpellTxImpl {
         prove_request: &ProveRequest,
     ) -> anyhow::Result<(NormalizedSpell, u64)> {
         let prev_txs = &prove_request.prev_txs;
-        let prev_txs = from_hex_txs(&prev_txs)?;
-        let prev_txs_by_id = by_txid(&prev_txs);
+        let prev_txs_by_id = by_txid(prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
             prove_request.spell.normalized()?;
         charms_client::ensure_no_zero_amounts(&norm_spell)?;
         ensure_all_prev_txs_are_present(&norm_spell, &tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, self.mock);
+        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
 
         ensure!(well_formed(
             &norm_spell,
@@ -1166,16 +1163,13 @@ impl ProveSpellTxImpl {
 }
 
 pub fn from_hex_txs(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
+    // TODO parse txs with finality proofs
     prev_txs
         .iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|tx_hex| Tx::from_hex(tx_hex))
+        .map(|tx_hex| serde_yaml::from_str(tx_hex).context("failed to parse tx"))
         .collect()
-}
-
-pub fn to_hex_txs(txs: &[Tx]) -> Vec<String> {
-    txs.iter().map(|tx| tx.hex()).collect()
 }
 
 pub fn get_charms_fee(charms_fee: &Option<CharmsFee>, total_cycles: u64) -> Amount {

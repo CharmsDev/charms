@@ -1,7 +1,10 @@
 use crate::{
     cli,
     cli::{BITCOIN, CARDANO, SpellCheckParams, SpellProveParams},
-    spell::{ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present},
+    spell::{
+        ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
+        from_hex_txs,
+    },
 };
 use anyhow::{Result, ensure};
 use charms_app_runner::AppRunner;
@@ -78,6 +81,8 @@ impl Prove for SpellCli {
 
         let spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
+        let prev_txs = from_hex_txs(&prev_txs)?;
+
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
         let prove_request = ProveRequest {
@@ -96,19 +101,19 @@ impl Prove for SpellCli {
         match chain.as_str() {
             BITCOIN => {
                 // Convert transactions to hex and create JSON array
-                let hex_txs: Vec<String> = transactions;
+                let hex_txs: Vec<Tx> = transactions;
 
                 // Print JSON array of transaction hexes
                 println!("{}", serde_json::to_string(&hex_txs)?);
             }
             CARDANO => {
-                let Some(tx_hex) = transactions.into_iter().next() else {
+                let Some(tx) = transactions.into_iter().next() else {
                     unreachable!()
                 };
                 let tx_draft = json!({
                     "type": "Witnessed Tx ConwayEra",
                     "description": "Ledger Cddl Format",
-                    "cborHex": tx_hex,
+                    "cborHex": tx.hex(),
                 });
                 println!("{}", tx_draft);
             }
@@ -143,12 +148,7 @@ impl Check for SpellCli {
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
-        let prev_txs = prev_txs
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|tx_hex| Tx::from_hex(tx_hex))
-            .collect::<Result<Vec<_>, _>>()?;
+        let prev_txs = from_hex_txs(&prev_txs)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
 

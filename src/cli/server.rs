@@ -10,6 +10,7 @@ use axum::{
     http::StatusCode,
     routing::{get, post},
 };
+use charms_client::tx::Tx;
 use std::{sync::Arc, time::Duration};
 use tower_http::cors::{Any, CorsLayer};
 
@@ -67,7 +68,7 @@ impl Server {
 async fn prove_spell(
     State(prover): State<Arc<ProveSpellTxImpl>>,
     Json(payload): Json<ProveRequest>,
-) -> Result<Json<Vec<String>>, (StatusCode, Json<String>)> {
+) -> Result<Json<Vec<Tx>>, (StatusCode, Json<String>)> {
     let result = prover.prove_spell_tx(payload).await.map_err(|e| {
         if e.to_string().contains(TRANSIENT_PROVER_FAILURE) {
             return (StatusCode::INTERNAL_SERVER_ERROR, Json(e.to_string()));
