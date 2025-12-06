@@ -45,7 +45,8 @@ impl Tx {
         tx.into()
     }
 
-    pub fn from_hex(hex: &str) -> anyhow::Result<Self> {
+    #[cfg(test)]
+    pub(crate) fn from_hex(hex: &str) -> anyhow::Result<Self> {
         if let Ok(b_tx) = BitcoinTx::from_hex(hex) {
             Ok(Self::Bitcoin(b_tx))
         } else if let Ok(c_tx) = CardanoTx::from_hex(hex) {

@@ -31,5 +31,5 @@ tracing = { workspace = true }
 uplc = { version = "1.1.19" }
 
 [dev-dependencies]
-ciborium = { version = "0.2.2" }
-serde_json = { version = "1.0.145" }
+ciborium = { workspace = true }
+serde_json = { workspace = true }
