@@ -11,4 +11,4 @@ license.workspace = true
 anyhow = { workspace = true }
 charms-data = { path = "../charms-data", version = "0.10.0" }
 sha2 = { workspace = true }
-wasmi = { version = "1.0.1", default-features = false, features = ["std", "prefer-btree-collections"] }
+wasmi = { version = "1.0.3", default-features = false, features = ["std", "prefer-btree-collections"] }

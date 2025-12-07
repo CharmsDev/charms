@@ -305,9 +305,9 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "base64ct"
-version = "1.8.0"
+version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55248b47b0caf0546f7988906588779981c43bb1bc9d0c44087278f80cdb44ba"
+checksum = "0e050f626429857a27ddccb31e0aca21356bfa709c04041aefddac081a8f068a"
 
 [[package]]
 name = "bech32"
@@ -338,9 +338,9 @@ dependencies = [
 
 [[package]]
 name = "bitcoin"
-version = "0.32.7"
+version = "0.32.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fda569d741b895131a88ee5589a467e73e9c4718e958ac9308e4f7dc44b6945"
+checksum = "1e499f9fc0407f50fe98af744ab44fa67d409f76b6772e1689ec8485eb0c0f66"
 dependencies = [
  "base58ck",
  "bech32 0.11.1",
@@ -500,9 +500,9 @@ checksum = "089a0261d1bc59e54e8e11860031efd88593f0e61b921172c474f1f38c2f2d3c"
 
 [[package]]
 name = "cc"
-version = "1.2.48"
+version = "1.2.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c481bdbf0ed3b892f6f806287d72acd515b352a4ec27a208489b8c1bc839633a"
+checksum = "90583009037521a116abf44494efecd645ba48b6622457080f080b85544e2215"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -2656,9 +2656,9 @@ dependencies = [
 
 [[package]]
 name = "wasmi"
-version = "1.0.1"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cd396d92add4cedfa5d8678f892f852bbdfc8672e263ef1e142f9d3745c9887"
+checksum = "172f6e29cb11ad08894abcf257cd899a7e559734514ad3b08c16fc3dc1596439"
 dependencies = [
  "spin",
  "wasmi_collections",
@@ -2669,27 +2669,27 @@ dependencies = [
 
 [[package]]
 name = "wasmi_collections"
-version = "1.0.1"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dfe4d1b405f42cd89c2bbdd2311981aeaaa0a3888ad579293d8afad627390ff"
+checksum = "697e11ec2200705314d6a1437cf6bc04d5362b1b30f15c43b31eb7549a3b568e"
 dependencies = [
  "string-interner",
 ]
 
 [[package]]
 name = "wasmi_core"
-version = "1.0.1"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7b04f4a809c7d8f6a765cd098ad9970e4132a99d4d6017fcf2f48929737582f"
+checksum = "1bb8d179d27c757e1475bf805d02cfc88c998fbc0265155fbf426c0e85dd7fb9"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "wasmi_ir"
-version = "1.0.1"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ff8dd9e28940551ac56fc11f66094535a987a84460f2d3f2b628da8842dde0a"
+checksum = "8551984e96c9c53c6a602f2babead4dea1122e8bbdaed456efb0881bf94b82c5"
 dependencies = [
  "wasmi_core",
 ]
