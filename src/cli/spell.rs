@@ -3,7 +3,7 @@ use crate::{
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
         ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
-        from_hex_txs,
+        from_strings,
     },
 };
 use anyhow::{Result, ensure};
@@ -81,7 +81,7 @@ impl Prove for SpellCli {
 
         let spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
-        let prev_txs = from_hex_txs(&prev_txs)?;
+        let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
@@ -147,7 +147,7 @@ impl Check for SpellCli {
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
-        let prev_txs = from_hex_txs(&prev_txs)?;
+        let prev_txs = from_strings(&prev_txs)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
 

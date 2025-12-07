@@ -606,6 +606,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use charms_client::tx::EnchantedTx;
 
     #[test]
     fn deserialize_keyed_charm() {
@@ -626,6 +627,17 @@ $TOAD: 9
 
         let utxo_id: UtxoId = utxo_id_data.value().unwrap();
         assert_eq!(utxo_id_0, dbg!(utxo_id));
+    }
+
+    #[test]
+    fn txs_from_strings() {
+        let b_tx_hex = "!bitcoin {tx: 0200000000010165b98e0ce9db5268f4de7f3545fa42ab594ccf78a282014c48d806005ef362940100000000ffffffff0400000000000000000c6a0a393130383639313336354d01000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c062214d01000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c062214e91000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c06221014065f6712381b7dbbc87a129dc150f1ad66fe137e6c7cf2d8407ea73fe94d028f8834dd4ac0db8673fc45504ef15ec30618070be7b3ca04cf83f764efd8e9ce30d00000000, proof: 002087237a2bfc69e8248912184c61b71454f491e18477d962ac000000000000000000005c0a215272c6f9e4c70a9060a4292644a0bcf770bebec3af980057585dff35cbdec4ee68b4dd01176f151dab050b00000d71615b2c36e03d443a8e991c7e57786ee3b4f7c848a321b386451751d6e60f30c9adc4d899a7d88cfcc7ff776d6d11c61c9d28b57bc7bb8746924127240506fd16e101bea52e2e1c40bd00a3775ff06eb89e6615a01fdb403842c62fb61c990a82d38eb94a1f37f4de95d1248a600614cd3e748cbf67281e7acc01c0533cbf2fa64fc22c14c4a47b361cc94be2d464641d46e6f7be5a5ec1ee66c326b0b04f0daa916cde8315fcc22ecc3fd3cc40ada06f7ec60f5161d3575c9f2d0ce694e35b7e0e4c74b9fac2634193851095132ebd50844568f7645e5db18780580d6e767772b39864e8f1b62c05dd10c725aeae037c8dd2e9cb891607414ca1f3e4e28d4ffd1d785a0188a53cecf3c4a5ff9df532076f2d7a175b0cc45618393be0f4d9f4b995cd78551cdc0cc82708ffc3411b8b7576db612adf3268be663b53654b5a1c5e57583e45e8ace058634110b5193786114819486dbecee5b1972c5869c010cacecad4b673308d4eb0604cd7fdb1b270201d46153b72766fbba145adeb5d57eadc39a648ae13a164c72cef13fc7172a3782d45e7e96b607e8a05364dd8f5b56404776f0100, headers: [0020052086ea8a5bd82f6f49c344bfe6e48490b078e7e59121c801000000000000000000a472c8691309fa1d5665554f38a8c23577ea7fe2bf5bad4467455fa6887eb11623c6ee68b4dd01170a691af2, 0000fe29d2621d904fb368a0e6f9180dd24e013f395b31084b360100000000000000000058f30077f9b33ffbbda650ac03c853edafe3b616033e3f4896b0c408184093cf83caee68b4dd0117781a6834, 04006b2aed6e4c65e5f23dd04fbd0169e638cacee420ba993923000000000000000000009bce3ef950e3c5bc83edb3800ddeeabee3d9edec90d8591660ef4b992a9411c05fd1ee68b4dd011740808b6f, 0000402042f98a3955ce49c03cdd239570cd694ac7e916c235f000000000000000000000ad854142feb9661e2c3a83187d240bdbf307c7af3db45e33fb2bb434c88e0d60e9d3ee68b4dd01175e66f050, 00008731d2b6cf3f2dcab82626b9e9ab187c55a540787872b24a01000000000000000000b0474629e38f87f484f73d3e6325f655079ab9ff09047cafe497861f089fb2daa9d4ee68b4dd011747dcebe4]}".to_string();
+
+        let txs = from_strings(&[b_tx_hex]).unwrap();
+        let Tx::Bitcoin(tx) = &txs[0] else {
+            unreachable!()
+        };
+        assert!(tx.proven_final());
     }
 }
 
@@ -1160,7 +1172,7 @@ impl ProveSpellTxImpl {
     }
 }
 
-pub fn from_hex_txs(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
+pub fn from_strings(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
     prev_txs
         .iter()
         .map(|s| s.trim())
@@ -1168,9 +1180,8 @@ pub fn from_hex_txs(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
         .map(|tx_hex| {
             Tx::try_from(tx_hex)
                 .context("failed to convert from hex")
-                .or_else(|_| {
-                    serde_yaml::from_str(tx_hex).context("failed to convert from YAML/JSON")
-                })
+                .or_else(|_| serde_json::from_str(tx_hex).context("failed to convert from JSON"))
+                .or_else(|_| serde_yaml::from_str(tx_hex).context("failed to convert from YAML"))
         })
         .collect()
 }
