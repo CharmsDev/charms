@@ -32,9 +32,9 @@ pub trait EnchantedTx {
 #[serde(rename_all = "snake_case")]
 #[strum_discriminants(
     name(Chain),
-    derive(AsRefStr, EnumString, Ord, PartialOrd, Serialize, Deserialize)
+    derive(AsRefStr, EnumString, Ord, PartialOrd, Serialize, Deserialize),
+    strum(serialize_all = "snake_case")
 )]
-#[strum_discriminants(strum(serialize_all = "snake_case"))]
 pub enum Tx {
     Bitcoin(BitcoinTx),
     Cardano(CardanoTx),
