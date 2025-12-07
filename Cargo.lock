@@ -2132,6 +2132,7 @@ dependencies = [
  "charms-data",
  "ciborium",
  "cml-chain",
+ "cml-core",
  "enum_dispatch",
  "hex",
  "hex-literal",

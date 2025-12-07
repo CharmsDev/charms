@@ -538,6 +538,7 @@ dependencies = [
  "charms-app-runner",
  "charms-data",
  "cml-chain",
+ "cml-core",
  "enum_dispatch",
  "hex",
  "hex-literal",

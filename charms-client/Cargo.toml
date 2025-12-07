@@ -18,6 +18,7 @@ bitcoin = { workspace = true, features = ["serde"] }
 charms-app-runner = { path = "../charms-app-runner", version = "0.10.0" }
 charms-data = { path = "../charms-data", version = "0.10.0" }
 cml-chain = { workspace = true, default-features = false }
+cml-core = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }

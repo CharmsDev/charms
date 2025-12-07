@@ -146,17 +146,20 @@ impl EnchantedTx for CardanoTx {
     }
 }
 
-pub const MINT_SCRIPT: &[u8] = &hex!(
-    "5859010100229800aba2aba1aab9eaab9dab9a9bae00248888896600264653001300700198039804000cc01c0092225980099b8748000c020dd500144c9289bae300a3009375400516401c30070013004375400f149a26cac80101"
+/// This script is parameterized with app VK for every token, NFT or spending contract.
+pub const CHARMS_APP_PROXY_SCRIPT: &[u8] = &hex!(
+    "59024401010032229800aba2aba1aba0aab9faab9eaab9dab9a9bae0039bae0024888888889660033001300537540152259800800c530103d87a80008992cc004006266e9520003300a300b0024bd7044cc00c00c0050091805800a010918049805000cdc3a400091111991194c004c02cdd5000cc03c01e44464b30013008300f37540031325980099b87323322330020020012259800800c00e2646644b30013372201400515980099b8f00a0028800c01901544cc014014c06c0110151bae3014001375a602a002602e00280a8c8c8cc004004dd59806980a1baa300d3014375400844b3001001801c4c8cc896600266e4403000a2b30013371e0180051001803202c899802802980e002202c375c602a0026eacc058004c0600050160a5eb7bdb180520004800a264b3001300a301137540031323322330020020012259800800c528456600266ebc00cc050c0600062946266004004603200280990161bab30163017301730173017301730173017301730173013375400a66e952004330143374a90011980a180a98091baa0014bd7025eb822c8080c050c054c054c054c044dd5180518089baa0018b201e301330103754003164038600a6eb0c020c03cdd5000cc03c00d222259800980400244ca600201d375c005004400c6eb8c04cc040dd5002c56600266e1d200200489919914c0040426eb801200c8028c050004c050c054004c040dd5002c5900e201c1807180780118068021801801a29344d959003130011e581c000000000000000000000000000000000000000000000000000000000001"
 );
 
-pub fn policy_id(app: &App) -> anyhow::Result<(PolicyId, PlutusV3Script)> {
+pub fn policy_id(app: &App) -> (PolicyId, PlutusV3Script) {
     let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
-    let program = uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), MINT_SCRIPT)
-        .map_err(|e| anyhow!("error applying app.vk to Charms token policy: {}", e))?;
-    let script = PlutusV3Script::new(program);
+    let program =
+        uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), CHARMS_APP_PROXY_SCRIPT)
+            .expect("app VK should successfully apply to the Charms app proxy script");
+    let script = PlutusV3Script::from_cbor_bytes(&program)
+        .expect("script should successfully deserialize from CBOR");
     let policy_id = script.hash();
-    Ok((policy_id, script))
+    (policy_id, script)
 }
 
 pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
@@ -188,7 +191,7 @@ pub fn multi_asset(
         if app.tag != TOKEN && app.tag != NFT {
             continue; // TODO figure what to do with other tags
         }
-        let (policy_id, script) = policy_id(app)?;
+        let (policy_id, script) = policy_id(app);
         let asset_name = asset_name(app)?;
         let value = get_value(app, data)?;
         scripts.insert(policy_id, script);
@@ -250,4 +253,57 @@ pub fn tx_hash(tx_id: TxId) -> TransactionHash {
     txid_bytes.reverse(); // Charms use Bitcoin's reverse byte order for txids
     let tx_hash = txid_bytes.into();
     tx_hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cml_core::serialization::RawBytesEncoding;
+    use uplc::ast::{DeBruijn, Program};
+
+    const UNPARAMETERIZED_MAIN_SCRIPT: &[u8] = &hex!(
+        "5902210101002229800aba2aba1aba0aab9faab9eaab9dab9a9bae0039bae0024888888889660033001300537540152259800800c5300103d87a80008992cc004006266e9520003300a300b0024bd7044cc00c00c0050091805800a010918049805000cdc3a400091111991194c004c02cdd5000cc03c01e44464b30013008300f37540031325980099b87323322330020020012259800800c00e2646644b30013372201400515980099b8f00a0028800c01901544cc014014c06c0110151bae3014001375a602a002602e00280a8c8c8cc004004dd59806980a1baa300d3014375400844b3001001801c4c8cc896600266e4403000a2b30013371e0180051001803202c899802802980e002202c375c602a0026eacc058004c0600050160a5eb7bdb180520004800a264b3001300a301137540031323322330020020012259800800c528456600266ebc00cc050c0600062946266004004603200280990161bab30163017301730173017301730173017301730173013375400a66e952004330143374a90011980a180a98091baa0014bd7025eb822c8080c050c054c054c054c044dd5180518089baa0018b201e301330103754003164038600a6eb0c020c03cdd5000cc03c00d222259800980400244ca600201d375c005004400c6eb8c04cc040dd5002c56600266e1d200200489919914c0040426eb801200c8028c050004c050c054004c040dd5002c5900e201c1807180780118068021801801a29344d9590031"
+    );
+    const PROTOCOL_VERSION_NFT_POLICY_ID: &[u8] =
+        &hex!("00000000000000000000000000000000000000000000000000000000"); // TODO: set the real policy ID
+
+    fn apply_policy_id_to_main_script(policy_id: PolicyId) -> Vec<u8> {
+        let param_data =
+            PlutusData::new_list(vec![PlutusData::new_bytes(policy_id.to_raw_bytes().into())]);
+        let program_cbor = uplc::tx::apply_params_to_script(
+            &param_data.to_cbor_bytes(),
+            UNPARAMETERIZED_MAIN_SCRIPT,
+        )
+        .unwrap();
+        program_cbor
+    }
+
+    #[test]
+    fn charms_app_proxy_script() {
+        let policy_id = PolicyId::from_raw_bytes(PROTOCOL_VERSION_NFT_POLICY_ID).unwrap();
+        let applied_script_cbor = apply_policy_id_to_main_script(policy_id);
+        // dbg!(hex::encode(&applied_script_cbor));
+        assert_eq!(CHARMS_APP_PROXY_SCRIPT, &applied_script_cbor);
+
+        let mut buffer = Vec::new();
+        let program = Program::<DeBruijn>::from_cbor(CHARMS_APP_PROXY_SCRIPT, &mut buffer).unwrap();
+        // eprintln!("{}", program.to_pretty());
+        assert_eq!(583, program.to_cbor().unwrap().len());
+    }
+
+    #[test]
+    fn charms_app_policy_id() {
+        let app = App {
+            tag: TOKEN,
+            identity: Default::default(),
+            vk: Default::default(),
+        };
+        let (_policy_id, script) = policy_id(&app);
+        let app_script = script.to_cbor_bytes();
+
+        let mut buffer = Vec::new();
+        let program = Program::<DeBruijn>::from_cbor(&app_script, &mut buffer).unwrap();
+        // eprintln!("{}", program.to_pretty());
+        assert_eq!(622, program.to_cbor().unwrap().len());
+    }
 }
