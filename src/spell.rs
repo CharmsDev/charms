@@ -1022,7 +1022,7 @@ pub fn ensure_all_prev_txs_are_present(
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
     ensure!(
-        dbg!(spell.tx.ins.as_ref()).is_some_and(|ins| {
+        spell.tx.ins.as_ref().is_some_and(|ins| {
             ins.iter()
                 .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
         }),
