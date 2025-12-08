@@ -96,7 +96,7 @@ fn txs_with_spells(
         .map(|tx_result: Result<Transaction>| {
             let tx = tx_result?;
             let txid = tx.compute_txid();
-            let spell_opt = tx::spell(&Tx::Bitcoin(BitcoinTx(tx)), mock)?;
+            let spell_opt = tx::spell(&Tx::Bitcoin(BitcoinTx::Simple(tx)), mock)?;
             Ok(spell_opt.map(|spell| (TxId(txid.to_byte_array()), spell)))
         })
         .filter_map(|tx_result| match tx_result {

@@ -2,12 +2,12 @@
 use crate::utils::block_on;
 use crate::{
     PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK, app,
-    cli::{BITCOIN, CARDANO, charms_fee_settings, prove_impl},
+    cli::{charms_fee_settings, prove_impl},
     tx::{bitcoin_tx, bitcoin_tx::from_spell, cardano_tx},
     utils,
     utils::{BoxedSP1Prover, Shared, TRANSIENT_PROVER_FAILURE},
 };
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 use ark_bls12_381::Bls12_381;
 use ark_ec::pairing::Pairing;
 use ark_ff::{Field, ToConstraintField};
@@ -30,13 +30,12 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
-    bitcoin_tx::BitcoinTx,
-    tx::{Tx, by_txid},
+    tx::{Chain, Tx, by_txid},
     well_formed,
 };
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
-    is_simple_transfer, util,
+    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
+    util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -70,15 +69,6 @@ pub type KeyedCharms = BTreeMap<String, Data>;
 pub struct Input {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub utxo_id: Option<UtxoId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(
-        alias = "sats",
-        alias = "coin",
-        alias = "coins",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub amount: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,51 +134,7 @@ impl Spell {
         }
     }
 
-    /// Get a [`Transaction`] for the spell.
-    pub fn to_tx(&self, prev_txs: BTreeMap<TxId, Tx>) -> anyhow::Result<Transaction> {
-        let ins = self.strings_of_charms(&self.ins)?;
-        let empty_vec = vec![];
-        let refs = self.strings_of_charms(self.refs.as_ref().unwrap_or(&empty_vec))?;
-        let outs = self
-            .outs
-            .iter()
-            .map(|output| self.charms(&output.charms))
-            .collect::<Result<_, _>>()?;
-        let coin_outs = get_coin_outs(&self.outs)?;
-        let coin_ins = get_coin_ins(&self.ins)?;
-
-        let prev_txs = prev_txs
-            .into_iter()
-            .map(|(tx_id, tx)| (tx_id, (&tx).into()))
-            .collect();
-
-        let app_public_inputs = self
-            .apps
-            .iter()
-            .map(|(k, app)| {
-                (
-                    app.clone(),
-                    self.public_args
-                        .as_ref()
-                        .and_then(|public_args| public_args.get(k))
-                        .cloned()
-                        .unwrap_or_default(),
-                )
-            })
-            .collect();
-
-        Ok(Transaction {
-            ins,
-            refs,
-            outs,
-            coin_ins: Some(coin_ins),
-            coin_outs: Some(coin_outs),
-            prev_txs,
-            app_public_inputs,
-        })
-    }
-
-    fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
+    pub fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
         inputs
             .iter()
             .map(|input| {
@@ -202,7 +148,7 @@ impl Spell {
             .collect::<Result<_, _>>()
     }
 
-    fn charms(&self, charms_opt: &Option<KeyedCharms>) -> anyhow::Result<Charms> {
+    pub fn charms(&self, charms_opt: &Option<KeyedCharms>) -> anyhow::Result<Charms> {
         charms_opt
             .as_ref()
             .ok_or(anyhow!("missing charms field"))?
@@ -220,7 +166,7 @@ impl Spell {
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
-        BTreeMap<UtxoId, UtxoId>,
+        BTreeMap<usize, UtxoId>,
     )> {
         ensure!(self.version == CURRENT_VERSION);
 
@@ -307,16 +253,12 @@ impl Spell {
         let tx_ins_beamed_source_utxos = self
             .ins
             .iter()
-            .filter_map(|input| {
-                let tx_in = input
-                    .utxo_id
-                    .as_ref()
-                    .expect("inputs are expected to have utxo_id set")
-                    .clone();
+            .enumerate()
+            .filter_map(|(i, input)| {
                 input
                     .beamed_from
                     .as_ref()
-                    .map(|beam_source_utxo_id| (tx_in, beam_source_utxo_id.clone()))
+                    .map(|beam_source_utxo_id| (i, beam_source_utxo_id.clone()))
             })
             .collect();
 
@@ -352,8 +294,6 @@ impl Spell {
             .iter()
             .map(|utxo_id| Input {
                 utxo_id: Some(utxo_id.clone()),
-                address: None, // TODO: impl
-                amount: None,  // TODO: impl
                 charms: None,
                 beamed_from: None,
             })
@@ -363,8 +303,6 @@ impl Spell {
             refs.iter()
                 .map(|utxo_id| Input {
                     utxo_id: Some(utxo_id.clone()),
-                    address: None, // TODO: impl
-                    amount: None,  // TODO: impl
                     charms: None,
                     beamed_from: None,
                 })
@@ -405,17 +343,6 @@ impl Spell {
             outs,
         })
     }
-}
-
-fn get_coin_ins(ins: &[Input]) -> anyhow::Result<Vec<NativeOutput>> {
-    ins.iter()
-        .map(|input| {
-            Ok(NativeOutput {
-                amount: input.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
-                dest: from_bech32(&input.address.as_ref().expect("address is expected"))?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
 }
 
 fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
@@ -502,7 +429,7 @@ pub trait Prove: Send + Sync {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)>;
 }
 
@@ -513,7 +440,7 @@ impl Prove for Prover {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         ensure!(
             !norm_spell.mock,
@@ -525,7 +452,7 @@ impl Prove for Prover {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &prev_txs,
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -594,7 +521,7 @@ impl Prove for MockProver {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         let norm_spell = make_mock(norm_spell);
 
@@ -603,7 +530,7 @@ impl Prove for MockProver {
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &prev_txs,
         );
 
         let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
@@ -679,6 +606,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use charms_client::tx::EnchantedTx;
 
     #[test]
     fn deserialize_keyed_charm() {
@@ -700,6 +628,17 @@ $TOAD: 9
         let utxo_id: UtxoId = utxo_id_data.value().unwrap();
         assert_eq!(utxo_id_0, dbg!(utxo_id));
     }
+
+    #[test]
+    fn txs_from_strings() {
+        let b_tx_hex = "!bitcoin {tx: 0200000000010165b98e0ce9db5268f4de7f3545fa42ab594ccf78a282014c48d806005ef362940100000000ffffffff0400000000000000000c6a0a393130383639313336354d01000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c062214d01000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c062214e91000000000000225120c2b8776ceb04af97fcbd92ef76a7af85fa483d88ad9489d3bc2bbbfdb4c06221014065f6712381b7dbbc87a129dc150f1ad66fe137e6c7cf2d8407ea73fe94d028f8834dd4ac0db8673fc45504ef15ec30618070be7b3ca04cf83f764efd8e9ce30d00000000, proof: 002087237a2bfc69e8248912184c61b71454f491e18477d962ac000000000000000000005c0a215272c6f9e4c70a9060a4292644a0bcf770bebec3af980057585dff35cbdec4ee68b4dd01176f151dab050b00000d71615b2c36e03d443a8e991c7e57786ee3b4f7c848a321b386451751d6e60f30c9adc4d899a7d88cfcc7ff776d6d11c61c9d28b57bc7bb8746924127240506fd16e101bea52e2e1c40bd00a3775ff06eb89e6615a01fdb403842c62fb61c990a82d38eb94a1f37f4de95d1248a600614cd3e748cbf67281e7acc01c0533cbf2fa64fc22c14c4a47b361cc94be2d464641d46e6f7be5a5ec1ee66c326b0b04f0daa916cde8315fcc22ecc3fd3cc40ada06f7ec60f5161d3575c9f2d0ce694e35b7e0e4c74b9fac2634193851095132ebd50844568f7645e5db18780580d6e767772b39864e8f1b62c05dd10c725aeae037c8dd2e9cb891607414ca1f3e4e28d4ffd1d785a0188a53cecf3c4a5ff9df532076f2d7a175b0cc45618393be0f4d9f4b995cd78551cdc0cc82708ffc3411b8b7576db612adf3268be663b53654b5a1c5e57583e45e8ace058634110b5193786114819486dbecee5b1972c5869c010cacecad4b673308d4eb0604cd7fdb1b270201d46153b72766fbba145adeb5d57eadc39a648ae13a164c72cef13fc7172a3782d45e7e96b607e8a05364dd8f5b56404776f0100, headers: [0020052086ea8a5bd82f6f49c344bfe6e48490b078e7e59121c801000000000000000000a472c8691309fa1d5665554f38a8c23577ea7fe2bf5bad4467455fa6887eb11623c6ee68b4dd01170a691af2, 0000fe29d2621d904fb368a0e6f9180dd24e013f395b31084b360100000000000000000058f30077f9b33ffbbda650ac03c853edafe3b616033e3f4896b0c408184093cf83caee68b4dd0117781a6834, 04006b2aed6e4c65e5f23dd04fbd0169e638cacee420ba993923000000000000000000009bce3ef950e3c5bc83edb3800ddeeabee3d9edec90d8591660ef4b992a9411c05fd1ee68b4dd011740808b6f, 0000402042f98a3955ce49c03cdd239570cd694ac7e916c235f000000000000000000000ad854142feb9661e2c3a83187d240bdbf307c7af3db45e33fb2bb434c88e0d60e9d3ee68b4dd01175e66f050, 00008731d2b6cf3f2dcab82626b9e9ab187c55a540787872b24a01000000000000000000b0474629e38f87f484f73d3e6325f655079ab9ff09047cafe497861f089fb2daa9d4ee68b4dd011747dcebe4]}".to_string();
+
+        let txs = from_strings(&[b_tx_hex]).unwrap();
+        let Tx::Bitcoin(tx) = &txs[0] else {
+            unreachable!()
+        };
+        assert!(tx.proven_final());
+    }
 }
 
 pub trait ProveSpellTx: Send + Sync {
@@ -708,7 +647,7 @@ pub trait ProveSpellTx: Send + Sync {
     fn prove_spell_tx(
         &self,
         prove_request: ProveRequest,
-    ) -> impl Future<Output = anyhow::Result<Vec<String>>>;
+    ) -> impl Future<Output = anyhow::Result<Vec<Tx>>>;
 }
 
 pub struct ProveSpellTxImpl {
@@ -731,7 +670,7 @@ pub type FeeAddressForNetwork = BTreeMap<String, String>;
 pub struct CharmsFee {
     /// Fee addresses for each chain (bitcoin, cardano, etc.) further broken down by network
     /// (mainnet, testnet, etc.).
-    pub fee_addresses: BTreeMap<String, FeeAddressForNetwork>,
+    pub fee_addresses: BTreeMap<Chain, FeeAddressForNetwork>,
     /// Fee rate in sats per mega cycle.
     pub fee_rate: u64,
     /// Base fee in sats.
@@ -739,7 +678,7 @@ pub struct CharmsFee {
 }
 
 impl CharmsFee {
-    pub fn fee_address(&self, chain: &str, network: &str) -> Option<&str> {
+    pub fn fee_address(&self, chain: &Chain, network: &str) -> Option<&str> {
         self.fee_addresses.get(chain).and_then(|fee_addresses| {
             fee_addresses
                 .get(network)
@@ -754,12 +693,13 @@ pub struct ProveRequest {
     pub spell: Spell,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
-    pub prev_txs: Vec<String>,
+    pub prev_txs: Vec<Tx>,
     pub funding_utxo: UtxoId,
     pub funding_utxo_value: u64,
     pub change_address: String,
     pub fee_rate: f64,
-    pub chain: String,
+    pub chain: Chain,
+    pub collateral_utxo: Option<UtxoId>,
 }
 
 pub struct Prover {
@@ -795,7 +735,7 @@ impl ProveSpellTxImpl {
         &self,
         prove_request: ProveRequest,
         app_cycles: u64,
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> anyhow::Result<Vec<Tx>> {
         let total_app_cycles = app_cycles;
         let ProveRequest {
             spell,
@@ -806,9 +746,13 @@ impl ProveSpellTxImpl {
             change_address,
             fee_rate,
             chain,
+            collateral_utxo,
         } = prove_request;
 
-        let prev_txs = from_hex_txs(&prev_txs)?;
+        if chain == Chain::Cardano && collateral_utxo.is_none() {
+            bail!("Collateral UTXO is required for Cardano spells");
+        }
+
         let prev_txs_by_id = by_txid(&prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
@@ -834,8 +778,8 @@ impl ProveSpellTxImpl {
 
         let charms_fee = self.charms_fee_settings.clone();
 
-        match chain.as_str() {
-            BITCOIN => {
+        match chain {
+            Chain::Bitcoin => {
                 let txs = bitcoin_tx::make_transactions(
                     &spell,
                     funding_utxo,
@@ -847,9 +791,9 @@ impl ProveSpellTxImpl {
                     charms_fee,
                     total_cycles,
                 )?;
-                Ok(to_hex_txs(&txs))
+                Ok(txs)
             }
-            CARDANO => {
+            Chain::Cardano => {
                 let txs = cardano_tx::make_transactions(
                     &spell,
                     funding_utxo,
@@ -857,12 +801,13 @@ impl ProveSpellTxImpl {
                     &change_address,
                     &spell_data,
                     &prev_txs_by_id,
+                    None,
                     charms_fee,
                     total_cycles,
+                    collateral_utxo,
                 )?;
-                Ok(to_hex_txs(&txs))
+                Ok(txs)
             }
-            _ => bail!("unsupported chain: {}", chain),
         }
     }
 }
@@ -909,7 +854,7 @@ pub enum ProofState {
     },
     Done {
         request_data: RequestData,
-        result: Vec<String>,
+        result: Vec<Tx>,
     },
 }
 
@@ -966,7 +911,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 
     #[cfg(feature = "prover")]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<String>> {
+    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
         let (norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
@@ -990,7 +935,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                     let mut con = con.clone();
                     let request_key = request_key.clone();
 
-                    let result: Vec<String> = lock_manager
+                    let result: Vec<Tx> = lock_manager
                         .using(lock_key.as_bytes(), LOCK_TTL, || async move {
                             match con.get(request_key.as_str()).await? {
                                 Some(ProofState::Done { request_data, .. })
@@ -1014,8 +959,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                                 },
                             ))?;
 
-                            let r: Vec<String> =
-                                self.do_prove_spell_tx(prove_request, app_cycles)?;
+                            let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles)?;
 
                             let _: () = block_on(con.set(
                                 request_key.as_str(),
@@ -1043,7 +987,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
 
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<String>> {
+    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
         let (_norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
         if self.mock {
             return Self::do_prove_spell_tx(self, prove_request, app_cycles);
@@ -1067,37 +1011,14 @@ impl ProveSpellTx for ProveSpellTxImpl {
             let body = response.text().await?;
             bail!("client error: {}: {}", status, body);
         }
-        let txs: Vec<String> = response.json().await?;
+        let txs: Vec<Tx> = response.json().await?;
         Ok(txs)
     }
 }
 
-pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
-    let apps: Vec<_> = norm_spell
-        .app_public_inputs
-        .iter()
-        .map(|(app, _)| app)
-        .collect();
-    for out in &norm_spell.tx.outs {
-        for (i, data) in out {
-            let app = apps
-                .get(*i as usize)
-                .ok_or(anyhow!("no app for index {}", i))?;
-            if app.tag == TOKEN {
-                ensure!(
-                    data.value::<u64>()? != 0,
-                    "zero output amount for app {}",
-                    app
-                );
-            };
-        }
-    }
-    Ok(())
-}
-
-fn ensure_all_prev_txs_are_present(
+pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
     ensure!(
@@ -1117,7 +1038,8 @@ fn ensure_all_prev_txs_are_present(
     ensure!(
         tx_ins_beamed_source_utxos
             .iter()
-            .all(|(utxo_id, beaming_source_utxo_id)| {
+            .all(|(&i, beaming_source_utxo_id)| {
+                let utxo_id = &spell.tx.ins.as_ref().unwrap()[i];
                 prev_txs_by_id.contains_key(&utxo_id.0)
                     && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
             }),
@@ -1134,21 +1056,26 @@ impl ProveSpellTxImpl {
         prove_request: &ProveRequest,
     ) -> anyhow::Result<(NormalizedSpell, u64)> {
         let prev_txs = &prove_request.prev_txs;
-        let prev_txs = from_hex_txs(&prev_txs)?;
-        let prev_txs_by_id = by_txid(&prev_txs);
+        let prev_txs_by_id = by_txid(prev_txs);
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
             prove_request.spell.normalized()?;
-        ensure_no_zero_amounts(&norm_spell)?;
+        charms_client::ensure_no_zero_amounts(&norm_spell)?;
         ensure_all_prev_txs_are_present(&norm_spell, &tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, self.mock);
+        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
+
+        ensure!(well_formed(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos
+        ));
 
         let tx = to_tx(
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
-            by_txid(&prev_txs),
+            &prev_txs,
         );
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(
@@ -1158,14 +1085,9 @@ impl ProveSpellTxImpl {
             &app_private_inputs,
         )?;
         let total_cycles = cycles.iter().sum();
-        ensure!(well_formed(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos
-        ));
 
-        match prove_request.chain.as_str() {
-            BITCOIN => {
+        match prove_request.chain {
+            Chain::Bitcoin => {
                 let change_address = bitcoin::Address::from_str(&prove_request.change_address)?;
 
                 let network = match &change_address {
@@ -1192,8 +1114,9 @@ impl ProveSpellTxImpl {
                         prev_txs_by_id
                             .get(&utxo_id.0)
                             .and_then(|prev_tx| {
-                                if let Tx::Bitcoin(BitcoinTx(prev_tx)) = prev_tx {
-                                    prev_tx
+                                if let Tx::Bitcoin(bitcoin_tx) = prev_tx {
+                                    bitcoin_tx
+                                        .inner()
                                         .output
                                         .get(utxo_id.1 as usize)
                                         .map(|o| o.value.to_sat())
@@ -1214,12 +1137,12 @@ impl ProveSpellTxImpl {
                 let funding_utxo_sats = prove_request.funding_utxo_value;
 
                 let bitcoin_tx = from_spell(&prove_request.spell)?;
-                let tx_size = bitcoin_tx.0.vsize();
+                let tx_size = bitcoin_tx.inner().vsize();
                 let (mut norm_spell, ..) = prove_request.spell.normalized()?;
                 norm_spell.tx.ins = None;
                 let proof_dummy: Vec<u8> = vec![0xff; 128];
                 let spell_cbor = util::write(&(norm_spell, proof_dummy))?;
-                let num_inputs = bitcoin_tx.0.input.len();
+                let num_inputs = bitcoin_tx.inner().input.len();
                 let estimated_bitcoin_fee: u64 = (111
                     + (spell_cbor.len() as u64 + 372) / 4
                     + tx_size as u64
@@ -1240,27 +1163,27 @@ impl ProveSpellTxImpl {
                     "total inputs value must be greater than total outputs value plus fees"
                 );
             }
-            CARDANO => {
+            Chain::Cardano => {
                 // TODO
                 tracing::warn!("spell validation for cardano is not yet implemented");
             }
-            _ => bail!("unsupported chain: {}", prove_request.chain.as_str()),
         }
         Ok((norm_spell, total_cycles))
     }
 }
 
-pub fn from_hex_txs(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
+pub fn from_strings(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
     prev_txs
         .iter()
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|tx_hex| Tx::from_hex(tx_hex))
+        .map(|tx_hex| {
+            Tx::try_from(tx_hex)
+                .context("failed to convert from hex")
+                .or_else(|_| serde_json::from_str(tx_hex).context("failed to convert from JSON"))
+                .or_else(|_| serde_yaml::from_str(tx_hex).context("failed to convert from YAML"))
+        })
         .collect()
-}
-
-pub fn to_hex_txs(txs: &[Tx]) -> Vec<String> {
-    txs.iter().map(|tx| tx.hex()).collect()
 }
 
 pub fn get_charms_fee(charms_fee: &Option<CharmsFee>, total_cycles: u64) -> Amount {

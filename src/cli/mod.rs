@@ -21,15 +21,13 @@ use crate::{
 };
 use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
+use charms_client::tx::Chain;
 use charms_data::check;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
-
-pub const BITCOIN: &str = "bitcoin";
-pub const CARDANO: &str = "cardano";
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -129,11 +127,14 @@ pub struct SpellProveParams {
 
     /// Target chain, defaults to `bitcoin`.
     #[arg(long, default_value = "bitcoin")]
-    chain: String,
+    chain: Chain,
 
     /// Is mock mode enabled?
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
+
+    #[arg(long, alias = "collateral")]
+    collateral_utxo: Option<String>,
 }
 
 #[derive(Args)]
@@ -177,7 +178,7 @@ pub enum SpellCommands {
 #[derive(Args)]
 pub struct ShowSpellParams {
     #[arg(long, default_value = "bitcoin")]
-    chain: String,
+    chain: Chain,
 
     /// Hex-encoded transaction.
     #[arg(long)]
@@ -212,16 +213,6 @@ pub enum AppCommands {
 
     /// Show verification key for an app.
     Vk {
-        /// Path to the app's Wasm binary.
-        path: Option<PathBuf>,
-    },
-
-    /// Test the app for a spell.
-    Run {
-        /// Path to spell source file (YAML/JSON).
-        #[arg(long, default_value = "/dev/stdin")]
-        spell: PathBuf,
-
         /// Path to the app's Wasm binary.
         path: Option<PathBuf>,
     },
@@ -275,7 +266,6 @@ pub async fn run() -> anyhow::Result<()> {
             AppCommands::New { name } => app::new(&name),
             AppCommands::Vk { path } => app::vk(path),
             AppCommands::Build => app::build(),
-            AppCommands::Run { spell, path } => app::run(spell, path),
         },
         Commands::Wallet { command } => {
             let wallet_cli = wallet_cli();
@@ -329,7 +319,7 @@ pub(crate) fn charms_fee_settings() -> Option<CharmsFee> {
     .expect("should be able to parse the fee settings file");
 
     assert!(
-        fee_settings.fee_addresses[BITCOIN]
+        fee_settings.fee_addresses[&Chain::Bitcoin]
             .iter()
             .all(|(network, address)| {
                 let network = Network::from_core_arg(network)

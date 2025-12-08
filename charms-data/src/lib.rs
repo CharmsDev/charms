@@ -637,7 +637,7 @@ fn app_state_multiset<'a>(
     strings_of_charms
         .filter_map(|charms| charms.get(app))
         .fold(BTreeMap::new(), |mut r, s| {
-            match r.get_mut(&s) {
+            match r.get_mut(s) {
                 Some(count) => *count += 1,
                 None => {
                     r.insert(s, 1);

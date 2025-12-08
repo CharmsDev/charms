@@ -15,17 +15,22 @@ ark-groth16 = { workspace = true }
 ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
+charms-app-runner = { path = "../charms-app-runner", version = "0.10.0" }
 charms-data = { path = "../charms-data", version = "0.10.0" }
 cml-chain = { workspace = true, default-features = false }
+cml-core = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
+hex-literal = { version = "1.1.0" }
 serde = { workspace = true, features = ["derive"] }
-serde_with = { version = "3.15.1" }
+serde_with = { version = "3.16.1", features = ["hex"] }
 sha2 = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true }
+strum = { version = "0.27.2", features = ["derive"] }
 tracing = { workspace = true }
+uplc = { version = "1.1.19" }
 
 [dev-dependencies]
-ciborium = { version = "0.2.2" }
-serde_json = { version = "1.0.145" }
+ciborium = { workspace = true }
+serde_json = { workspace = true }

@@ -1,10 +1,10 @@
-use crate::{
-    cli,
-    cli::{BITCOIN, CARDANO, ShowSpellParams},
-    tx,
-};
+use crate::{cli, cli::ShowSpellParams, tx};
 use anyhow::Result;
-use charms_client::{bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx, tx::Tx};
+use charms_client::{
+    bitcoin_tx::BitcoinTx,
+    cardano_tx::CardanoTx,
+    tx::{Chain, Tx},
+};
 
 pub fn tx_show_spell(params: ShowSpellParams) -> Result<()> {
     let ShowSpellParams {
@@ -13,10 +13,9 @@ pub fn tx_show_spell(params: ShowSpellParams) -> Result<()> {
         json,
         mock,
     } = params;
-    let tx = match chain.as_str() {
-        BITCOIN => Tx::Bitcoin(BitcoinTx::from_hex(&tx)?),
-        CARDANO => Tx::Cardano(CardanoTx::from_hex(&tx)?),
-        _ => unimplemented!(),
+    let tx = match chain {
+        Chain::Bitcoin => Tx::Bitcoin(BitcoinTx::from_hex(&tx)?),
+        Chain::Cardano => Tx::Cardano(CardanoTx::from_hex(&tx)?),
     };
 
     match tx::spell(&tx, mock)? {

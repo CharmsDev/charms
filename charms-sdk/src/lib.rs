@@ -9,7 +9,7 @@ macro_rules! main {
             let (app, tx, x, w): (App, Transaction, Data, Data) =
                 charms_sdk::data::util::read(std::io::stdin())
                     .expect("should deserialize (app, tx, x, w): (App, Transaction, Data, Data)");
-            assert!(charms_sdk::data::is_simple_transfer(&app, &tx) || $path(&app, &tx, &x, &w));
+            assert!($path(&app, &tx, &x, &w));
         }
     };
 }

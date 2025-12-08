@@ -1,5 +1,4 @@
 use crate::{
-    cli::BITCOIN,
     script::{control_block, data_script, taproot_spend_info},
     spell,
     spell::{CharmsFee, Input, Output, Spell},
@@ -17,7 +16,10 @@ use bitcoin::{
     taproot::LeafVersion,
     transaction::Version,
 };
-use charms_client::{bitcoin_tx::BitcoinTx, tx::Tx};
+use charms_client::{
+    bitcoin_tx::BitcoinTx,
+    tx::{Chain, Tx},
+};
 use charms_data::{TxId, UtxoId};
 use std::{collections::BTreeMap, str::FromStr};
 
@@ -243,7 +245,7 @@ pub fn tx_total_amount_in(prev_txs: &BTreeMap<TxId, Tx>, tx: &Transaction) -> Am
             let Tx::Bitcoin(tx) = prev_txs[&txid].clone() else {
                 unreachable!()
             };
-            tx.0.output[i as usize].value
+            tx.inner().output[i as usize].value
         })
         .sum::<Amount>()
 }
@@ -305,7 +307,7 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<BitcoinTx> {
         input,
         output,
     };
-    Ok(BitcoinTx(tx))
+    Ok(BitcoinTx::Simple(tx))
 }
 
 pub fn make_transactions(
@@ -336,7 +338,7 @@ pub fn make_transactions(
 
     let charms_fee_pubkey = charms_fee
         .as_ref()
-        .and_then(|charms_fee| charms_fee.fee_address(BITCOIN, network))
+        .and_then(|charms_fee| charms_fee.fee_address(&Chain::Bitcoin, network))
         .and_then(|fee_address| {
             Address::from_str(fee_address)
                 .ok()
@@ -350,10 +352,13 @@ pub fn make_transactions(
     let fee_rate = FeeRate::from_sat_per_kwu((fee_rate * 250.0) as u64);
 
     let tx = from_spell(&spell)?;
+    let BitcoinTx::Simple(tx) = tx else {
+        bail!("expected simple transaction")
+    };
 
     // Call the add_spell function
     let transactions = add_spell(
-        tx.0,
+        tx,
         spell_data,
         funding_utxo,
         Amount::from_sat(funding_utxo_value),
@@ -365,6 +370,6 @@ pub fn make_transactions(
     );
     Ok(transactions
         .into_iter()
-        .map(|tx| Tx::Bitcoin(BitcoinTx(tx)))
+        .map(|tx| Tx::Bitcoin(BitcoinTx::Simple(tx)))
         .collect())
 }

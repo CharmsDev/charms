@@ -1,7 +1,6 @@
-use crate::spell::Spell;
 use anyhow::{Result, anyhow, ensure};
 use charms_app_runner::AppRunner;
-use charms_data::{B32, Data};
+use charms_data::B32;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -78,47 +77,6 @@ pub fn vk(path: Option<PathBuf>) -> Result<()> {
 
     println!("{}", vk);
     Ok(())
-}
-
-pub fn run(spell: PathBuf, path: Option<PathBuf>) -> Result<()> {
-    let binary = match path {
-        Some(path) => fs::read(path)?,
-        None => {
-            let bin_path = do_build()?;
-            fs::read(bin_path)?
-        }
-    };
-    let app_runner = AppRunner::new(true);
-    let vk = app_runner.vk(&binary);
-
-    let spell: Spell = serde_yaml::from_slice(
-        &fs::read(&spell).map_err(|e| anyhow!("error reading {:?}: {}", &spell, e))?,
-    )?;
-    let tx = spell.to_tx(BTreeMap::new())?; // TODO pass prev_txs OR remove app run command
-
-    let public_inputs = spell.public_args.unwrap_or_default();
-    let private_inputs = spell.private_args.unwrap_or_default();
-
-    let mut app_present = false;
-    for (k, app) in spell.apps.iter().filter(|(_, app)| app.vk == vk) {
-        app_present = true;
-        let x = data_for_key(&public_inputs, k);
-        let w = data_for_key(&private_inputs, k);
-        app_runner.run(&binary, app, &tx, &x, &w)?;
-        eprintln!("✅  satisfied app contract for: {}", app);
-    }
-    if !app_present {
-        eprintln!("⚠️  app not present for VK: {}", vk);
-    }
-
-    Ok(())
-}
-
-fn data_for_key(inputs: &BTreeMap<String, Data>, k: &String) -> Data {
-    match inputs.get(k) {
-        Some(v) => v.clone(),
-        None => Data::empty(),
-    }
 }
 
 #[tracing::instrument(level = "debug", skip(app_runner))]

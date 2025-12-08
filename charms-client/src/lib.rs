@@ -1,6 +1,9 @@
-use crate::tx::{EnchantedTx, Tx, extended_normalized_spell};
+use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
+use anyhow::{anyhow, ensure};
+use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, check,
+    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
+    is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -131,16 +134,15 @@ pub fn utxo_id_hash(utxo_id: &UtxoId) -> B32 {
 /// Extract spells from previous transactions.
 #[tracing::instrument(level = "debug", skip(prev_txs, spell_vk))]
 pub fn prev_spells(
-    prev_txs: &Vec<Tx>,
+    prev_txs: &[Tx],
     spell_vk: &str,
     mock: bool,
 ) -> BTreeMap<TxId, (NormalizedSpell, usize)> {
     prev_txs
         .iter()
         .map(|tx| {
-            let tx_id = tx.tx_id();
             (
-                tx_id,
+                tx.tx_id(),
                 (
                     extended_normalized_spell(spell_vk, tx, mock),
                     tx.tx_outs_len(),
@@ -155,9 +157,10 @@ pub fn prev_spells(
 pub fn well_formed(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
 ) -> bool {
     check!(spell.version == CURRENT_VERSION);
+    check!(ensure_no_zero_amounts(spell).is_ok());
     let directly_created_by_prev_txns = |utxo_id: &UtxoId| -> bool {
         let tx_id = utxo_id.0;
         prev_spells
@@ -187,16 +190,12 @@ pub fn well_formed(
     };
     check!(
         tx_ins.iter().all(directly_created_by_prev_txns)
-            && spell
-                .tx
-                .refs
-                .iter()
-                .flatten()
-                .all(directly_created_by_prev_txns)
+            && (spell.tx.refs.iter().flatten()).all(directly_created_by_prev_txns)
     );
     let beamed_source_utxos_point_to_placeholder_dest_utxos = tx_ins_beamed_source_utxos
         .iter()
-        .all(|(tx_in_utxo_id, beaming_source_utxo_id)| {
+        .all(|(&i, beaming_source_utxo_id)| {
+            let tx_in_utxo_id = &tx_ins[i];
             let prev_txid = tx_in_utxo_id.0;
             let prev_tx = prev_spells.get(&prev_txid);
             let Some((prev_spell, _tx_outs)) = prev_tx else {
@@ -234,9 +233,18 @@ pub fn apps(spell: &NormalizedSpell) -> Vec<App> {
 pub fn to_tx(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
-    prev_txs: BTreeMap<TxId, Tx>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    prev_txs: &[Tx],
 ) -> Transaction {
+    let Some(tx_ins) = &spell.tx.ins else {
+        unreachable!("self.tx.ins MUST be Some at this point");
+    };
+
+    let tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId> = tx_ins_beamed_source_utxos
+        .iter()
+        .map(|(&i, utxo_id)| (tx_ins[i].clone(), utxo_id.clone()))
+        .collect();
+
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
         let charms = charms_in_utxo(prev_spell, utxo_id)
@@ -263,14 +271,7 @@ pub fn to_tx(
         prev_coins[utxo_id.1 as usize].clone()
     };
 
-    let Some(tx_ins) = &spell.tx.ins else {
-        unreachable!("self.tx.ins MUST be Some at this point");
-    };
-
-    let prev_txs = prev_txs
-        .into_iter()
-        .map(|(tx_id, tx)| (tx_id, (&tx).into()))
-        .collect();
+    let prev_txs = prev_txs.iter().map(|tx| (tx.tx_id(), tx.into())).collect();
 
     Transaction {
         ins: tx_ins.iter().map(from_utxo_id).collect(),
@@ -303,9 +304,105 @@ pub struct SpellProverInput {
     pub self_spell_vk: String,
     pub prev_txs: Vec<Tx>,
     pub spell: NormalizedSpell,
-    pub tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId>,
-    /// indices of apps in the spell that have contract proofs
+    pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     pub app_input: Option<AppInput>,
+}
+
+/// Check if the spell is correct.
+pub fn is_correct(
+    spell: &NormalizedSpell,
+    prev_txs: &Vec<Tx>,
+    app_input: Option<AppInput>,
+    spell_vk: &str,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    mock: bool,
+) -> bool {
+    check!(beaming_txs_have_finality_proofs(
+        prev_txs,
+        tx_ins_beamed_source_utxos
+    ));
+
+    let prev_spells = prev_spells(&prev_txs, spell_vk, mock);
+
+    check!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
+
+    let Some(prev_txids) = spell.tx.prev_txids() else {
+        unreachable!("the spell is well formed: tx.ins MUST be Some");
+    };
+    let all_prev_txids: BTreeSet<_> = tx_ins_beamed_source_utxos
+        .values()
+        .map(|u| &u.0)
+        .chain(prev_txids)
+        .collect();
+    check!(all_prev_txids == prev_spells.keys().collect());
+
+    let apps = apps(spell);
+
+    let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
+    let tx_is_simple_transfer_or_app_contracts_satisfied =
+        apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()
+            || app_input.is_some_and(|app_input| {
+                apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
+            });
+    check!(tx_is_simple_transfer_or_app_contracts_satisfied);
+
+    true
+}
+
+fn beaming_txs_have_finality_proofs(
+    prev_txs: &Vec<Tx>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+) -> bool {
+    let prev_txs_by_txid: BTreeMap<TxId, Tx> = by_txid(prev_txs);
+    let beaming_source_txids: BTreeSet<&TxId> = tx_ins_beamed_source_utxos
+        .values()
+        .map(|u| &u.0)
+        .collect::<BTreeSet<_>>();
+    beaming_source_txids.iter().all(|&txid| {
+        prev_txs_by_txid
+            .get(txid)
+            .is_some_and(|tx| tx.proven_final())
+    })
+}
+
+fn apps_satisfied(
+    app_input: &AppInput,
+    app_public_inputs: &BTreeMap<App, Data>,
+    tx: &Transaction,
+) -> bool {
+    let app_runner = AppRunner::new(false);
+    app_runner
+        .run_all(
+            &app_input.app_binaries,
+            &tx,
+            app_public_inputs,
+            &app_input.app_private_inputs,
+        )
+        .expect("all apps should run successfully");
+    true
+}
+
+pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let apps: Vec<_> = norm_spell
+        .app_public_inputs
+        .iter()
+        .map(|(app, _)| app)
+        .collect();
+    for out in &norm_spell.tx.outs {
+        for (i, data) in out {
+            let app = apps
+                .get(*i as usize)
+                .ok_or(anyhow!("no app for index {}", i))?;
+            if app.tag == TOKEN {
+                ensure!(
+                    data.value::<u64>()? != 0,
+                    "zero output amount for app {}",
+                    app
+                );
+            };
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

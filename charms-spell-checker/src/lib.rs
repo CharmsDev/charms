@@ -1,71 +1,40 @@
-pub mod bin;
+use charms_client::{NormalizedSpell, SpellProverInput, is_correct};
+use charms_data::util;
 
-use charms_client::{
-    NormalizedSpell,
-    tx::{Tx, by_txid},
-};
-use charms_data::{App, AppInput, Data, Transaction, UtxoId, check, is_simple_transfer};
-use std::collections::{BTreeMap, BTreeSet};
+pub fn main() {
+    // Read an input to the program.
+    let input_vec = sp1_zkvm::io::read_vec();
+    let input: SpellProverInput = util::read(input_vec.as_slice()).unwrap();
 
-/// Check if the spell is correct.
-pub(crate) fn is_correct(
-    spell: &NormalizedSpell,
-    prev_txs: &Vec<Tx>,
-    app_input: Option<AppInput>,
-    spell_vk: &String,
-    tx_ins_beamed_source_utxos: &BTreeMap<UtxoId, UtxoId>,
-) -> bool {
-    let prev_spells = charms_client::prev_spells(prev_txs, spell_vk, false);
+    let output = run(input);
 
-    check!(charms_client::well_formed(
-        spell,
-        &prev_spells,
-        tx_ins_beamed_source_utxos
-    ));
-
-    let Some(prev_txids) = spell.tx.prev_txids() else {
-        unreachable!("the spell is well formed: tx.ins MUST be Some");
-    };
-    let all_prev_txids: BTreeSet<_> = tx_ins_beamed_source_utxos
-        .values()
-        .map(|u| &u.0)
-        .chain(prev_txids)
-        .collect();
-    check!(all_prev_txids == prev_spells.keys().collect());
-
-    let apps = charms_client::apps(spell);
-
-    let charms_tx = charms_client::to_tx(
-        spell,
-        &prev_spells,
-        tx_ins_beamed_source_utxos,
-        by_txid(&prev_txs),
-    );
-    let tx_is_simple_transfer_or_app_contracts_satisfied =
-        apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()
-            || app_input.is_some_and(|app_input| {
-                apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
-            });
-    check!(tx_is_simple_transfer_or_app_contracts_satisfied);
-
-    true
+    // Commit to the public values of the program.
+    let output_vec = util::write(&output).unwrap();
+    sp1_zkvm::io::commit_slice(output_vec.as_slice());
 }
 
-fn apps_satisfied(
-    app_input: &AppInput,
-    app_public_inputs: &BTreeMap<App, Data>,
-    tx: &Transaction,
-) -> bool {
-    let app_runner = charms_app_runner::AppRunner::new(false);
-    app_runner
-        .run_all(
-            &app_input.app_binaries,
-            &tx,
-            app_public_inputs,
-            &app_input.app_private_inputs,
-        )
-        .expect("all apps should run successfully");
-    true
+pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
+    let SpellProverInput {
+        self_spell_vk,
+        prev_txs,
+        spell,
+        tx_ins_beamed_source_utxos,
+        app_input,
+    } = input;
+
+    // Check the spell that we're proving is correct.
+    assert!(is_correct(
+        &spell,
+        &prev_txs,
+        app_input,
+        &self_spell_vk,
+        &tx_ins_beamed_source_utxos,
+        false,
+    ));
+
+    eprintln!("Spell is correct!");
+
+    (self_spell_vk, spell)
 }
 
 #[cfg(test)]
