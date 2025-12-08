@@ -7,7 +7,7 @@ use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 
 /// Verification key for the current `charms-spell-checker` binary
 /// (and the current protocol version).
-pub const SPELL_VK: &str = "0x00525cdf1bd681e090397070b36b385a585d517005e746be94001f5cee884708";
+pub const SPELL_VK: &str = "0x00dae0740d4e90dbb0586ad6b976359a4747919c2c29dc81c29bd11635719f4c";
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "extractAndVerifySpell")]
