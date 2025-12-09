@@ -455,7 +455,8 @@ impl Prove for Prover {
             &prev_txs,
         );
 
-        let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
+        let app_binaries =
+            filter_app_binaries(&norm_spell, app_binaries, &app_private_inputs, &tx)?;
 
         let app_input = match app_binaries.is_empty() {
             true => None,
@@ -533,7 +534,8 @@ impl Prove for MockProver {
             &prev_txs,
         );
 
-        let app_binaries = filter_app_binaries(&norm_spell, app_binaries, &tx)?;
+        let app_binaries =
+            filter_app_binaries(&norm_spell, app_binaries, &app_private_inputs, &tx)?;
 
         let cycles = self.app_runner.run_all(
             &app_binaries,
@@ -815,13 +817,20 @@ impl ProveSpellTxImpl {
 fn filter_app_binaries(
     norm_spell: &NormalizedSpell,
     app_binaries: BTreeMap<B32, Vec<u8>>,
+    app_private_inputs: &BTreeMap<App, Data>,
     tx: &Transaction,
 ) -> anyhow::Result<BTreeMap<B32, Vec<u8>>> {
     let vks = norm_spell
         .app_public_inputs
-        .keys()
-        .filter(|app| !is_simple_transfer(app, tx))
-        .map(|app| &app.vk)
+        .iter()
+        .filter(|(app, data)| {
+            !data.is_empty()
+                || !app_private_inputs
+                    .get(app)
+                    .is_none_or(|data| data.is_empty())
+                || !is_simple_transfer(app, tx)
+        })
+        .map(|(app, _)| &app.vk)
         .collect::<BTreeSet<_>>();
     let app_binaries: BTreeMap<_, _> = app_binaries
         .into_iter()
