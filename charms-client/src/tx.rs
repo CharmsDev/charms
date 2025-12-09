@@ -33,6 +33,7 @@ pub trait EnchantedTx {
 #[strum_discriminants(
     name(Chain),
     derive(AsRefStr, EnumString, Ord, PartialOrd, Serialize, Deserialize),
+    serde(rename_all = "snake_case"),
     strum(serialize_all = "snake_case")
 )]
 pub enum Tx {
@@ -187,11 +188,42 @@ pub fn by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn chain_names() {
         assert_eq!(Chain::Bitcoin.as_ref(), "bitcoin");
         assert_eq!(Chain::Cardano.as_ref(), "cardano");
+    }
+
+    #[test]
+    fn chain_name_from_str() {
+        assert_eq!(Chain::from_str("bitcoin").unwrap(), Chain::Bitcoin);
+        assert_eq!(Chain::from_str("cardano").unwrap(), Chain::Cardano);
+    }
+
+    #[test]
+    fn chain_name_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<Chain>(r#""bitcoin""#).unwrap(),
+            Chain::Bitcoin
+        );
+        assert_eq!(
+            serde_json::from_str::<Chain>(r#""cardano""#).unwrap(),
+            Chain::Cardano
+        );
+    }
+
+    #[test]
+    fn chain_name_serialize() {
+        assert_eq!(
+            serde_json::to_string(&Chain::Bitcoin).unwrap(),
+            r#""bitcoin""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Chain::Cardano).unwrap(),
+            r#""cardano""#
+        );
     }
 
     #[test]
