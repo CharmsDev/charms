@@ -12,6 +12,7 @@ rustup target add wasm32-wasip1
 Build with:
 
 ```sh
+cargo update
 app_bin=$(charms app build)
 ```
 
