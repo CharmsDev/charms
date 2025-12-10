@@ -270,7 +270,7 @@ pub fn tx_output(tx: &NormalizedTransaction) -> anyhow::Result<Vec<TxOut>> {
     Ok(tx_outputs)
 }
 
-pub fn tx_input(ins: &Vec<UtxoId>) -> Vec<TxIn> {
+pub fn tx_input(ins: &[UtxoId]) -> Vec<TxIn> {
     ins.iter()
         .map(|utxo_id| TxIn {
             previous_output: OutPoint {

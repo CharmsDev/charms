@@ -1,10 +1,9 @@
-use crate::{
-    spell,
-    spell::{CharmsFee, Spell},
-};
+use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use charms_client::{
+    NormalizedSpell,
     cardano_tx::{CardanoTx, multi_asset, tx_hash},
+    charms,
     tx::Tx,
 };
 use charms_data::{TxId, UtxoId};
@@ -36,13 +35,10 @@ use std::collections::BTreeMap;
 
 fn tx_inputs(
     tx_b: &mut TransactionBuilder,
-    ins: &[spell::Input],
+    ins: &[UtxoId],
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
-    for input in ins {
-        let Some(utxo_id) = &input.utxo_id else {
-            bail!("no utxo_id in spell input {:?}", &input);
-        };
+    for utxo_id in ins {
         let input = tx_input(utxo_id);
         let output = tx_output(prev_txs_by_id, utxo_id)?;
         let input_builder = SingleInputBuilder::new(input, output);
@@ -81,20 +77,18 @@ pub const TWO_ADA: u64 = 2000000;
 
 fn tx_outputs(
     tx_b: &mut TransactionBuilder,
-    spell: &Spell,
+    spell: &NormalizedSpell,
 ) -> anyhow::Result<BTreeMap<PolicyId, PlutusV3Script>> {
-    let outs = &spell.outs;
+    let outs = &spell.tx.outs;
+    let coin_outs = spell.tx.coins.as_ref().expect("spell coins are expected");
 
     let mut scripts = BTreeMap::new();
 
-    for output in outs {
-        let Some(address) = output.address.as_ref() else {
-            bail!("no address in spell output {:?}", &output);
-        };
-        let address =
-            Address::from_bech32(address).map_err(|e| anyhow!("Failed to parse address: {}", e))?;
-        let amount = output.amount.unwrap_or(TWO_ADA);
-        let (multiasset, more_scripts) = multi_asset(&spell.charms(&output.charms)?)?;
+    for (output, coin) in outs.iter().zip(coin_outs.iter()) {
+        let address = Address::from_raw_bytes(&coin.dest)
+            .map_err(|e| anyhow!("Failed to convert address: {}", e))?;
+        let amount = coin.amount;
+        let (multiasset, more_scripts) = multi_asset(&charms(spell, output))?;
 
         let value = Value::new(amount.into(), multiasset);
         scripts.extend(more_scripts);
@@ -110,7 +104,7 @@ fn tx_outputs(
 
 /// Build a transaction only dealing with Charms tokens
 pub fn from_spell(
-    spell: &Spell,
+    spell: &NormalizedSpell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     change_address: &Address,
     spell_data: &[u8],
@@ -123,7 +117,11 @@ pub fn from_spell(
     };
     let mut tx_b = transaction_builder();
 
-    tx_inputs(&mut tx_b, &spell.ins, prev_txs_by_id)?;
+    tx_inputs(
+        &mut tx_b,
+        spell.tx.ins.as_ref().expect("tx ins are expected"),
+        prev_txs_by_id,
+    )?;
 
     let scripts = tx_outputs(&mut tx_b, spell)?;
     let scripts_count = scripts.len() as u64;
@@ -298,7 +296,7 @@ fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
 }
 
 pub fn make_transactions(
-    spell: &Spell,
+    spell: &NormalizedSpell,
     funding_utxo: UtxoId,
     funding_utxo_value: u64,
     change_address: &String,

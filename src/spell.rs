@@ -797,7 +797,7 @@ impl ProveSpellTxImpl {
             }
             Chain::Cardano => {
                 let txs = cardano_tx::make_transactions(
-                    &spell,
+                    &norm_spell,
                     funding_utxo,
                     funding_utxo_value,
                     &change_address,
