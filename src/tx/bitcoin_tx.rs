@@ -1,7 +1,7 @@
 use crate::{
     script::{control_block, data_script, taproot_spend_info},
     spell,
-    spell::{CharmsFee, Input, Output, Spell},
+    spell::CharmsFee,
 };
 use anyhow::bail;
 use bitcoin::{
@@ -17,6 +17,7 @@ use bitcoin::{
     transaction::Version,
 };
 use charms_client::{
+    NormalizedSpell, NormalizedTransaction,
     bitcoin_tx::BitcoinTx,
     tx::{Chain, Tx},
 };
@@ -254,23 +255,12 @@ pub fn tx_total_amount_out(tx: &Transaction) -> Amount {
     tx.output.iter().map(|tx_out| tx_out.value).sum::<Amount>()
 }
 
-const MIN_SATS_FOR_ALL_ADDRESS_TYPES: u64 = 547;
-
-pub fn tx_output(outs: &[Output]) -> anyhow::Result<Vec<TxOut>> {
-    let tx_outputs = outs
+pub fn tx_output(tx: &NormalizedTransaction) -> anyhow::Result<Vec<TxOut>> {
+    let tx_outputs = (tx.coins.as_ref().expect("coins should be provided"))
         .iter()
         .map(|u| {
-            let value = Amount::from_sat(u.amount.unwrap_or(MIN_SATS_FOR_ALL_ADDRESS_TYPES));
-            let address = u
-                .address
-                .as_ref()
-                .expect("address should be provided")
-                .clone();
-            let script_pubkey = ScriptBuf::from(
-                Address::from_str(&address)?
-                    .assume_checked()
-                    .script_pubkey(),
-            );
+            let value = Amount::from_sat(u.amount);
+            let script_pubkey = ScriptBuf::from_bytes(u.dest.to_vec());
             Ok(TxOut {
                 value,
                 script_pubkey,
@@ -280,26 +270,23 @@ pub fn tx_output(outs: &[Output]) -> anyhow::Result<Vec<TxOut>> {
     Ok(tx_outputs)
 }
 
-pub fn tx_input(ins: &[Input]) -> Vec<TxIn> {
+pub fn tx_input(ins: &Vec<UtxoId>) -> Vec<TxIn> {
     ins.iter()
-        .map(|u| {
-            let utxo_id = u.utxo_id.as_ref().unwrap();
-            TxIn {
-                previous_output: OutPoint {
-                    txid: Txid::from_byte_array(utxo_id.0.0),
-                    vout: utxo_id.1,
-                },
-                script_sig: Default::default(),
-                sequence: Default::default(),
-                witness: Default::default(),
-            }
+        .map(|utxo_id| TxIn {
+            previous_output: OutPoint {
+                txid: Txid::from_byte_array(utxo_id.0.0),
+                vout: utxo_id.1,
+            },
+            script_sig: Default::default(),
+            sequence: Default::default(),
+            witness: Default::default(),
         })
         .collect()
 }
 
-pub fn from_spell(spell: &Spell) -> anyhow::Result<BitcoinTx> {
-    let input = tx_input(&spell.ins);
-    let output = tx_output(&spell.outs)?;
+pub fn from_spell(spell: &NormalizedSpell) -> anyhow::Result<BitcoinTx> {
+    let input = tx_input(&spell.tx.ins.as_ref().expect("inputs are expected"));
+    let output = tx_output(&spell.tx)?;
 
     let tx = Transaction {
         version: Version::TWO,
@@ -311,7 +298,7 @@ pub fn from_spell(spell: &Spell) -> anyhow::Result<BitcoinTx> {
 }
 
 pub fn make_transactions(
-    spell: &Spell,
+    spell: &NormalizedSpell,
     funding_utxo: UtxoId,
     funding_utxo_value: u64,
     change_address: &String,
@@ -351,7 +338,7 @@ pub fn make_transactions(
     // Parse fee rate
     let fee_rate = FeeRate::from_sat_per_kwu((fee_rate * 250.0) as u64);
 
-    let tx = from_spell(&spell)?;
+    let tx = from_spell(spell)?;
     let BitcoinTx::Simple(tx) = tx else {
         bail!("expected simple transaction")
     };

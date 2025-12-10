@@ -759,8 +759,8 @@ impl ProveSpellTxImpl {
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
 
-        let (norm_spell, proof, proof_app_cycles) = self.prover.prove(
-            norm_spell,
+        let (truncated_norm_spell, proof, proof_app_cycles) = self.prover.prove(
+            norm_spell.clone(),
             binaries,
             app_private_inputs,
             prev_txs,
@@ -776,14 +776,14 @@ impl ProveSpellTxImpl {
         tracing::info!("proof generated. total app cycles: {}", total_cycles);
 
         // Serialize spell into CBOR
-        let spell_data = util::write(&(&norm_spell, &proof))?;
+        let spell_data = util::write(&(&truncated_norm_spell, &proof))?;
 
         let charms_fee = self.charms_fee_settings.clone();
 
         match chain {
             Chain::Bitcoin => {
                 let txs = bitcoin_tx::make_transactions(
-                    &spell,
+                    &norm_spell,
                     funding_utxo,
                     funding_utxo_value,
                     &change_address,
@@ -1057,7 +1057,7 @@ pub fn ensure_all_prev_txs_are_present(
     Ok(())
 }
 
-const DEFAULT_COIN_AMOUNT: u64 = 1000;
+const DEFAULT_COIN_AMOUNT: u64 = 547;
 
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(
@@ -1138,14 +1138,12 @@ impl ProveSpellTxImpl {
                     .collect::<anyhow::Result<Vec<_>>>()?
                     .iter()
                     .sum();
-                let total_sats_out: u64 = (&prove_request.spell.outs)
-                    .iter()
-                    .map(|o| o.amount.unwrap_or(DEFAULT_COIN_AMOUNT))
-                    .sum();
+                let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
+                let total_sats_out: u64 = (coin_outs).iter().map(|o| o.amount).sum();
 
                 let funding_utxo_sats = prove_request.funding_utxo_value;
 
-                let bitcoin_tx = from_spell(&prove_request.spell)?;
+                let bitcoin_tx = from_spell(&norm_spell)?;
                 let tx_size = bitcoin_tx.inner().vsize();
                 let (mut norm_spell, ..) = prove_request.spell.normalized()?;
                 norm_spell.tx.ins = None;
