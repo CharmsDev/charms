@@ -2,14 +2,14 @@
 name = "charms-spell-checker"
 description = "Recursive validation of spells creating Charms"
 
-version = "0.10.0"
+version = "0.10.2"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
 
 [dependencies]
-charms-data = { path = "../charms-data", version = "0.10.0" }
-charms-client = { path = "../charms-client", version = "0.10.0" }
+charms-data = { path = "../charms-data", version = "0.10.2" }
+charms-client = { path = "../charms-client", version = "0.10.2" }
 sp1-zkvm = { version = "5.2.3", features = ["verify"] }
 
 [profile.release]
