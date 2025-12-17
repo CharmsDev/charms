@@ -3,6 +3,7 @@ use charms_sdk::data::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NftContent {
@@ -113,6 +114,7 @@ fn can_mint_token(token_app: &App, tx: &Transaction) -> bool {
 mod test {
     use super::*;
     use charms_sdk::data::UtxoId;
+    use std::str::FromStr;
 
     #[test]
     fn dummy() {}

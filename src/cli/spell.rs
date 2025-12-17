@@ -15,7 +15,7 @@ use charms_client::{
 use charms_data::UtxoId;
 use charms_lib::SPELL_VK;
 use serde_json::json;
-use std::future::Future;
+use std::{future::Future, str::FromStr};
 
 pub trait Check {
     fn check(&self, params: SpellCheckParams) -> Result<()>;

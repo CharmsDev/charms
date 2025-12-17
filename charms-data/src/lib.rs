@@ -3,6 +3,7 @@ use ark_std::{
     cmp::Ordering,
     collections::BTreeMap,
     format,
+    str::FromStr,
     string::{String, ToString},
     vec::Vec,
 };
@@ -98,13 +99,21 @@ impl UtxoId {
         UtxoId(TxId(txid_bytes), index)
     }
 
+    fn to_string_internal(&self) -> String {
+        format!("{}:{}", self.0.to_string(), self.1)
+    }
+}
+
+impl FromStr for UtxoId {
+    type Err = anyhow::Error;
+
     /// Try to create `UtxoId` from a string in the format `txid_hex:index`.
     /// Example:
     /// ```
     /// use charms_data::UtxoId;
     /// let utxo_id = UtxoId::from_str("92077a14998b31367efeec5203a00f1080facdb270cbf055f09b66ae0a273c7d:3").unwrap();
     /// ```
-    pub fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(anyhow!("expected format: txid_hex:index"));
@@ -117,10 +126,6 @@ impl UtxoId {
             .map_err(|e| anyhow!("invalid index: {}", e))?;
 
         Ok(UtxoId(txid, index))
-    }
-
-    fn to_string_internal(&self) -> String {
-        format!("{}:{}", self.0.to_string(), self.1)
     }
 }
 
@@ -215,6 +220,41 @@ pub struct App {
     pub vk: B32,
 }
 
+impl FromStr for App {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        // Split the string at '/'
+        let mut parts: Vec<&str> = value.split('/').collect();
+        if parts[0].is_empty() && parts[1].is_empty() {
+            parts.remove(0);
+            parts[0] = "/";
+        }
+        let parts = parts;
+        if parts.len() != 3 {
+            return Err(anyhow!("expected format: tag_char/identity_hex/vk_hex"));
+        }
+
+        // Decode the hex strings
+        let tag: char = {
+            let mut chars = parts[0].chars();
+            let Some(tag) = chars.next() else {
+                return Err(anyhow!("expected tag"));
+            };
+            let None = chars.next() else {
+                return Err(anyhow!("tag must be a single character"));
+            };
+            tag
+        };
+
+        let identity = B32::from_str(parts[1]).map_err(|e| anyhow!(e))?;
+
+        let vk = B32::from_str(parts[2]).map_err(|e| anyhow!(e))?;
+
+        Ok(App { tag, identity, vk })
+    }
+}
+
 impl fmt::Display for App {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}/{}/{}", self.tag, self.identity, self.vk)
@@ -263,34 +303,7 @@ impl<'de> Deserialize<'de> for App {
             where
                 E: de::Error,
             {
-                // Split the string at '/'
-                let mut parts: Vec<&str> = value.split('/').collect();
-                if parts[0].is_empty() && parts[1].is_empty() {
-                    parts.remove(0);
-                    parts[0] = "/";
-                }
-                let parts = parts;
-                if parts.len() != 3 {
-                    return Err(E::custom("expected format: tag_char/identity_hex/vk_hex"));
-                }
-
-                // Decode the hex strings
-                let tag: char = {
-                    let mut chars = parts[0].chars();
-                    let Some(tag) = chars.next() else {
-                        return Err(E::custom("expected tag"));
-                    };
-                    let None = chars.next() else {
-                        return Err(E::custom("tag must be a single character"));
-                    };
-                    tag
-                };
-
-                let identity = B32::from_str(parts[1]).map_err(E::custom)?;
-
-                let vk = B32::from_str(parts[2]).map_err(E::custom)?;
-
-                Ok(App { tag, identity, vk })
+                App::from_str(value).map_err(E::custom)
             }
 
             fn visit_seq<A>(self, mut seq: A) -> core::result::Result<Self::Value, A::Error>
@@ -325,6 +338,16 @@ impl<'de> Deserialize<'de> for App {
 pub struct TxId(pub [u8; 32]);
 
 impl TxId {
+    fn to_string_internal(&self) -> String {
+        let mut txid = self.0;
+        txid.reverse();
+        hex::encode(&txid)
+    }
+}
+
+impl FromStr for TxId {
+    type Err = anyhow::Error;
+
     /// Try to create `TxId` from a string of 64 hex characters.
     /// Note that string representation of transaction IDs in Bitcoin is reversed, and so is ours
     /// (for compatibility).
@@ -334,18 +357,12 @@ impl TxId {
     /// use charms_data::TxId;
     /// let tx_id = TxId::from_str("92077a14998b31367efeec5203a00f1080facdb270cbf055f09b66ae0a273c7d").unwrap();
     /// ```
-    pub fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self> {
         ensure!(s.len() == 64, "expected 64 hex characters");
         let bytes = hex::decode(s).map_err(|e| anyhow!("invalid txid hex: {}", e))?;
         let mut txid: [u8; 32] = bytes.try_into().expect("exactly 32 bytes expected");
         txid.reverse();
         Ok(TxId(txid))
-    }
-
-    fn to_string_internal(&self) -> String {
-        let mut txid = self.0;
-        txid.reverse();
-        hex::encode(&txid)
     }
 }
 
@@ -420,9 +437,10 @@ impl<'de> Deserialize<'de> for TxId {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct B32(pub [u8; 32]);
 
-impl B32 {
-    /// Try to create `B32` from a string of 64 hex characters.
-    pub fn from_str(s: &str) -> Result<Self> {
+impl FromStr for B32 {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         ensure!(s.len() == 64, "expected 64 hex characters");
         let bytes = hex::decode(s).map_err(|e| anyhow!("invalid hex: {}", e))?;
         let hash: [u8; 32] = bytes.try_into().expect("exactly 32 bytes expected");

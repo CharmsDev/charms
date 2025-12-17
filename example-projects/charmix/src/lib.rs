@@ -63,6 +63,7 @@ pub(crate) fn hash(data: &str) -> B32 {
 mod test {
     use super::*;
     use charms_sdk::data::UtxoId;
+    use std::str::FromStr;
 
     #[test]
     fn dummy() {}

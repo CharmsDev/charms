@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     process::{Command, Stdio},
+    str::FromStr,
 };
 
 pub trait List {
