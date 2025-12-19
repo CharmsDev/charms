@@ -6,7 +6,7 @@ use crate::{
 use anyhow::Result;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -36,6 +36,8 @@ fn cors_layer() -> CorsLayer {
         .max_age(Duration::from_secs(3600))
 }
 
+const MAX_BODY_SIZE: usize = 1024 * 1024 * 32;
+
 impl Server {
     pub fn new(config: ServerConfig, prover: ProveSpellTxImpl) -> Self {
         let prover = Arc::new(prover);
@@ -50,6 +52,7 @@ impl Server {
         let app = app
             .route("/spells/prove", post(prove_spell))
             .with_state(self.prover.clone())
+            .layer(DefaultBodyLimit::max(MAX_BODY_SIZE))
             .route("/ready", get(|| async { "OK" }))
             .layer(cors_layer());
 
