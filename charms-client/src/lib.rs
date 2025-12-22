@@ -383,11 +383,7 @@ fn apps_satisfied(
 }
 
 pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
-    let apps: Vec<_> = norm_spell
-        .app_public_inputs
-        .iter()
-        .map(|(app, _)| app)
-        .collect();
+    let apps = apps(norm_spell);
     for out in &norm_spell.tx.outs {
         for (i, data) in out {
             let app = apps
