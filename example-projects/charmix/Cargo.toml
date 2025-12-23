@@ -15,6 +15,7 @@ lto = "fat"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+overflow-checks = true
 
 # Empty `[workspace]` section to make this a "top-level" project
 [workspace]

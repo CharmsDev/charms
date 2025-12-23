@@ -17,6 +17,7 @@ codegen-units = 1
 lto = "fat"
 opt-level = 3
 strip = "debuginfo"
+overflow-checks = true
 
 [patch.crates-io]
 secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.29.1-sp1-5.0.0" }
