@@ -313,6 +313,7 @@ pub fn make_transactions(
     let network = match &change_address {
         a if a.is_valid_for_network(Network::Bitcoin) => Network::Bitcoin.to_core_arg(),
         a if a.is_valid_for_network(Network::Testnet4) => Network::Testnet4.to_core_arg(),
+        a if a.is_valid_for_network(Network::Regtest) => Network::Regtest.to_core_arg(),
         _ => bail!("Invalid change address: {:?}", change_address),
     };
 
