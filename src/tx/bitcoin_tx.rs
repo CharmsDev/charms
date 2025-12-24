@@ -90,7 +90,9 @@ pub fn add_spell(
     );
     let spell_input_idx = tx.input.len() - 1;
 
-    let signature = create_tx_signature(keypair, &mut tx, spell_input_idx, &commit_txout, &script);
+    let prev_outs = prev_outs(&tx, commit_txout, prev_txs);
+
+    let signature = create_tx_signature(keypair, &mut tx, spell_input_idx, &prev_outs, &script);
 
     append_witness_data(
         &mut tx.input[spell_input_idx].witness,
@@ -115,6 +117,23 @@ pub fn add_spell(
     [commit_tx, tx].to_vec()
 }
 
+fn prev_outs(tx: &Transaction, commit_txout: &TxOut, prev_txs: &BTreeMap<TxId, Tx>) -> Vec<TxOut> {
+    tx.input
+        .iter()
+        .take(tx.input.len() - 1)
+        .map(|txin| {
+            let txid = TxId(txin.previous_output.txid.to_byte_array());
+            let prev_tx = prev_txs.get(&txid).expect("prev tx not found");
+            let Tx::Bitcoin(btc_tx) = prev_tx else {
+                panic!("expected bitcoin tx")
+            };
+            let vout = txin.previous_output.vout as usize;
+            btc_tx.inner().output[vout].clone()
+        })
+        .chain(Some(commit_txout.clone()))
+        .collect()
+}
+
 /// fee covering only the marginal cost of spending the committed spell output.
 fn compute_change_amount(
     fee_rate: FeeRate,
@@ -125,7 +144,7 @@ fn compute_change_amount(
 ) -> Amount {
     let script_input_weight = Weight::from_wu(script_len as u64 + 268);
     let change_output_weight = Weight::from_wu(172);
-    let signatures_weight = Weight::from_wu(66) * tx.input.len() as u64;
+    let signatures_weight = Weight::from_wu(65) * tx.input.len() as u64;
 
     let total_tx_weight = dbg!(tx.weight() + Weight::from_wu(2))
         + dbg!(signatures_weight)
@@ -194,20 +213,20 @@ fn modify_tx(
     }
 }
 
-const TAP_SIGHASH_TYPE: TapSighashType = TapSighashType::AllPlusAnyoneCanPay;
+const TAP_SIGHASH_TYPE: TapSighashType = TapSighashType::Default;
 
 fn create_tx_signature(
     keypair: Keypair,
     tx: &mut Transaction,
     input_index: usize,
-    prev_out: &TxOut,
+    prev_outs: &[TxOut],
     script: &ScriptBuf,
 ) -> schnorr::Signature {
     let mut sighash_cache = SighashCache::new(tx);
     let sighash = sighash_cache
         .taproot_script_spend_signature_hash(
             input_index,
-            &Prevouts::One(input_index, prev_out),
+            &Prevouts::All(prev_outs),
             TapLeafHash::from_script(script, LeafVersion::TapScript),
             TAP_SIGHASH_TYPE,
         )
@@ -362,4 +381,54 @@ pub fn make_transactions(
         .into_iter()
         .map(|tx| Tx::Bitcoin(BitcoinTx::Simple(tx)))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bitcoin::{ScriptBuf, Txid, absolute::LockTime, transaction::Version};
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn test_add_spell_signature_length() {
+        let dummy_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![],
+        };
+
+        let spell_data = b"spell";
+        let funding_out_point = OutPoint {
+            txid: Txid::all_zeros(),
+            vout: 0,
+        };
+        let funding_value = Amount::from_sat(10000);
+        let change_pubkey = ScriptBuf::new();
+        let fee_rate = FeeRate::from_sat_per_vb(1).unwrap();
+        let prev_txs = BTreeMap::new();
+        let charms_fee_pubkey = None;
+        let charms_fee = Amount::ZERO;
+
+        let txs = add_spell(
+            dummy_tx,
+            spell_data,
+            funding_out_point,
+            funding_value,
+            change_pubkey,
+            fee_rate,
+            &prev_txs,
+            charms_fee_pubkey,
+            charms_fee,
+        );
+
+        let spell_tx = &txs[1];
+        let witness = &spell_tx.input.last().unwrap().witness;
+        // The first element of witness is the signature
+        let sig_vec = witness.nth(0).unwrap();
+
+        // Currently it should be 64 bytes (64 sig + 0 sighash)
+        assert_eq!(sig_vec.len(), 64);
+        // assert_eq!(sig_vec.last(), Some(&0x81)); // SIGHASH_ALL | SIGHASH_ANYONECANPAY
+    }
 }
