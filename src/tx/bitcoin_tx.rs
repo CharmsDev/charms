@@ -194,6 +194,8 @@ fn modify_tx(
     }
 }
 
+const TAP_SIGHASH_TYPE: TapSighashType = TapSighashType::AllPlusAnyoneCanPay;
+
 fn create_tx_signature(
     keypair: Keypair,
     tx: &mut Transaction,
@@ -207,7 +209,7 @@ fn create_tx_signature(
             input_index,
             &Prevouts::One(input_index, prev_out),
             TapLeafHash::from_script(script, LeafVersion::TapScript),
-            TapSighashType::AllPlusAnyoneCanPay,
+            TAP_SIGHASH_TYPE,
         )
         .unwrap();
     let secp256k1 = Secp256k1::new();
@@ -229,7 +231,7 @@ fn append_witness_data(
     witness.push(
         taproot::Signature {
             signature,
-            sighash_type: TapSighashType::AllPlusAnyoneCanPay,
+            sighash_type: TAP_SIGHASH_TYPE,
         }
         .to_vec(),
     );
