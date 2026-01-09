@@ -183,7 +183,7 @@ fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> 
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) fn spell_with_committed_ins_and_coins(
+pub fn spell_with_committed_ins_and_coins(
     tx: &BitcoinTx,
     mut spell: NormalizedSpell,
 ) -> NormalizedSpell {
