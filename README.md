@@ -32,11 +32,11 @@ cd ./my-token
 ls -l
 ```
 
-Now head on to [charms.dev](https://charms.dev) to learn more!
+Now head on to [docs.charms.dev](https://docs.charms.dev) to learn more!
 
 ## Documentation
 
-Concepts and guides: [charms.dev](https://charms.dev)
+Concepts and guides: [docs.charms.dev](https://docs.charms.dev)
 
 Charms CLI:
 

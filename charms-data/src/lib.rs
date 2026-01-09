@@ -110,6 +110,7 @@ impl FromStr for UtxoId {
     /// Try to create `UtxoId` from a string in the format `txid_hex:index`.
     /// Example:
     /// ```
+    /// use std::str::FromStr;
     /// use charms_data::UtxoId;
     /// let utxo_id = UtxoId::from_str("92077a14998b31367efeec5203a00f1080facdb270cbf055f09b66ae0a273c7d:3").unwrap();
     /// ```
@@ -354,6 +355,7 @@ impl FromStr for TxId {
     ///
     /// Example:
     /// ```
+    /// use std::str::FromStr;
     /// use charms_data::TxId;
     /// let tx_id = TxId::from_str("92077a14998b31367efeec5203a00f1080facdb270cbf055f09b66ae0a273c7d").unwrap();
     /// ```
