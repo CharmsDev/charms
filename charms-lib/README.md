@@ -33,3 +33,19 @@ In this directory:
 ```sh
 node test/extractAndVerifySpell.node.test.js
 ```
+
+## Packaging for NPM
+
+Make sure `wasm-pack` is installed:
+
+```bash
+cargo install wasm-pack
+```
+
+Pack charms-lib for NPM:
+
+```bash
+wasm-pack build --release --features wasm
+```
+
+The NPM package will be in `./pkg` dir.
