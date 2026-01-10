@@ -24,6 +24,8 @@ use charms_client::{
 use charms_data::{TxId, UtxoId};
 use std::{collections::BTreeMap, str::FromStr};
 
+const DUST_LIMIT: Amount = Amount::from_sat(300);
+
 /// Adds spell data to a Bitcoin transaction by creating a committed spell output and spending it.
 ///
 /// # Arguments
@@ -72,10 +74,23 @@ pub fn add_spell(
 
     let mut tx = tx;
     if let Some(charms_fee_pubkey) = charms_fee_pubkey {
-        tx.output.push(TxOut {
-            value: charms_fee,
-            script_pubkey: charms_fee_pubkey,
-        });
+        // Sum up existing payments to the fee address
+        let existing_fee_amount: Amount = tx
+            .output
+            .iter()
+            .filter(|txout| txout.script_pubkey == charms_fee_pubkey)
+            .map(|txout| txout.value)
+            .sum();
+
+        // Only add a fee output if existing payments are insufficient.
+        // Make sure the additional amount is at least the dust limit of 300 sats.
+        if existing_fee_amount < charms_fee {
+            let additional_fee = charms_fee - existing_fee_amount + DUST_LIMIT;
+            tx.output.push(TxOut {
+                value: additional_fee,
+                script_pubkey: charms_fee_pubkey,
+            });
+        }
     }
 
     let script_len = script.len();
