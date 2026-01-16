@@ -226,27 +226,19 @@ impl FromStr for App {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         // Split the string at '/'
-        let mut parts: Vec<&str> = value.split('/').collect();
+        let mut parts = value.split('/').collect::<Vec<&str>>();
+        let mut parts = parts.as_mut_slice();
+        ensure!(parts.len() >= 3);
         if parts[0].is_empty() && parts[1].is_empty() {
-            parts.remove(0);
+            parts = &mut parts[1..];
             parts[0] = "/";
         }
-        let parts = parts;
-        if parts.len() != 3 {
-            return Err(anyhow!("expected format: tag_char/identity_hex/vk_hex"));
-        }
+        ensure!(
+            parts.len() == 3,
+            "expected format: tag_char/identity_hex/vk_hex"
+        );
 
-        // Decode the hex strings
-        let tag: char = {
-            let mut chars = parts[0].chars();
-            let Some(tag) = chars.next() else {
-                return Err(anyhow!("expected tag"));
-            };
-            let None = chars.next() else {
-                return Err(anyhow!("tag must be a single character"));
-            };
-            tag
-        };
+        let tag = char::from_str(parts[0]).map_err(|e| anyhow!(e))?;
 
         let identity = B32::from_str(parts[1]).map_err(|e| anyhow!(e))?;
 
