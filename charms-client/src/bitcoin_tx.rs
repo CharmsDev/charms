@@ -1,12 +1,11 @@
 use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    CompactTarget, MerkleBlock, Target, Transaction, TxIn, Txid,
+    CompactTarget, MerkleBlock, Target, Transaction, Txid,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
-    opcodes::all::{OP_ENDIF, OP_IF},
-    script::{Instruction, PushBytes},
+    script::Instruction,
 };
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
@@ -72,11 +71,7 @@ impl EnchantedTx for BitcoinTx {
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = self.inner();
 
-        let Some((spell_tx_in, _tx_ins)) = tx.input.split_last() else {
-            bail!("transaction does not have inputs")
-        };
-
-        let (spell, proof) = parse_spell_and_proof(spell_tx_in)?;
+        let (spell, proof) = parse_spell_and_proof_from_op_return(tx)?;
 
         if !mock {
             ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
@@ -114,7 +109,7 @@ impl EnchantedTx for BitcoinTx {
 
     fn spell_ins(&self) -> Vec<UtxoId> {
         let tx = self.inner();
-        tx.input[..tx.input.len() - 1] // exclude spell commitment input
+        tx.input
             .iter()
             .map(|tx_in| {
                 let out_point = tx_in.previous_output;
@@ -200,45 +195,34 @@ pub(crate) fn spell_with_committed_ins_and_coins(
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub fn parse_spell_and_proof(spell_tx_in: &TxIn) -> anyhow::Result<(NormalizedSpell, Proof)> {
+pub fn parse_spell_and_proof_from_op_return(
+    tx: &Transaction,
+) -> anyhow::Result<(NormalizedSpell, Proof)> {
+    // Find OP_RETURN output
+    let op_return_output = tx
+        .output
+        .iter()
+        .find(|out| out.script_pubkey.is_op_return())
+        .ok_or(anyhow!("no OP_RETURN output found"))?;
+
+    // Extract data from OP_RETURN script
+    let mut instructions = op_return_output.script_pubkey.instructions();
+
+    // First instruction should be OP_RETURN
     ensure!(
-        spell_tx_in
-            .witness
-            .taproot_control_block()
-            .ok_or(anyhow!("no control block"))?
-            .len()
-            == 33,
-        "the Taproot tree contains more than one leaf: only a single script is supported"
+        instructions.next().transpose()?.is_some(),
+        "empty OP_RETURN script"
     );
 
-    let leaf_script = spell_tx_in
-        .witness
-        .taproot_leaf_script()
-        .ok_or(anyhow!("no spell data in the last input's witness"))?;
-
-    let mut instructions = leaf_script.script.instructions();
-
-    ensure!(instructions.next() == Some(Ok(Instruction::PushBytes(PushBytes::empty()))));
-    ensure!(instructions.next() == Some(Ok(Instruction::Op(OP_IF))));
-    let Some(Ok(Instruction::PushBytes(push_bytes))) = instructions.next() else {
-        bail!("no spell data")
-    };
-    if push_bytes.as_bytes() != b"spell" {
-        bail!("no spell marker")
-    }
-
+    // Collect all remaining data pushes
     let mut spell_data = vec![];
-
-    loop {
-        match instructions.next() {
-            Some(Ok(Instruction::PushBytes(push_bytes))) => {
+    for instruction in instructions {
+        match instruction? {
+            Instruction::PushBytes(push_bytes) => {
                 spell_data.extend(push_bytes.as_bytes());
             }
-            Some(Ok(Instruction::Op(OP_ENDIF))) => {
-                break;
-            }
             _ => {
-                bail!("unexpected opcode")
+                bail!("unexpected opcode in OP_RETURN")
             }
         }
     }

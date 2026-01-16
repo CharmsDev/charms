@@ -1,19 +1,14 @@
 use crate::{
-    script::{control_block, data_script, taproot_spend_info},
     spell,
     spell::CharmsFee,
 };
 use anyhow::bail;
 use bitcoin::{
-    self, Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, TapLeafHash, TapSighashType,
-    Transaction, TxIn, TxOut, Txid, Weight, Witness, XOnlyPublicKey,
+    self, Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Txid,
+    Transaction, TxIn, TxOut, Weight,
     absolute::LockTime,
     hashes::Hash,
-    key::Secp256k1,
-    secp256k1::{Keypair, Message, rand::thread_rng, schnorr},
-    sighash::{Prevouts, SighashCache},
-    taproot,
-    taproot::LeafVersion,
+    script::PushBytesBuf,
     transaction::Version,
 };
 use charms_client::{
@@ -26,26 +21,21 @@ use std::{collections::BTreeMap, str::FromStr};
 
 const DUST_LIMIT: Amount = Amount::from_sat(300);
 
-/// Adds spell data to a Bitcoin transaction by creating a committed spell output and spending it.
+/// Adds spell data to a Bitcoin transaction via OP_RETURN output.
 ///
 /// # Arguments
 /// * `tx` - Base (unsigned) transaction to add the spell data to
 /// * `spell_data` - Raw byte data of the spell to commit
-/// * `funding_out_point` - UTXO to fund both the commit and spell transactions
+/// * `funding_out_point` - UTXO to fund the transaction
 /// * `funding_output_value` - Value of the funding UTXO in sats
-/// * `change_pubkey` - Script pubkey for change output to be added to spell_tx
+/// * `change_pubkey` - Script pubkey for change output
 /// * `fee_rate` - Fee rate to calculate transaction fees
 /// * `prev_txs` - Map of previous transactions referenced by the spell
 /// * `charms_fee_pubkey` - Optional script pubkey for charms fee output
 /// * `charms_fee` - Amount of charms fee to pay
 ///
 /// # Returns
-/// Returns a vector containing two transactions:
-/// 1. `commit_tx` - Transaction that creates the committed spell Tapscript output
-/// 2. `spell_tx` - Modified input `tx` with added spell input (with witness data) and change
-///    output.
-///
-/// Both transactions need to be signed before broadcasting.
+/// Returns a single transaction with spell data in OP_RETURN output (before change output).
 pub fn add_spell(
     tx: Transaction,
     spell_data: &[u8],
@@ -56,25 +46,19 @@ pub fn add_spell(
     prev_txs: &BTreeMap<TxId, Tx>,
     charms_fee_pubkey: Option<ScriptBuf>,
     charms_fee: Amount,
-) -> Vec<Transaction> {
-    let secp256k1 = Secp256k1::new();
-    let keypair = Keypair::new(&secp256k1, &mut thread_rng());
-    let (public_key, _) = XOnlyPublicKey::from_keypair(&keypair);
-
-    let script = data_script(public_key, &spell_data);
-
-    let commit_tx = create_commit_tx(
-        funding_out_point,
-        funding_output_value,
-        public_key,
-        &script,
-        fee_rate,
-    );
-    let commit_txout = &commit_tx.output[0];
-
+) -> anyhow::Result<Vec<Transaction>> {
     let mut tx = tx;
+
+    // Add funding input
+    tx.input.push(TxIn {
+        previous_output: funding_out_point,
+        script_sig: Default::default(),
+        sequence: Default::default(),
+        witness: Default::default(),
+    });
+
+    // Add charms fee output if needed
     if let Some(charms_fee_pubkey) = charms_fee_pubkey {
-        // Sum up existing payments to the fee address
         let existing_fee_amount: Amount = tx
             .output
             .iter()
@@ -82,8 +66,6 @@ pub fn add_spell(
             .map(|txout| txout.value)
             .sum();
 
-        // Only add a fee output if existing payments are insufficient.
-        // Make sure the additional amount is at least the dust limit of 300 sats.
         if existing_fee_amount < charms_fee {
             let additional_fee = charms_fee - existing_fee_amount + DUST_LIMIT;
             tx.output.push(TxOut {
@@ -93,184 +75,65 @@ pub fn add_spell(
         }
     }
 
-    let script_len = script.len();
-    let change_amount =
-        compute_change_amount(fee_rate, script_len, &tx, prev_txs, commit_txout.value);
-
-    modify_tx(
-        &mut tx,
-        commit_tx.compute_txid(),
-        change_pubkey,
-        change_amount,
-    );
-    let spell_input_idx = tx.input.len() - 1;
-
-    let prev_outs = prev_outs(&tx, commit_txout, prev_txs);
-
-    let signature = create_tx_signature(keypair, &mut tx, spell_input_idx, &prev_outs, &script);
-
-    append_witness_data(
-        &mut tx.input[spell_input_idx].witness,
-        public_key,
-        script,
-        signature,
-    );
-
-    dbg!((
-        tx.input[0].witness.size(),
-        tx.input[0].base_size(),
-        tx.input[0].total_size()
-    ));
-    dbg!((
-        script_len,
-        tx.input[spell_input_idx].witness.size(),
-        tx.input[spell_input_idx].base_size(),
-        tx.input[spell_input_idx].total_size()
-    ));
-    dbg!(tx.output[tx.output.len() - 1].size());
-
-    [commit_tx, tx].to_vec()
-}
-
-fn prev_outs(tx: &Transaction, commit_txout: &TxOut, prev_txs: &BTreeMap<TxId, Tx>) -> Vec<TxOut> {
-    tx.input
-        .iter()
-        .take(tx.input.len() - 1)
-        .map(|txin| {
-            let txid = TxId(txin.previous_output.txid.to_byte_array());
-            let prev_tx = prev_txs.get(&txid).expect("prev tx not found");
-            let Tx::Bitcoin(btc_tx) = prev_tx else {
-                panic!("expected bitcoin tx")
-            };
-            let vout = txin.previous_output.vout as usize;
-            btc_tx.inner().output[vout].clone()
-        })
-        .chain(Some(commit_txout.clone()))
-        .collect()
-}
-
-/// fee covering only the marginal cost of spending the committed spell output.
-fn compute_change_amount(
-    fee_rate: FeeRate,
-    script_len: usize,
-    tx: &Transaction,
-    prev_txs: &BTreeMap<TxId, Tx>,
-    commit_txout_value: Amount,
-) -> Amount {
-    let script_input_weight = Weight::from_wu(script_len as u64 + 268);
-    let change_output_weight = Weight::from_wu(172);
-    let signatures_weight = Weight::from_wu(65) * tx.input.len() as u64;
-
-    let total_tx_weight = dbg!(tx.weight() + Weight::from_wu(2))
-        + dbg!(signatures_weight)
-        + dbg!(script_input_weight)
-        + dbg!(change_output_weight);
-
-    let fee = fee_rate.fee_wu(dbg!(total_tx_weight)).unwrap();
-
-    let tx_amount_in = tx_total_amount_in(prev_txs, &tx);
-    let tx_amount_out = tx.output.iter().map(|tx_out| tx_out.value).sum::<Amount>();
-
-    commit_txout_value + tx_amount_in - tx_amount_out - fee
-}
-
-fn create_commit_tx(
-    funding_out_point: OutPoint,
-    funding_output_value: Amount,
-    public_key: XOnlyPublicKey,
-    script: &ScriptBuf,
-    fee_rate: FeeRate,
-) -> Transaction {
-    let fee = fee_rate.fee_vb(111).unwrap(); // tx is 111 vbytes when spending a Taproot output
-
-    let commit_tx = Transaction {
-        version: Version::TWO,
-        lock_time: LockTime::ZERO,
-        input: vec![TxIn {
-            previous_output: funding_out_point,
-            script_sig: Default::default(),
-            sequence: Default::default(),
-            witness: Default::default(),
-        }],
-        output: vec![TxOut {
-            value: funding_output_value - fee,
-            script_pubkey: ScriptBuf::new_p2tr_tweaked(
-                taproot_spend_info(public_key, script.clone()).output_key(),
-            ),
-        }],
-    };
-
-    commit_tx
-}
-
-fn modify_tx(
-    tx: &mut Transaction,
-    commit_txid: Txid,
-    change_script_pubkey: ScriptBuf,
-    change_amount: Amount,
-) {
-    tx.input.push(TxIn {
-        previous_output: OutPoint {
-            txid: commit_txid,
-            vout: 0,
-        },
-        script_sig: Default::default(),
-        sequence: Default::default(),
-        witness: Witness::new(),
+    // Add OP_RETURN output with spell data
+    let push_bytes = PushBytesBuf::try_from(spell_data.to_vec())
+        .map_err(|_| anyhow::anyhow!("spell data too large for OP_RETURN"))?;
+    let op_return_script = ScriptBuf::new_op_return(&push_bytes);
+    tx.output.push(TxOut {
+        value: Amount::ZERO,
+        script_pubkey: op_return_script,
     });
 
-    // dust limit // TODO make a constant
+    // Calculate change amount
+    let change_amount = compute_change_amount(
+        fee_rate,
+        spell_data.len(),
+        &tx,
+        prev_txs,
+        funding_output_value,
+    );
+
+    // Add change output if above dust limit
     if change_amount >= Amount::from_sat(546) {
         tx.output.push(TxOut {
             value: change_amount,
-            script_pubkey: change_script_pubkey,
+            script_pubkey: change_pubkey,
         });
     }
+
+    Ok(vec![tx])
 }
 
-const TAP_SIGHASH_TYPE: TapSighashType = TapSighashType::Default;
+/// Calculate change amount for the transaction with OP_RETURN output.
+fn compute_change_amount(
+    fee_rate: FeeRate,
+    _spell_data_len: usize,
+    tx: &Transaction,
+    prev_txs: &BTreeMap<TxId, Tx>,
+    funding_output_value: Amount,
+) -> Amount {
+    // OP_RETURN output is already included in tx.output
+    let change_output_weight = Weight::from_wu(172);
+    let signatures_weight = Weight::from_wu(65) * tx.input.len() as u64;
 
-fn create_tx_signature(
-    keypair: Keypair,
-    tx: &mut Transaction,
-    input_index: usize,
-    prev_outs: &[TxOut],
-    script: &ScriptBuf,
-) -> schnorr::Signature {
-    let mut sighash_cache = SighashCache::new(tx);
-    let sighash = sighash_cache
-        .taproot_script_spend_signature_hash(
-            input_index,
-            &Prevouts::All(prev_outs),
-            TapLeafHash::from_script(script, LeafVersion::TapScript),
-            TAP_SIGHASH_TYPE,
-        )
-        .unwrap();
-    let secp256k1 = Secp256k1::new();
-    let signature = secp256k1.sign_schnorr(
-        &Message::from_digest_slice(sighash.as_ref())
-            .expect("should be cryptographically secure hash"),
-        &keypair,
-    );
+    let total_tx_weight = tx.weight()
+        + signatures_weight
+        + change_output_weight;
 
-    signature
-}
+    let fee = fee_rate.fee_wu(total_tx_weight).unwrap();
 
-fn append_witness_data(
-    witness: &mut Witness,
-    public_key: XOnlyPublicKey,
-    script: ScriptBuf,
-    signature: schnorr::Signature,
-) {
-    witness.push(
-        taproot::Signature {
-            signature,
-            sighash_type: TAP_SIGHASH_TYPE,
-        }
-        .to_vec(),
-    );
-    witness.push(script.clone());
-    witness.push(control_block(public_key, script).serialize());
+    // Calculate total input amount: sum of spell inputs (excluding last funding input) + funding
+    let spell_inputs_amount = if tx.input.len() > 1 {
+        let mut tx_without_funding = tx.clone();
+        tx_without_funding.input.pop(); // Remove funding input
+        tx_total_amount_in(prev_txs, &tx_without_funding)
+    } else {
+        Amount::ZERO
+    };
+    let tx_amount_in = spell_inputs_amount + funding_output_value;
+    let tx_amount_out = tx.output.iter().map(|tx_out| tx_out.value).sum::<Amount>();
+
+    tx_amount_in - tx_amount_out - fee
 }
 
 pub fn tx_total_amount_in(prev_txs: &BTreeMap<TxId, Tx>, tx: &Transaction) -> Amount {
@@ -391,7 +254,7 @@ pub fn make_transactions(
         &prev_txs_by_id,
         charms_fee_pubkey,
         charms_fee,
-    );
+    )?;
     Ok(transactions
         .into_iter()
         .map(|tx| Tx::Bitcoin(BitcoinTx::Simple(tx)))
@@ -405,7 +268,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn test_add_spell_signature_length() {
+    fn test_add_spell_op_return() {
         let dummy_tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
@@ -435,15 +298,19 @@ mod tests {
             &prev_txs,
             charms_fee_pubkey,
             charms_fee,
-        );
+        )
+        .unwrap();
 
-        let spell_tx = &txs[1];
-        let witness = &spell_tx.input.last().unwrap().witness;
-        // The first element of witness is the signature
-        let sig_vec = witness.nth(0).unwrap();
+        // Should only return one transaction now
+        assert_eq!(txs.len(), 1);
 
-        // Currently it should be 64 bytes (64 sig + 0 sighash)
-        assert_eq!(sig_vec.len(), 64);
-        // assert_eq!(sig_vec.last(), Some(&0x81)); // SIGHASH_ALL | SIGHASH_ANYONECANPAY
+        let spell_tx = &txs[0];
+
+        // Find OP_RETURN output
+        let op_return_output = spell_tx.output.iter()
+            .find(|out| out.script_pubkey.is_op_return());
+
+        assert!(op_return_output.is_some());
+        assert_eq!(op_return_output.unwrap().value, Amount::ZERO);
     }
 }
