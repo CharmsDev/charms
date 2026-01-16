@@ -1,15 +1,8 @@
-use crate::{
-    spell,
-    spell::CharmsFee,
-};
+use crate::{spell, spell::CharmsFee};
 use anyhow::bail;
 use bitcoin::{
-    self, Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Txid,
-    Transaction, TxIn, TxOut, Weight,
-    absolute::LockTime,
-    hashes::Hash,
-    script::PushBytesBuf,
-    transaction::Version,
+    self, Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid,
+    Weight, absolute::LockTime, hashes::Hash, script::PushBytesBuf, transaction::Version,
 };
 use charms_client::{
     NormalizedSpell, NormalizedTransaction,
@@ -85,16 +78,10 @@ pub fn add_spell(
     });
 
     // Calculate change amount
-    let change_amount = compute_change_amount(
-        fee_rate,
-        spell_data.len(),
-        &tx,
-        prev_txs,
-        funding_output_value,
-    );
+    let change_amount = compute_change_amount(fee_rate, &tx, prev_txs, funding_output_value);
 
     // Add change output if above dust limit
-    if change_amount >= Amount::from_sat(546) {
+    if change_amount >= DUST_LIMIT {
         tx.output.push(TxOut {
             value: change_amount,
             script_pubkey: change_pubkey,
@@ -107,7 +94,6 @@ pub fn add_spell(
 /// Calculate change amount for the transaction with OP_RETURN output.
 fn compute_change_amount(
     fee_rate: FeeRate,
-    _spell_data_len: usize,
     tx: &Transaction,
     prev_txs: &BTreeMap<TxId, Tx>,
     funding_output_value: Amount,
@@ -116,9 +102,7 @@ fn compute_change_amount(
     let change_output_weight = Weight::from_wu(172);
     let signatures_weight = Weight::from_wu(65) * tx.input.len() as u64;
 
-    let total_tx_weight = tx.weight()
-        + signatures_weight
-        + change_output_weight;
+    let total_tx_weight = tx.weight() + signatures_weight + change_output_weight;
 
     let fee = fee_rate.fee_wu(total_tx_weight).unwrap();
 
@@ -307,7 +291,9 @@ mod tests {
         let spell_tx = &txs[0];
 
         // Find OP_RETURN output
-        let op_return_output = spell_tx.output.iter()
+        let op_return_output = spell_tx
+            .output
+            .iter()
             .find(|out| out.script_pubkey.is_op_return());
 
         assert!(op_return_output.is_some());
