@@ -30,8 +30,10 @@ pub const V4_SPELL_VK: &str = "0x00c707a155bf8dc18dc41db2994c214e93e906a3e97b458
 pub const V5_SPELL_VK: &str = "0x00e98665c417bd2e6e81c449af63b26ed5ad5c400ef55811b592450bf62c67cd";
 /// Verification key for version `6` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V6_SPELL_VK: &str = "0x005a1df17094445572e4dd474b3e5dd9093936cba62ca3a62bb2ce63d9db8cba";
-/// Verification key for version `6` of the protocol implemented by `charms-proof-wrapper` binary.
+/// Verification key for version `7` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V7_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
+/// Verification key for version `8` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V8_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -51,9 +53,11 @@ pub const V6: u32 = 6;
 pub const V7: u32 = 7;
 /// Version `8` of the protocol.
 pub const V8: u32 = 8;
+/// Version `9` of the protocol.
+pub const V9: u32 = 9;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V8;
+pub const CURRENT_VERSION: u32 = V9;
 
 /// Maps the index of the charm's app (in [`NormalizedSpell`].`app_public_inputs`) to the charm's
 /// data.
