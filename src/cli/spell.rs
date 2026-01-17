@@ -85,8 +85,12 @@ impl Prove for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
+        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
+
         let prove_request = ProveRequest {
-            spell,
+            spell: norm_spell,
+            app_private_inputs,
+            tx_ins_beamed_source_utxos,
             binaries,
             prev_txs,
             funding_utxo,

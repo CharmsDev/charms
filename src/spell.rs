@@ -692,7 +692,9 @@ impl CharmsFee {
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProveRequest {
-    pub spell: Spell,
+    pub spell: NormalizedSpell,
+    pub app_private_inputs: BTreeMap<App, Data>,
+    pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
     pub prev_txs: Vec<Tx>,
@@ -740,7 +742,9 @@ impl ProveSpellTxImpl {
     ) -> anyhow::Result<Vec<Tx>> {
         let total_app_cycles = app_cycles;
         let ProveRequest {
-            spell,
+            spell: norm_spell,
+            app_private_inputs,
+            tx_ins_beamed_source_utxos,
             binaries,
             prev_txs,
             funding_utxo,
@@ -756,8 +760,6 @@ impl ProveSpellTxImpl {
         }
 
         let prev_txs_by_id = by_txid(&prev_txs);
-
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
 
         let (truncated_norm_spell, proof, proof_app_cycles) = self.prover.prove(
             norm_spell.clone(),
@@ -1067,10 +1069,12 @@ impl ProveSpellTxImpl {
         let prev_txs = &prove_request.prev_txs;
         let prev_txs_by_id = by_txid(prev_txs);
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            prove_request.spell.normalized()?;
-        charms_client::ensure_no_zero_amounts(&norm_spell)?;
-        ensure_all_prev_txs_are_present(&norm_spell, &tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
+        let norm_spell = &prove_request.spell;
+        let app_private_inputs = &prove_request.app_private_inputs;
+        let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
+
+        charms_client::ensure_no_zero_amounts(norm_spell)?;
+        ensure_all_prev_txs_are_present(norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
         let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
 
@@ -1108,18 +1112,20 @@ impl ProveSpellTxImpl {
                         change_address
                     ),
                 };
-                ensure!(prove_request.spell.outs.iter().all(|o| {
-                    o.address.as_ref().is_some_and(|a| {
-                        bitcoin::Address::from_str(a).is_ok_and(|a| a.is_valid_for_network(network))
-                    })
-                }));
+                let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
+
+                // Validate that all output addresses are valid for the network
+                ensure!(coin_outs.iter().all(|o| {
+                    bitcoin::Address::from_script(&bitcoin::ScriptBuf::from_bytes(o.dest.clone()), network)
+                        .is_ok()
+                }), "all output addresses must be valid for the network");
 
                 let charms_fee = get_charms_fee(&self.charms_fee_settings, total_cycles).to_sat();
 
-                let total_sats_in: u64 = (&prove_request.spell.ins)
+                let spell_ins = norm_spell.tx.ins.as_ref().expect("spell inputs are expected");
+                let total_sats_in: u64 = spell_ins
                     .iter()
-                    .map(|i| {
-                        let utxo_id = i.utxo_id.as_ref().expect("utxo_id is expected to be Some");
+                    .map(|utxo_id| {
                         prev_txs_by_id
                             .get(&utxo_id.0)
                             .and_then(|prev_tx| {
@@ -1138,17 +1144,16 @@ impl ProveSpellTxImpl {
                     .collect::<anyhow::Result<Vec<_>>>()?
                     .iter()
                     .sum();
-                let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
-                let total_sats_out: u64 = (coin_outs).iter().map(|o| o.amount).sum();
+                let total_sats_out: u64 = coin_outs.iter().map(|o| o.amount).sum();
 
                 let funding_utxo_sats = prove_request.funding_utxo_value;
 
                 let bitcoin_tx = from_spell(&norm_spell)?;
                 let tx_size = bitcoin_tx.inner().vsize();
-                let (mut norm_spell, ..) = prove_request.spell.normalized()?;
-                norm_spell.tx.ins = None;
+                let mut norm_spell_for_size = norm_spell.clone();
+                norm_spell_for_size.tx.ins = None;
                 let proof_dummy: Vec<u8> = vec![0xff; 128];
-                let spell_cbor = util::write(&(norm_spell, proof_dummy))?;
+                let spell_cbor = util::write(&(norm_spell_for_size, proof_dummy))?;
                 let num_inputs = bitcoin_tx.inner().input.len();
                 let estimated_bitcoin_fee: u64 = (111
                     + (spell_cbor.len() as u64 + 372) / 4
@@ -1175,7 +1180,7 @@ impl ProveSpellTxImpl {
                 tracing::warn!("spell validation for cardano is not yet implemented");
             }
         }
-        Ok((norm_spell, total_cycles))
+        Ok((norm_spell.clone(), total_cycles))
     }
 }
 
