@@ -1,11 +1,12 @@
 use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    CompactTarget, MerkleBlock, Target, Transaction, Txid,
+    CompactTarget, MerkleBlock, Target, Transaction, TxIn, Txid,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
-    script::Instruction,
+    opcodes::all::{OP_ENDIF, OP_IF},
+    script::{Instruction, PushBytes},
 };
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::{Deserialize, Serialize};
@@ -71,7 +72,17 @@ impl EnchantedTx for BitcoinTx {
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = self.inner();
 
-        let (spell, proof) = parse_spell_and_proof_from_op_return(tx)?;
+        // Try OP_RETURN first (protocol v9+)
+        let (spell, proof) = match parse_spell_and_proof_from_op_return(tx) {
+            Ok(result) => result,
+            Err(_) => {
+                // Fall back to Taproot witness parsing (protocol < v9)
+                let Some((spell_tx_in, _tx_ins)) = tx.input.split_last() else {
+                    bail!("transaction does not have inputs")
+                };
+                parse_spell_and_proof_from_witness(spell_tx_in)?
+            }
+        };
 
         if !mock {
             ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
@@ -109,7 +120,11 @@ impl EnchantedTx for BitcoinTx {
 
     fn spell_ins(&self) -> Vec<UtxoId> {
         let tx = self.inner();
-        tx.input
+
+        // Always exclude the last input (funding UTXO) from spell inputs
+        let inputs = &tx.input[..tx.input.len().saturating_sub(1)];
+
+        inputs
             .iter()
             .map(|tx_in| {
                 let out_point = tx_in.previous_output;
@@ -223,6 +238,57 @@ pub fn parse_spell_and_proof_from_op_return(
             }
             _ => {
                 bail!("unexpected opcode in OP_RETURN")
+            }
+        }
+    }
+
+    let (spell, proof): (NormalizedSpell, Proof) = util::read(spell_data.as_slice())
+        .map_err(|e| anyhow!("could not parse spell and proof: {}", e))?;
+    Ok((spell, proof))
+}
+
+#[tracing::instrument(level = "debug", skip_all)]
+pub fn parse_spell_and_proof_from_witness(
+    spell_tx_in: &TxIn,
+) -> anyhow::Result<(NormalizedSpell, Proof)> {
+    ensure!(
+        spell_tx_in
+            .witness
+            .taproot_control_block()
+            .ok_or(anyhow!("no control block"))?
+            .len()
+            == 33,
+        "the Taproot tree contains more than one leaf: only a single script is supported"
+    );
+
+    let leaf_script = spell_tx_in
+        .witness
+        .taproot_leaf_script()
+        .ok_or(anyhow!("no spell data in the last input's witness"))?;
+
+    let mut instructions = leaf_script.script.instructions();
+
+    ensure!(instructions.next() == Some(Ok(Instruction::PushBytes(PushBytes::empty()))));
+    ensure!(instructions.next() == Some(Ok(Instruction::Op(OP_IF))));
+    let Some(Ok(Instruction::PushBytes(push_bytes))) = instructions.next() else {
+        bail!("no spell data")
+    };
+    if push_bytes.as_bytes() != b"spell" {
+        bail!("no spell marker")
+    }
+
+    let mut spell_data = vec![];
+
+    loop {
+        match instructions.next() {
+            Some(Ok(Instruction::PushBytes(push_bytes))) => {
+                spell_data.extend(push_bytes.as_bytes());
+            }
+            Some(Ok(Instruction::Op(OP_ENDIF))) => {
+                break;
+            }
+            _ => {
+                bail!("unexpected opcode")
             }
         }
     }
