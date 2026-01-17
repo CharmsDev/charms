@@ -1,7 +1,7 @@
 use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
-    CompactTarget, MerkleBlock, Target, Transaction, TxIn, Txid,
+    CompactTarget, MerkleBlock, Target, Transaction, TxIn, TxOut, Txid,
     block::Header,
     consensus::encode::{deserialize_hex, serialize_hex},
     hashes::Hash,
@@ -209,41 +209,61 @@ pub(crate) fn spell_with_committed_ins_and_coins(
     spell
 }
 
+pub const SPELL_MARKER: &[u8] = b"spell";
+
+/// Check if a transaction output is a spell OP_RETURN.
+/// Returns true if the output starts with OP_RETURN followed by the "spell" marker.
+fn is_spell_op_return(out: &&TxOut) -> bool {
+    let script = &out.script_pubkey;
+    let mut instructions = script.instructions();
+
+    // First instruction should be OP_RETURN
+    if instructions.next().transpose().ok().flatten().is_none() {
+        return false;
+    }
+
+    // Second instruction should be the "spell" marker
+    match instructions.next() {
+        Some(Ok(Instruction::PushBytes(push_bytes))) => push_bytes.as_bytes() == SPELL_MARKER,
+        _ => false,
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn parse_spell_and_proof_from_op_return(
     tx: &Transaction,
 ) -> anyhow::Result<(NormalizedSpell, Proof)> {
-    // Find OP_RETURN output
+    // Find spell OP_RETURN output
     let op_return_output = tx
         .output
         .iter()
-        .find(|out| out.script_pubkey.is_op_return())
-        .ok_or(anyhow!("no OP_RETURN output found"))?;
+        .find(is_spell_op_return)
+        .ok_or(anyhow!("no spell OP_RETURN output found"))?;
 
-    // Extract data from OP_RETURN script
+    // Extract data from OP_RETURN script (skip OP_RETURN and marker, get payload)
     let mut instructions = op_return_output.script_pubkey.instructions();
 
-    // First instruction should be OP_RETURN
-    ensure!(
-        instructions.next().transpose()?.is_some(),
-        "empty OP_RETURN script"
-    );
+    // Skip OP_RETURN
+    instructions.next();
 
-    // Collect all remaining data pushes
-    let mut spell_data = vec![];
-    for instruction in instructions {
-        match instruction? {
-            Instruction::PushBytes(push_bytes) => {
-                spell_data.extend(push_bytes.as_bytes());
-            }
-            _ => {
-                bail!("unexpected opcode in OP_RETURN")
-            }
+    // Skip "spell" marker
+    instructions.next();
+
+    // Get the spell data payload
+    let spell_data = match instructions.next() {
+        Some(Ok(Instruction::PushBytes(push_bytes))) => push_bytes.as_bytes(),
+        _ => {
+            bail!("expected spell data payload in OP_RETURN");
         }
+    };
+
+    // Ensure there are no more instructions
+    if instructions.next().is_some() {
+        bail!("unexpected additional data in OP_RETURN");
     }
 
-    let (spell, proof): (NormalizedSpell, Proof) = util::read(spell_data.as_slice())
-        .map_err(|e| anyhow!("could not parse spell and proof: {}", e))?;
+    let (spell, proof): (NormalizedSpell, Proof) =
+        util::read(spell_data).map_err(|e| anyhow!("could not parse spell and proof: {}", e))?;
     Ok((spell, proof))
 }
 

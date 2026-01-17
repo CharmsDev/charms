@@ -6,7 +6,7 @@ use bitcoin::{
 };
 use charms_client::{
     NormalizedSpell, NormalizedTransaction,
-    bitcoin_tx::BitcoinTx,
+    bitcoin_tx::{BitcoinTx, SPELL_MARKER},
     tx::{Chain, Tx},
 };
 use charms_data::{TxId, UtxoId};
@@ -68,10 +68,19 @@ pub fn add_spell(
         }
     }
 
-    // Add OP_RETURN output with spell data
-    let push_bytes = PushBytesBuf::try_from(spell_data.to_vec())
+    // Add OP_RETURN output with spell data (split into marker and payload pushes)
+    use bitcoin::script::Builder;
+    let spell_marker = PushBytesBuf::try_from(SPELL_MARKER.to_vec())
+        .map_err(|_| anyhow::anyhow!("failed to create spell marker"))?;
+    let spell_payload = PushBytesBuf::try_from(spell_data.to_vec())
         .map_err(|_| anyhow::anyhow!("spell data too large for OP_RETURN"))?;
-    let op_return_script = ScriptBuf::new_op_return(&push_bytes);
+
+    let op_return_script = Builder::new()
+        .push_opcode(bitcoin::opcodes::all::OP_RETURN)
+        .push_slice(&spell_marker)
+        .push_slice(&spell_payload)
+        .into_script();
+
     tx.output.push(TxOut {
         value: Amount::ZERO,
         script_pubkey: op_return_script,
