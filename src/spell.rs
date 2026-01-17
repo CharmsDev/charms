@@ -46,7 +46,7 @@ use redis_macros::{FromRedisValue, ToRedisArgs};
 #[cfg(not(feature = "prover"))]
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_with::{IfIsHumanReadable, base64::Base64, serde_as};
+use serde_with::{DisplayFromStr, IfIsHumanReadable, base64::Base64, serde_as};
 use sha2::{Digest, Sha256};
 use sp1_prover::{HashableKey, SP1ProvingKey, SP1VerifyingKey};
 use sp1_sdk::{SP1Proof, SP1ProofMode, SP1Stdin};
@@ -689,11 +689,28 @@ impl CharmsFee {
     }
 }
 
+serde_with::serde_conv!(
+    NormalizedSpellHex,
+    NormalizedSpell,
+    |data: &NormalizedSpell| hex::encode(util::write(data).expect("failed to write Data")),
+    |s: String| util::read(hex::decode(&s)?.as_slice())
+);
+
+serde_with::serde_conv!(
+    DataHex,
+    Data,
+    |data: &Data| hex::encode(util::write(data).expect("failed to write Data")),
+    |s: String| util::read(hex::decode(&s)?.as_slice())
+);
+
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProveRequest {
+    #[serde_as(as = "IfIsHumanReadable<NormalizedSpellHex>")]
     pub spell: NormalizedSpell,
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DataHex>>")]
     pub app_private_inputs: BTreeMap<App, Data>,
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DisplayFromStr>>")]
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
@@ -1115,14 +1132,24 @@ impl ProveSpellTxImpl {
                 let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
 
                 // Validate that all output addresses are valid for the network
-                ensure!(coin_outs.iter().all(|o| {
-                    bitcoin::Address::from_script(&bitcoin::ScriptBuf::from_bytes(o.dest.clone()), network)
+                ensure!(
+                    coin_outs.iter().all(|o| {
+                        bitcoin::Address::from_script(
+                            &bitcoin::ScriptBuf::from_bytes(o.dest.clone()),
+                            network,
+                        )
                         .is_ok()
-                }), "all output addresses must be valid for the network");
+                    }),
+                    "all output addresses must be valid for the network"
+                );
 
                 let charms_fee = get_charms_fee(&self.charms_fee_settings, total_cycles).to_sat();
 
-                let spell_ins = norm_spell.tx.ins.as_ref().expect("spell inputs are expected");
+                let spell_ins = norm_spell
+                    .tx
+                    .ins
+                    .as_ref()
+                    .expect("spell inputs are expected");
                 let total_sats_in: u64 = spell_ins
                     .iter()
                     .map(|utxo_id| {

@@ -565,6 +565,10 @@ impl Data {
     pub fn bytes(&self) -> Vec<u8> {
         util::write(&self).expect("serialization is expected to succeed")
     }
+
+    pub fn try_from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        Ok(Self(util::read(bytes)?))
+    }
 }
 
 impl<T> From<&T> for Data
