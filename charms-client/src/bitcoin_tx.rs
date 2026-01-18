@@ -234,11 +234,17 @@ pub fn parse_spell_and_proof_from_op_return(
     tx: &Transaction,
 ) -> anyhow::Result<(NormalizedSpell, Proof)> {
     // Find spell OP_RETURN output
-    let op_return_output = tx
+    let op_return_outputs = tx
         .output
         .iter()
-        .find(is_spell_op_return)
-        .ok_or(anyhow!("no spell OP_RETURN output found"))?;
+        .filter(is_spell_op_return)
+        .collect::<Vec<_>>();
+    ensure!(
+        op_return_outputs.len() == 1,
+        "expected exactly one spell OP_RETURN output"
+    );
+
+    let op_return_output = op_return_outputs[0];
 
     // Extract data from OP_RETURN script (skip OP_RETURN and marker, get payload)
     let mut instructions = op_return_output.script_pubkey.instructions();
