@@ -126,6 +126,7 @@ lto = "fat"
 opt-level = 3
 strip = "debuginfo"
 overflow-checks = true
+panic = "abort"
 
 [patch.crates-io]
 sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-4.0.0" }

@@ -886,8 +886,10 @@ pub enum ProofState {
     },
 }
 
-pub fn committed_data_hash(normalized_spell: &NormalizedSpell) -> [u8; 32] {
-    Sha256::digest(&util::write(&normalized_spell).unwrap()).into()
+pub fn committed_data_hash(normalized_spell: &NormalizedSpell) -> anyhow::Result<[u8; 32]> {
+    let bytes = util::write(&normalized_spell)
+        .context("Failed to serialize normalized spell for hash")?;
+    Ok(Sha256::digest(&bytes).into())
 }
 
 impl ProveSpellTx for ProveSpellTxImpl {
@@ -904,17 +906,18 @@ impl ProveSpellTx for ProveSpellTxImpl {
 
         #[cfg(feature = "prover")]
         let cache_client: Option<(_, _)> = {
-            let redis_opt = std::env::var("REDIS_URL").ok().map(|redis_url| {
-                let redis_client = redis::Client::open(redis_url)
-                    .map_err(|e| {
-                        tracing::warn!("failed to create a Redis client: {}", e);
-                        e
-                    })
-                    .unwrap();
-                let lock_manager = rslock::LockManager::from_clients(vec![redis_client.clone()]);
-                (redis_client, lock_manager)
-            });
-            redis_opt
+            std::env::var("REDIS_URL").ok().and_then(|redis_url| {
+                match redis::Client::open(redis_url) {
+                    Ok(redis_client) => {
+                        let lock_manager = rslock::LockManager::from_clients(vec![redis_client.clone()]);
+                        Some((redis_client, lock_manager))
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create Redis client, caching disabled: {}", e);
+                        None
+                    }
+                }
+            })
         };
 
         #[cfg(not(feature = "prover"))]
@@ -945,7 +948,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
             let request_key = prove_request.funding_utxo.to_string();
             let lock_key = format!("LOCK_{}", request_key.as_str());
-            let committed_data_hash = committed_data_hash(&norm_spell);
+            let committed_data_hash = committed_data_hash(&norm_spell)?;
 
             let mut con = cache_client.get_multiplexed_async_connection().await?;
 
@@ -1052,11 +1055,12 @@ pub fn ensure_all_prev_txs_are_present(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
+    let spell_ins = spell.tx.ins.as_ref()
+        .ok_or_else(|| anyhow!("spell.tx.ins must be present"))?;
+
     ensure!(
-        spell.tx.ins.as_ref().is_some_and(|ins| {
-            ins.iter()
-                .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0))
-        }),
+        spell_ins.iter()
+            .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0)),
         "prev_txs MUST contain transactions creating input UTXOs"
     );
     ensure!(
@@ -1070,9 +1074,11 @@ pub fn ensure_all_prev_txs_are_present(
         tx_ins_beamed_source_utxos
             .iter()
             .all(|(&i, beaming_source_utxo_id)| {
-                let utxo_id = &spell.tx.ins.as_ref().unwrap()[i];
-                prev_txs_by_id.contains_key(&utxo_id.0)
-                    && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
+                spell_ins.get(i)
+                    .is_some_and(|utxo_id| {
+                        prev_txs_by_id.contains_key(&utxo_id.0)
+                            && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
+                    })
             }),
         "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
     );
