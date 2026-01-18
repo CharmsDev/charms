@@ -1022,10 +1022,12 @@ impl ProveSpellTx for ProveSpellTxImpl {
         }
 
         let response = retry(0, || async {
+            let cbor_body = util::write(&prove_request)?;
             let response = self
                 .client
                 .post(&self.charms_prove_api_url)
-                .json(&prove_request)
+                .header("Content-Type", "application/cbor")
+                .body(cbor_body)
                 .send()
                 .await?;
             if response.status().is_server_error() {
@@ -1039,7 +1041,8 @@ impl ProveSpellTx for ProveSpellTxImpl {
             let body = response.text().await?;
             bail!("client error: {}: {}", status, body);
         }
-        let txs: Vec<Tx> = response.json().await?;
+        let bytes = response.bytes().await?;
+        let txs: Vec<Tx> = util::read(&bytes[..])?;
         Ok(txs)
     }
 }
