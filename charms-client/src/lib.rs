@@ -33,7 +33,7 @@ pub const V6_SPELL_VK: &str = "0x005a1df17094445572e4dd474b3e5dd9093936cba62ca3a
 /// Verification key for version `7` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V7_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
 /// Verification key for version `8` of the protocol implemented by `charms-proof-wrapper` binary.
-pub const V8_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
+pub const V8_SPELL_VK: &str = "0x00e440d40e331c16bc4c78d2dbc6bb35876e6ea944e943de359a075e07385abc";
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
