@@ -301,13 +301,15 @@ pub fn prove_impl(mock: bool) -> Box<dyn crate::spell::Prove> {
             Box::new(Prover::new(app_prover, spell_sp1_client))
         }
         true => Box::new(MockProver {
-            app_runner: Arc::new(AppRunner::new(true)),
+            spell_prover_client: Arc::new(utils::Shared::new(|| Box::new(sp1_cpu_prover()))),
         }),
     }
     #[cfg(not(feature = "prover"))]
-    Box::new(MockProver {
-        app_runner: Arc::new(AppRunner::new(true)),
-    })
+    {
+        Box::new(MockProver {
+            spell_prover_client: Arc::new(utils::Shared::new(|| Box::new(sp1_cpu_prover()))),
+        })
+    }
 }
 
 pub(crate) fn charms_fee_settings() -> Option<CharmsFee> {

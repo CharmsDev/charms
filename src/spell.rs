@@ -537,25 +537,36 @@ impl Prove for MockProver {
         let app_binaries =
             filter_app_binaries(&norm_spell, app_binaries, &app_private_inputs, &tx)?;
 
-        let cycles = self.app_runner.run_all(
-            &app_binaries,
-            &tx,
-            &norm_spell.app_public_inputs,
-            &app_private_inputs,
+        let app_input = match app_binaries.is_empty() {
+            true => None,
+            false => Some(AppInput {
+                app_binaries,
+                app_private_inputs,
+            }),
+        };
+
+        // Run the zkVM guest program (charms-spell-checker) instead of running apps directly
+        let prover_input = SpellProverInput {
+            self_spell_vk: SPELL_VK.to_string(),
+            prev_txs,
+            spell: norm_spell.clone(),
+            tx_ins_beamed_source_utxos,
+            app_input,
+        };
+
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&prover_input)?);
+
+        let (_, report) = self.spell_prover_client.get().execute(
+            SPELL_CHECKER_BINARY,
+            &stdin,
         )?;
 
-        let app_cycles: u64 = cycles.iter().sum();
+        tracing::info!("mock spell checker executed with {} cycles", report.total_instruction_count());
+        let spell_cycles = report.total_instruction_count();
 
-        // prove charms-spell-checker run
-        ensure!(
-            charms_client::well_formed(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos),
-            "spell is not well-formed"
-        );
-
-        // replace with good randomness in non-mock mode
+        // Generate mock Groth16 proof
         let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
-
-        // Create parameters for our circuit
         let pk = load_pk()?;
 
         let committed_data = util::write(&(MOCK_SPELL_VK, norm_spell.clone()))?;
@@ -571,11 +582,9 @@ impl Prove for MockProver {
         let mut proof_bytes = vec![];
         proof.serialize_compressed(&mut proof_bytes)?;
 
-        let (proof, spell_cycles) = (proof_bytes, 0);
-
         let norm_spell = clear_inputs_and_coins(norm_spell);
 
-        Ok((norm_spell, proof, app_cycles + spell_cycles))
+        Ok((norm_spell, proof_bytes, spell_cycles))
     }
 }
 
@@ -748,7 +757,7 @@ impl Prover {
 }
 
 pub struct MockProver {
-    pub app_runner: Arc<AppRunner>,
+    pub spell_prover_client: Arc<Shared<BoxedSP1Prover>>,
 }
 
 impl ProveSpellTxImpl {

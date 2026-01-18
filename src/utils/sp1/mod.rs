@@ -8,7 +8,7 @@ use sp1_prover::{SP1Prover, components::CpuProverComponents};
 
 use crate::utils::{TRANSIENT_PROVER_FAILURE, prover::CharmsSP1Prover, sp1::cuda::SP1CudaProver};
 use sp1_sdk::{
-    Prover, SP1Proof, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey, SP1VerifyingKey,
+    ExecutionReport, Prover, SP1Proof, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey, SP1VerifyingKey,
     install::try_install_circuit_artifacts,
 };
 
@@ -131,5 +131,14 @@ impl CharmsSP1Prover for CudaProver {
     ) -> anyhow::Result<(SP1ProofWithPublicValues, u64)> {
         self.prove_with_cycles(pk, stdin, kind)
             .map_err(|e| anyhow!("{}: CUDA: {}", TRANSIENT_PROVER_FAILURE, e))
+    }
+
+    fn execute(
+        &self,
+        elf: &[u8],
+        stdin: &SP1Stdin,
+    ) -> anyhow::Result<(sp1_sdk::SP1PublicValues, ExecutionReport)> {
+        // Use the sp1_sdk::Prover trait method, not the SP1Prover method
+        Ok(sp1_sdk::Prover::execute(self as &dyn sp1_sdk::Prover<CpuProverComponents>, elf, stdin)?)
     }
 }
