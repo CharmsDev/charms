@@ -49,6 +49,7 @@ impl CharmsSP1Prover for NetworkProver {
             .mode(kind)
             .gas_limit(16_000_000_000)
             .cycle_limit(16_000_000_000)
+            .max_price_per_pgu(500_000_000)
             .skip_simulation(true)
             .strategy(FulfillmentStrategy::Auction)
             .run()?;
