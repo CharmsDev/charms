@@ -447,14 +447,6 @@ impl Prove for Prover {
             "trying to prove a mock spell with a real prover"
         );
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, false);
-        let tx = to_tx(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos,
-            &prev_txs,
-        );
-
         let app_input = match app_binaries.is_empty() {
             true => None,
             false => Some(AppInput {
@@ -523,14 +515,6 @@ impl Prove for MockProver {
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         let norm_spell = make_mock(norm_spell);
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, true);
-        let tx = to_tx(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos,
-            &prev_txs,
-        );
-
         let app_input = match app_binaries.is_empty() {
             true => None,
             false => Some(AppInput {
@@ -551,12 +535,15 @@ impl Prove for MockProver {
         let mut stdin = SP1Stdin::new();
         stdin.write_vec(util::write(&prover_input)?);
 
-        let (_, report) = self.spell_prover_client.get().execute(
-            SPELL_CHECKER_BINARY,
-            &stdin,
-        )?;
+        let (_, report) = self
+            .spell_prover_client
+            .get()
+            .execute(SPELL_CHECKER_BINARY, &stdin)?;
 
-        tracing::info!("mock spell checker executed with {} cycles", report.total_instruction_count());
+        tracing::info!(
+            "mock spell checker executed with {} cycles",
+            report.total_instruction_count()
+        );
         let spell_cycles = report.total_instruction_count();
 
         // Generate mock Groth16 proof
@@ -858,8 +845,8 @@ pub enum ProofState {
 }
 
 pub fn committed_data_hash(normalized_spell: &NormalizedSpell) -> anyhow::Result<[u8; 32]> {
-    let bytes = util::write(&normalized_spell)
-        .context("Failed to serialize normalized spell for hash")?;
+    let bytes =
+        util::write(&normalized_spell).context("Failed to serialize normalized spell for hash")?;
     Ok(Sha256::digest(&bytes).into())
 }
 
@@ -880,7 +867,8 @@ impl ProveSpellTx for ProveSpellTxImpl {
             std::env::var("REDIS_URL").ok().and_then(|redis_url| {
                 match redis::Client::open(redis_url) {
                     Ok(redis_client) => {
-                        let lock_manager = rslock::LockManager::from_clients(vec![redis_client.clone()]);
+                        let lock_manager =
+                            rslock::LockManager::from_clients(vec![redis_client.clone()]);
                         Some((redis_client, lock_manager))
                     }
                     Err(e) => {
@@ -1021,16 +1009,53 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 }
 
+pub fn ensure_exact_app_binaries(
+    norm_spell: &NormalizedSpell,
+    app_private_inputs: &BTreeMap<App, Data>,
+    tx: &Transaction,
+    binaries: &BTreeMap<B32, Vec<u8>>,
+) -> anyhow::Result<()> {
+    let required_vks: BTreeSet<_> = norm_spell
+        .app_public_inputs
+        .iter()
+        .filter(|(app, data)| {
+            !data.is_empty()
+                || !app_private_inputs
+                    .get(app)
+                    .is_none_or(|data| data.is_empty())
+                || !is_simple_transfer(app, tx)
+        })
+        .map(|(app, _)| &app.vk)
+        .collect();
+
+    let provided_vks: BTreeSet<_> = binaries.keys().collect();
+
+    ensure!(
+        required_vks == provided_vks,
+        "binaries must contain exactly the required app binaries.\n\
+         Required VKs: {:?}\n\
+         Provided VKs: {:?}",
+        required_vks,
+        provided_vks
+    );
+
+    Ok(())
+}
+
 pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
-    let spell_ins = spell.tx.ins.as_ref()
+    let spell_ins = spell
+        .tx
+        .ins
+        .as_ref()
         .ok_or_else(|| anyhow!("spell.tx.ins must be present"))?;
 
     ensure!(
-        spell_ins.iter()
+        spell_ins
+            .iter()
             .all(|utxo_id| prev_txs_by_id.contains_key(&utxo_id.0)),
         "prev_txs MUST contain transactions creating input UTXOs"
     );
@@ -1045,11 +1070,10 @@ pub fn ensure_all_prev_txs_are_present(
         tx_ins_beamed_source_utxos
             .iter()
             .all(|(&i, beaming_source_utxo_id)| {
-                spell_ins.get(i)
-                    .is_some_and(|utxo_id| {
-                        prev_txs_by_id.contains_key(&utxo_id.0)
-                            && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
-                    })
+                spell_ins.get(i).is_some_and(|utxo_id| {
+                    prev_txs_by_id.contains_key(&utxo_id.0)
+                        && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
+                })
             }),
         "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
     );
@@ -1066,7 +1090,11 @@ pub fn ensure_all_prev_txs_are_present(
     }
 
     // Add transaction IDs from beaming source UTXOs
-    required_txids.extend(tx_ins_beamed_source_utxos.values().map(|utxo_id| &utxo_id.0));
+    required_txids.extend(
+        tx_ins_beamed_source_utxos
+            .values()
+            .map(|utxo_id| &utxo_id.0),
+    );
 
     // Check that prev_txs contains exactly the required transactions
     let provided_txids: BTreeSet<_> = prev_txs_by_id.keys().collect();
@@ -1115,30 +1143,12 @@ impl ProveSpellTxImpl {
             &prev_txs,
         );
 
-        // Validate that exactly the required app binaries are provided
-        let required_vks: BTreeSet<_> = norm_spell
-            .app_public_inputs
-            .iter()
-            .filter(|(app, data)| {
-                !data.is_empty()
-                    || !app_private_inputs
-                        .get(app)
-                        .is_none_or(|data| data.is_empty())
-                    || !is_simple_transfer(app, &tx)
-            })
-            .map(|(app, _)| &app.vk)
-            .collect();
-
-        let provided_vks: BTreeSet<_> = prove_request.binaries.keys().collect();
-
-        ensure!(
-            required_vks == provided_vks,
-            "binaries must contain exactly the required app binaries.\n\
-             Required VKs: {:?}\n\
-             Provided VKs: {:?}",
-            required_vks,
-            provided_vks
-        );
+        ensure_exact_app_binaries(
+            &norm_spell,
+            &app_private_inputs,
+            &tx,
+            &prove_request.binaries,
+        )?;
 
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(
