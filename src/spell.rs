@@ -1091,6 +1091,33 @@ pub fn ensure_all_prev_txs_are_present(
             }),
         "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
     );
+
+    // Ensure prev_txs contains ONLY the required transactions (no extras)
+    let mut required_txids = BTreeSet::new();
+
+    // Add transaction IDs from spell inputs
+    required_txids.extend(spell_ins.iter().map(|utxo_id| &utxo_id.0));
+
+    // Add transaction IDs from spell refs
+    if let Some(refs) = spell.tx.refs.as_ref() {
+        required_txids.extend(refs.iter().map(|utxo_id| &utxo_id.0));
+    }
+
+    // Add transaction IDs from beaming source UTXOs
+    required_txids.extend(tx_ins_beamed_source_utxos.values().map(|utxo_id| &utxo_id.0));
+
+    // Check that prev_txs contains exactly the required transactions
+    let provided_txids: BTreeSet<_> = prev_txs_by_id.keys().collect();
+
+    ensure!(
+        required_txids == provided_txids,
+        "prev_txs must contain exactly the transactions producing spell inputs and beaming sources.\n\
+         Required: {:?}\n\
+         Provided: {:?}",
+        required_txids,
+        provided_txids
+    );
+
     Ok(())
 }
 
