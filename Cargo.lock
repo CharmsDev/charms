@@ -2063,7 +2063,7 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "charms"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -2115,7 +2115,7 @@ dependencies = [
 
 [[package]]
 name = "charms-app-runner"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "charms-data",
@@ -2125,7 +2125,7 @@ dependencies = [
 
 [[package]]
 name = "charms-client"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -2155,7 +2155,7 @@ dependencies = [
 
 [[package]]
 name = "charms-data"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "anyhow",
  "ark-std 0.5.0",
@@ -2172,7 +2172,7 @@ dependencies = [
 
 [[package]]
 name = "charms-lib"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "charms-client",
  "serde-wasm-bindgen",
@@ -2182,7 +2182,7 @@ dependencies = [
 
 [[package]]
 name = "charms-proof-wrapper"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "sp1-primitives",
  "sp1-sdk",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "charms-sdk"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "charms-data",
 ]
