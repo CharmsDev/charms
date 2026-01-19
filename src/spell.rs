@@ -455,9 +455,6 @@ impl Prove for Prover {
             &prev_txs,
         );
 
-        let app_binaries =
-            filter_app_binaries(&norm_spell, app_binaries, &app_private_inputs, &tx)?;
-
         let app_input = match app_binaries.is_empty() {
             true => None,
             false => Some(AppInput {
@@ -533,9 +530,6 @@ impl Prove for MockProver {
             &tx_ins_beamed_source_utxos,
             &prev_txs,
         );
-
-        let app_binaries =
-            filter_app_binaries(&norm_spell, app_binaries, &app_private_inputs, &tx)?;
 
         let app_input = match app_binaries.is_empty() {
             true => None,
@@ -842,38 +836,6 @@ impl ProveSpellTxImpl {
     }
 }
 
-fn filter_app_binaries(
-    norm_spell: &NormalizedSpell,
-    app_binaries: BTreeMap<B32, Vec<u8>>,
-    app_private_inputs: &BTreeMap<App, Data>,
-    tx: &Transaction,
-) -> anyhow::Result<BTreeMap<B32, Vec<u8>>> {
-    let vks = norm_spell
-        .app_public_inputs
-        .iter()
-        .filter(|(app, data)| {
-            !data.is_empty()
-                || !app_private_inputs
-                    .get(app)
-                    .is_none_or(|data| data.is_empty())
-                || !is_simple_transfer(app, tx)
-        })
-        .map(|(app, _)| &app.vk)
-        .collect::<BTreeSet<_>>();
-    let app_binaries: BTreeMap<_, _> = app_binaries
-        .into_iter()
-        .filter(|(vk, _)| vks.contains(vk))
-        .collect();
-    if app_binaries.len() != vks.len() {
-        let missing_vks = vks
-            .into_iter()
-            .filter(|&vk| app_binaries.get(vk).is_none())
-            .collect::<Vec<_>>();
-        bail!("missing app binaries for vks: {:?}", missing_vks);
-    }
-    Ok(app_binaries)
-}
-
 const CHARMS_PROVE_API_URL: &'static str =
     formatcp!("https://v{CURRENT_VERSION}.charms.dev/spells/prove");
 
@@ -1152,6 +1114,32 @@ impl ProveSpellTxImpl {
             &tx_ins_beamed_source_utxos,
             &prev_txs,
         );
+
+        // Validate that exactly the required app binaries are provided
+        let required_vks: BTreeSet<_> = norm_spell
+            .app_public_inputs
+            .iter()
+            .filter(|(app, data)| {
+                !data.is_empty()
+                    || !app_private_inputs
+                        .get(app)
+                        .is_none_or(|data| data.is_empty())
+                    || !is_simple_transfer(app, &tx)
+            })
+            .map(|(app, _)| &app.vk)
+            .collect();
+
+        let provided_vks: BTreeSet<_> = prove_request.binaries.keys().collect();
+
+        ensure!(
+            required_vks == provided_vks,
+            "binaries must contain exactly the required app binaries.\n\
+             Required VKs: {:?}\n\
+             Provided VKs: {:?}",
+            required_vks,
+            provided_vks
+        );
+
         // prove charms-app-checker run
         let cycles = AppRunner::new(true).run_all(
             &prove_request.binaries,
