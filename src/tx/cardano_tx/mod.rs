@@ -24,7 +24,7 @@ use cml_chain::{
     },
     fees::LinearFee,
     plutus::{
-        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusMap, PlutusV3Script, RedeemerTag,
+        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag,
     },
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
@@ -126,7 +126,7 @@ pub fn from_spell(
     let scripts = tx_outputs(&mut tx_b, spell)?;
     let scripts_count = scripts.len() as u64;
 
-    add_mint(&mut tx_b, scripts)?;
+    add_mint(&mut tx_b, scripts, spell.version)?;
 
     let funding_input = input_builder_result(change_address, funding_utxo, funding_utxo_value)?;
     let collateral_input = input_builder_result(change_address, collateral_utxo, 10_000_000)?;
@@ -262,6 +262,7 @@ mod tests {
 fn add_mint(
     tx_b: &mut TransactionBuilder,
     scripts: BTreeMap<PolicyId, PlutusV3Script>,
+    protocol_version: u32,
 ) -> anyhow::Result<()> {
     let out_v = tx_b.get_explicit_output()?.multiasset;
     let in_v = tx_b.get_explicit_input()?.multiasset;
@@ -275,11 +276,19 @@ fn add_mint(
 
     let mint = minted_assets.clamped_sub(&burned_assets);
 
+    // Create protocol version NFT asset_name as redeemer
+    // Format: NFT_LABEL (000de140) + "v<protocol_version>" as bytes
+    const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
+    let version_string = format!("v{}", protocol_version);
+    let mut redeemer_bytes = NFT_LABEL.to_vec();
+    redeemer_bytes.extend_from_slice(version_string.as_bytes());
+    let redeemer = PlutusData::new_bytes(redeemer_bytes);
+
     for (policy_id, assets) in mint.iter() {
         let mint_b = SingleMintBuilder::new(assets.clone());
         let script = scripts[policy_id].clone(); // scripts MUST have all token policies at this point
         let psw = PlutusScriptWitness::Script(script.into());
-        let ppw = PartialPlutusWitness::new(psw, PlutusData::new_map(PlutusMap::new()));
+        let ppw = PartialPlutusWitness::new(psw, redeemer.clone());
         tx_b.add_mint(mint_b.plutus_script(ppw, vec![].into()))?;
     }
 
