@@ -1,5 +1,5 @@
 use crate::{NormalizedSpell, Proof, V7, charms, tx, tx::EnchantedTx};
-use anyhow::{Context, anyhow, bail, ensure};
+use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
     Deserialize, PolicyId, Serialize,
@@ -211,16 +211,39 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         .zip(tx.0.body.outputs.iter())
         .enumerate()
     {
-        let tx_multi_asset = &native_out.amount().multiasset;
-        let (expected_multi_asset, _) = multi_asset(&charms(spell, spell_out))?;
+        let present_all = &native_out.amount().multiasset;
+        let (expected_charms, _) = multi_asset(&charms(spell, spell_out))?;
 
-        let remainder = tx_multi_asset
-            .checked_sub(&expected_multi_asset)
-            .context(format!("Output {i} missing CNTs"))?;
-        let unexpected = expected_multi_asset.clamped_sub(&remainder);
+        let missing_charms = expected_charms.clamped_sub(&present_all);
         ensure!(
-            expected_multi_asset.clamped_sub(&remainder).is_empty(),
-            "Output {i} has unexpected Charms CNTs: {unexpected:?}"
+            missing_charms.is_empty(),
+            format!("Output {i} missing Charms CNTs: {missing_charms:?}")
+        );
+
+        // now present_all >= expected_charms
+
+        // might contain non-expected CNTs (we don't care) PLUS extra amounts of expected CNTs (bad)
+        let extra_all = present_all.clamped_sub(&expected_charms);
+        if extra_all.is_empty() {
+            // present_all == expected_charms
+            continue;
+        }
+
+        // Check if any of the extra tokens overlap with expected CNTs (indicating excess amounts)
+        let extra_charms = {
+            let mut extra_charms = MultiAsset::new();
+            for (policy, assets) in expected_charms.iter() {
+                for (asset_name, _) in assets.iter() {
+                    if let Some(amount) = extra_all.get(policy, asset_name) {
+                        extra_charms.set(*policy, asset_name.clone(), amount);
+                    }
+                }
+            }
+            extra_charms
+        };
+        ensure!(
+            extra_charms.is_empty(),
+            format!("Output {i} has excess amounts of expected Charms CNTs: {extra_charms:?}")
         );
     }
     Ok(())

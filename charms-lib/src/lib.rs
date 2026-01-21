@@ -29,8 +29,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_and_verify_spell() {
+    fn test_extract_and_verify_spell_bitcoin() {
         let tx_json = include_str!("../test/bitcoin-tx.json");
+        let tx: Tx = serde_json::from_str(tx_json).unwrap();
+        let norm_spell = extract_and_verify_spell(&tx, true).unwrap();
+        println!("{}", serde_json::to_string_pretty(&norm_spell).unwrap());
+    }
+
+    #[test]
+    fn test_extract_and_verify_spell_cardano() {
+        let tx_json = include_str!("../test/cardano-tx.json");
         let tx: Tx = serde_json::from_str(tx_json).unwrap();
         let norm_spell = extract_and_verify_spell(&tx, true).unwrap();
         println!("{}", serde_json::to_string_pretty(&norm_spell).unwrap());

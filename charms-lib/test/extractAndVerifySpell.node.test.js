@@ -22,7 +22,7 @@ function main() {
     const tx = JSON.parse(fs.readFileSync(txJsonPath, 'utf8'));
 
     // Invoke the wasm function extractAndVerifySpell
-    const res = wasm.extractAndVerifySpell(tx, false);
+    const res = wasm.extractAndVerifySpell(tx, true);
     console.log('[extractAndVerifySpell.test] OK');
     console.log('%o', res);
 }
