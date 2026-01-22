@@ -412,7 +412,7 @@ pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()
 #[cfg(test)]
 mod test {
     use super::*;
-    use charms_data::{B32, Data, NativeOutput, TxId, UtxoId};
+    use charms_data::{NativeOutput, TxId, UtxoId};
     use std::collections::BTreeMap;
 
     #[test]
