@@ -419,7 +419,6 @@ mod test {
     fn dummy() {}
 
     /// Test for GitHub issue: "coin_ins not populated for spell inputs with empty charms"
-    /// https://github.com/CharmsDev/charms/issues/XXX
     /// 
     /// This test verifies that `coin_ins` is correctly populated when spell inputs have
     /// empty charms (`charms: {}`, i.e., raw BTC without any charms attached).
@@ -431,7 +430,7 @@ mod test {
         // Create a mock previous transaction that has outputs with coin amounts
         // but empty charms (raw BTC)
         let prev_txid = TxId([1u8; 32]);
-        let prev_utxo_0 = UtxoId(prev_txid.clone(), 0);
+        let prev_utxo_0 = UtxoId(prev_txid, 0);
         
         // Create a previous spell with empty charms but coin outputs
         let mut prev_spell = NormalizedSpell::default();
@@ -445,7 +444,7 @@ mod test {
         
         // Create current spell that spends the previous output
         let mut current_spell = NormalizedSpell::default();
-        current_spell.tx.ins = Some(vec![prev_utxo_0.clone()]);
+        current_spell.tx.ins = Some(vec![prev_utxo_0]);
         current_spell.tx.outs = vec![BTreeMap::new()];
         current_spell.tx.coins = Some(vec![NativeOutput {
             amount: 100000,
@@ -455,13 +454,13 @@ mod test {
         
         // Create prev_spells map
         let mut prev_spells = BTreeMap::new();
-        prev_spells.insert(prev_txid.clone(), (prev_spell, 0));
+        prev_spells.insert(prev_txid, (prev_spell, 0));
         
         // Create empty beamed source utxos
         let tx_ins_beamed_source_utxos = BTreeMap::new();
         
         // Create empty prev_txs (we won't use it for this test)
-        let prev_txs: Vec<crate::tx::Tx> = vec![];
+        let prev_txs = vec![];
         
         // Call to_tx
         let tx = to_tx(
@@ -489,8 +488,8 @@ mod test {
     fn test_coin_ins_with_multiple_inputs_some_empty_charms() {
         // Test scenario: multiple inputs, some with charms, some without
         let prev_txid = TxId([2u8; 32]);
-        let prev_utxo_0 = UtxoId(prev_txid.clone(), 0);
-        let prev_utxo_1 = UtxoId(prev_txid.clone(), 1);
+        let prev_utxo_0 = UtxoId(prev_txid, 0);
+        let prev_utxo_1 = UtxoId(prev_txid, 1);
         
         // Create a previous spell with two outputs
         let mut prev_spell = NormalizedSpell::default();
@@ -513,7 +512,7 @@ mod test {
         
         // Create current spell that spends both outputs
         let mut current_spell = NormalizedSpell::default();
-        current_spell.tx.ins = Some(vec![prev_utxo_0.clone(), prev_utxo_1.clone()]);
+        current_spell.tx.ins = Some(vec![prev_utxo_0, prev_utxo_1]);
         current_spell.tx.outs = vec![BTreeMap::new()];
         current_spell.tx.coins = Some(vec![NativeOutput {
             amount: 125000,
@@ -523,10 +522,10 @@ mod test {
         
         // Create prev_spells map
         let mut prev_spells = BTreeMap::new();
-        prev_spells.insert(prev_txid.clone(), (prev_spell, 0));
+        prev_spells.insert(prev_txid, (prev_spell, 0));
         
         let tx_ins_beamed_source_utxos = BTreeMap::new();
-        let prev_txs: Vec<crate::tx::Tx> = vec![];
+        let prev_txs = vec![];
         
         // Call to_tx
         let tx = to_tx(
