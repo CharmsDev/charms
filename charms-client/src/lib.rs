@@ -427,6 +427,8 @@ mod test {
     /// This test confirms that the issue does NOT exist in v0.12.0 (current version).
     #[test]
     fn test_coin_ins_populated_with_empty_charms() {
+        const COIN_AMOUNT: u64 = 100000;
+        
         // Create a mock previous transaction that has outputs with coin amounts
         // but empty charms (raw BTC)
         let prev_txid = TxId([1u8; 32]);
@@ -437,7 +439,7 @@ mod test {
         prev_spell.tx.ins = Some(vec![]);
         prev_spell.tx.outs = vec![BTreeMap::new()]; // Empty charms output
         prev_spell.tx.coins = Some(vec![NativeOutput {
-            amount: 100000,
+            amount: COIN_AMOUNT,
             dest: vec![0u8; 20],
         }]);
         prev_spell.version = CURRENT_VERSION;
@@ -447,7 +449,7 @@ mod test {
         current_spell.tx.ins = Some(vec![prev_utxo_0]);
         current_spell.tx.outs = vec![BTreeMap::new()];
         current_spell.tx.coins = Some(vec![NativeOutput {
-            amount: 100000,
+            amount: COIN_AMOUNT,
             dest: vec![0u8; 20],
         }]);
         current_spell.version = CURRENT_VERSION;
@@ -474,7 +476,7 @@ mod test {
         assert!(tx.coin_ins.is_some(), "coin_ins should be populated");
         let coin_ins = tx.coin_ins.unwrap();
         assert_eq!(coin_ins.len(), 1, "coin_ins should have 1 element");
-        assert_eq!(coin_ins[0].amount, 100000, "coin amount should match");
+        assert_eq!(coin_ins[0].amount, COIN_AMOUNT, "coin amount should match");
         
         // Verify the input charms is empty (raw BTC)
         assert_eq!(tx.ins.len(), 1, "should have 1 input");
@@ -486,6 +488,10 @@ mod test {
     /// multiple inputs with empty charms are used.
     #[test]
     fn test_coin_ins_with_multiple_inputs_some_empty_charms() {
+        const COIN_AMOUNT_1: u64 = 50000;
+        const COIN_AMOUNT_2: u64 = 75000;
+        const TOTAL_AMOUNT: u64 = COIN_AMOUNT_1 + COIN_AMOUNT_2;
+        
         // Test scenario: multiple inputs, some with charms, some without
         let prev_txid = TxId([2u8; 32]);
         let prev_utxo_0 = UtxoId(prev_txid, 0);
@@ -500,11 +506,11 @@ mod test {
         ];
         prev_spell.tx.coins = Some(vec![
             NativeOutput {
-                amount: 50000,
+                amount: COIN_AMOUNT_1,
                 dest: vec![0u8; 20],
             },
             NativeOutput {
-                amount: 75000,
+                amount: COIN_AMOUNT_2,
                 dest: vec![0u8; 20],
             },
         ]);
@@ -515,7 +521,7 @@ mod test {
         current_spell.tx.ins = Some(vec![prev_utxo_0, prev_utxo_1]);
         current_spell.tx.outs = vec![BTreeMap::new()];
         current_spell.tx.coins = Some(vec![NativeOutput {
-            amount: 125000,
+            amount: TOTAL_AMOUNT,
             dest: vec![0u8; 20],
         }]);
         current_spell.version = CURRENT_VERSION;
@@ -539,8 +545,8 @@ mod test {
         assert!(tx.coin_ins.is_some(), "coin_ins should be populated");
         let coin_ins = tx.coin_ins.unwrap();
         assert_eq!(coin_ins.len(), 2, "coin_ins should have 2 elements");
-        assert_eq!(coin_ins[0].amount, 50000, "first coin amount should match");
-        assert_eq!(coin_ins[1].amount, 75000, "second coin amount should match");
+        assert_eq!(coin_ins[0].amount, COIN_AMOUNT_1, "first coin amount should match");
+        assert_eq!(coin_ins[1].amount, COIN_AMOUNT_2, "second coin amount should match");
         
         // Verify all inputs have empty charms
         assert_eq!(tx.ins.len(), 2, "should have 2 inputs");
