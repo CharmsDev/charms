@@ -9,7 +9,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use charms_app_runner::AppRunner;
 use charms_client::{
-    CURRENT_VERSION, ensure_no_zero_amounts,
+    CURRENT_VERSION,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::UtxoId;
@@ -149,29 +149,50 @@ impl Check for SpellCli {
 
         let prev_txs = from_strings(&prev_txs)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
-
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
 
-        ensure_no_zero_amounts(&norm_spell)?;
         ensure_all_prev_txs_are_present(
             &norm_spell,
             &tx_ins_beamed_source_utxos,
             &by_txid(&prev_txs),
         )?;
 
-        ensure!(
-            charms_client::well_formed(&norm_spell, &prev_spells, &tx_ins_beamed_source_utxos),
-            "spell is not well-formed"
-        );
-
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
             &prev_txs,
+        );
+
+        ensure_exact_app_binaries(
+            &norm_spell,
+            &app_private_inputs,
+            &charms_tx,
+            &binaries,
+        )?;
+
+        let app_input = match binaries.is_empty() {
+            true => None,
+            false => Some(charms_data::AppInput {
+                app_binaries: binaries.clone(),
+                app_private_inputs: app_private_inputs.clone(),
+            }),
+        };
+
+        ensure!(
+            charms_client::is_correct(
+                &norm_spell,
+                &prev_txs,
+                app_input,
+                SPELL_VK,
+                &tx_ins_beamed_source_utxos,
+                mock,
+            ),
+            "spell verification failed"
         );
 
         let cycles_spent = self.app_runner.run_all(
