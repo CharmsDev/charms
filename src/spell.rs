@@ -31,7 +31,6 @@ pub use charms_client::{
 use charms_client::{
     MOCK_SPELL_VK,
     tx::{Chain, Tx, by_txid},
-    well_formed,
 };
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
@@ -1025,6 +1024,39 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 }
 
+pub fn ensure_exact_app_binaries(
+    norm_spell: &NormalizedSpell,
+    app_private_inputs: &BTreeMap<App, Data>,
+    tx: &Transaction,
+    binaries: &BTreeMap<B32, Vec<u8>>,
+) -> anyhow::Result<()> {
+    let required_vks: BTreeSet<_> = norm_spell
+        .app_public_inputs
+        .iter()
+        .filter(|(app, data)| {
+            !data.is_empty()
+                || !app_private_inputs
+                .get(app)
+                .is_none_or(|data| data.is_empty())
+                || !is_simple_transfer(app, tx)
+        })
+        .map(|(app, _)| &app.vk)
+        .collect();
+
+    let provided_vks: BTreeSet<_> = binaries.keys().collect();
+
+    ensure!(
+        required_vks == provided_vks,
+        "binaries must contain exactly the required app binaries.\n\
+         Required VKs: {:?}\n\
+         Provided VKs: {:?}",
+        required_vks,
+        provided_vks
+    );
+
+    Ok(())
+}
+
 pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
@@ -1074,26 +1106,52 @@ impl ProveSpellTxImpl {
 
         let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
 
-        ensure!(well_formed(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos
-        ));
-
         let tx = to_tx(
             &norm_spell,
             &prev_spells,
             &tx_ins_beamed_source_utxos,
             &prev_txs,
         );
-        // prove charms-app-checker run
-        let cycles = AppRunner::new(true).run_all(
-            &prove_request.binaries,
-            &tx,
-            &norm_spell.app_public_inputs,
+
+        ensure_exact_app_binaries(
+            &norm_spell,
             &app_private_inputs,
+            &tx,
+            &prove_request.binaries,
         )?;
-        let total_cycles = cycles.iter().sum();
+
+        let app_input = match prove_request.binaries.is_empty() {
+            true => None,
+            false => Some(AppInput {
+                app_binaries: prove_request.binaries.clone(),
+                app_private_inputs: app_private_inputs.clone(),
+            }),
+        };
+
+        ensure!(
+            charms_client::is_correct(
+                &norm_spell,
+                &prev_txs,
+                app_input.clone(),
+                SPELL_VK,
+                &tx_ins_beamed_source_utxos,
+                self.mock,
+            ),
+            "spell verification failed"
+        );
+
+        // Calculate cycles for fee estimation
+        let total_cycles = if let Some(app_input) = &app_input {
+            let cycles = AppRunner::new(true).run_all(
+                &app_input.app_binaries,
+                &tx,
+                &norm_spell.app_public_inputs,
+                &app_input.app_private_inputs,
+            )?;
+            cycles.iter().sum()
+        } else {
+            0
+        };
 
         match prove_request.chain {
             Chain::Bitcoin => {
