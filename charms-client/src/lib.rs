@@ -468,5 +468,73 @@ mod test {
         let coin_ins = tx.coin_ins.unwrap();
         assert_eq!(coin_ins.len(), 1, "coin_ins should have 1 element");
         assert_eq!(coin_ins[0].amount, 100000, "coin amount should match");
+        
+        // Verify the input charms is empty (raw BTC)
+        assert_eq!(tx.ins.len(), 1, "should have 1 input");
+        assert!(tx.ins[0].1.is_empty(), "input charms should be empty for raw BTC");
+    }
+
+    #[test]
+    fn test_coin_ins_with_multiple_inputs_some_empty_charms() {
+        // Test scenario: multiple inputs, some with charms, some without
+        let prev_txid = TxId([2u8; 32]);
+        let prev_utxo_0 = UtxoId(prev_txid.clone(), 0);
+        let prev_utxo_1 = UtxoId(prev_txid.clone(), 1);
+        
+        // Create a previous spell with two outputs
+        let mut prev_spell = NormalizedSpell::default();
+        prev_spell.tx.ins = Some(vec![]);
+        prev_spell.tx.outs = vec![
+            BTreeMap::new(), // Empty charms (raw BTC)
+            BTreeMap::new(), // Empty charms (raw BTC)
+        ];
+        prev_spell.tx.coins = Some(vec![
+            NativeOutput {
+                amount: 50000,
+                dest: vec![0u8; 20],
+            },
+            NativeOutput {
+                amount: 75000,
+                dest: vec![0u8; 20],
+            },
+        ]);
+        prev_spell.version = CURRENT_VERSION;
+        
+        // Create current spell that spends both outputs
+        let mut current_spell = NormalizedSpell::default();
+        current_spell.tx.ins = Some(vec![prev_utxo_0.clone(), prev_utxo_1.clone()]);
+        current_spell.tx.outs = vec![BTreeMap::new()];
+        current_spell.tx.coins = Some(vec![NativeOutput {
+            amount: 125000,
+            dest: vec![0u8; 20],
+        }]);
+        current_spell.version = CURRENT_VERSION;
+        
+        // Create prev_spells map
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(prev_txid.clone(), (prev_spell, 0));
+        
+        let tx_ins_beamed_source_utxos = BTreeMap::new();
+        let prev_txs: Vec<crate::tx::Tx> = vec![];
+        
+        // Call to_tx
+        let tx = to_tx(
+            &current_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            &prev_txs,
+        );
+        
+        // Verify coin_ins is populated with correct values
+        assert!(tx.coin_ins.is_some(), "coin_ins should be populated");
+        let coin_ins = tx.coin_ins.unwrap();
+        assert_eq!(coin_ins.len(), 2, "coin_ins should have 2 elements");
+        assert_eq!(coin_ins[0].amount, 50000, "first coin amount should match");
+        assert_eq!(coin_ins[1].amount, 75000, "second coin amount should match");
+        
+        // Verify all inputs have empty charms
+        assert_eq!(tx.ins.len(), 2, "should have 2 inputs");
+        assert!(tx.ins[0].1.is_empty(), "first input charms should be empty");
+        assert!(tx.ins[1].1.is_empty(), "second input charms should be empty");
     }
 }
