@@ -29,7 +29,6 @@ pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
         app_input,
         &self_spell_vk,
         &tx_ins_beamed_source_utxos,
-        spell.mock,
     ));
 
     eprintln!("Spell is correct!");

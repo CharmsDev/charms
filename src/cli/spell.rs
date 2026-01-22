@@ -85,7 +85,8 @@ impl Prove for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
+        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
+            spell.normalized(mock)?;
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -153,7 +154,8 @@ impl Check for SpellCli {
 
         let prev_txs = from_strings(&prev_txs)?;
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell.normalized()?;
+        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
+            spell.normalized(mock)?;
 
         ensure_all_prev_txs_are_present(
             &norm_spell,
@@ -163,7 +165,7 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, mock);
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock);
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,
@@ -172,12 +174,7 @@ impl Check for SpellCli {
             &prev_txs,
         );
 
-        ensure_exact_app_binaries(
-            &norm_spell,
-            &app_private_inputs,
-            &charms_tx,
-            &binaries,
-        )?;
+        ensure_exact_app_binaries(&norm_spell, &app_private_inputs, &charms_tx, &binaries)?;
 
         let app_input = match binaries.is_empty() {
             true => None,
@@ -194,7 +191,6 @@ impl Check for SpellCli {
                 app_input,
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
-                mock,
             ),
             "spell verification failed"
         );

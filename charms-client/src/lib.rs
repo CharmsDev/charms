@@ -323,14 +323,13 @@ pub fn is_correct(
     app_input: Option<AppInput>,
     spell_vk: &str,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
-    mock: bool,
 ) -> bool {
     check!(beaming_txs_have_finality_proofs(
         prev_txs,
         tx_ins_beamed_source_utxos
     ));
 
-    let prev_spells = prev_spells(&prev_txs, spell_vk, mock);
+    let prev_spells = prev_spells(&prev_txs, spell_vk, spell.mock);
 
     check!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 

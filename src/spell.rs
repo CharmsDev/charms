@@ -162,6 +162,7 @@ impl Spell {
     /// Get a [`NormalizedSpell`] and apps' private inputs for the spell.
     pub fn normalized(
         &self,
+        mock: bool,
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
@@ -243,7 +244,7 @@ impl Spell {
                 coins: Some(coins),
             },
             app_public_inputs,
-            mock: false,
+            mock,
         };
 
         let keyed_private_inputs = self.private_args.as_ref().unwrap_or(&empty_map);
@@ -1117,6 +1118,13 @@ impl ProveSpellTxImpl {
         &self,
         prove_request: &ProveRequest,
     ) -> anyhow::Result<(NormalizedSpell, u64)> {
+        ensure!(
+            prove_request.spell.mock == self.mock,
+            "cannot prove a mock=={} spell on a mock=={} prover",
+            prove_request.spell.mock,
+            self.mock
+        );
+
         let prev_txs = &prove_request.prev_txs;
         let prev_txs_by_id = by_txid(prev_txs);
 
@@ -1126,7 +1134,7 @@ impl ProveSpellTxImpl {
 
         ensure_all_prev_txs_are_present(norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
-        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
+        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, norm_spell.mock);
 
         let tx = to_tx(
             &norm_spell,
@@ -1157,7 +1165,6 @@ impl ProveSpellTxImpl {
                 app_input.clone(),
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
-                self.mock,
             ),
             "spell verification failed"
         );
