@@ -411,6 +411,62 @@ pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use charms_data::{B32, Data, NativeOutput, TxId, UtxoId};
+    use std::collections::BTreeMap;
+
     #[test]
     fn dummy() {}
+
+    #[test]
+    fn test_coin_ins_populated_with_empty_charms() {
+        // Create a mock previous transaction that has outputs with coin amounts
+        // but empty charms (raw BTC)
+        let prev_txid = TxId([1u8; 32]);
+        let prev_utxo_0 = UtxoId(prev_txid.clone(), 0);
+        
+        // Create a previous spell with empty charms but coin outputs
+        let mut prev_spell = NormalizedSpell::default();
+        prev_spell.tx.ins = Some(vec![]);
+        prev_spell.tx.outs = vec![BTreeMap::new()]; // Empty charms output
+        prev_spell.tx.coins = Some(vec![NativeOutput {
+            amount: 100000,
+            dest: vec![0u8; 20],
+        }]);
+        prev_spell.version = CURRENT_VERSION;
+        
+        // Create current spell that spends the previous output
+        let mut current_spell = NormalizedSpell::default();
+        current_spell.tx.ins = Some(vec![prev_utxo_0.clone()]);
+        current_spell.tx.outs = vec![BTreeMap::new()];
+        current_spell.tx.coins = Some(vec![NativeOutput {
+            amount: 100000,
+            dest: vec![0u8; 20],
+        }]);
+        current_spell.version = CURRENT_VERSION;
+        
+        // Create prev_spells map
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(prev_txid.clone(), (prev_spell, 0));
+        
+        // Create empty beamed source utxos
+        let tx_ins_beamed_source_utxos = BTreeMap::new();
+        
+        // Create empty prev_txs (we won't use it for this test)
+        let prev_txs: Vec<crate::tx::Tx> = vec![];
+        
+        // Call to_tx
+        let tx = to_tx(
+            &current_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+            &prev_txs,
+        );
+        
+        // Verify coin_ins is populated
+        assert!(tx.coin_ins.is_some(), "coin_ins should be populated");
+        let coin_ins = tx.coin_ins.unwrap();
+        assert_eq!(coin_ins.len(), 1, "coin_ins should have 1 element");
+        assert_eq!(coin_ins[0].amount, 100000, "coin amount should match");
+    }
 }
