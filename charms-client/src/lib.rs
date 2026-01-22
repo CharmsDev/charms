@@ -418,6 +418,14 @@ mod test {
     #[test]
     fn dummy() {}
 
+    /// Test for GitHub issue: "coin_ins not populated for spell inputs with empty charms"
+    /// https://github.com/CharmsDev/charms/issues/XXX
+    /// 
+    /// This test verifies that `coin_ins` is correctly populated when spell inputs have
+    /// empty charms (`charms: {}`, i.e., raw BTC without any charms attached).
+    /// 
+    /// The issue was reported for v8 and charms-sdk 0.10.0.
+    /// This test confirms that the issue does NOT exist in v0.12.0 (current version).
     #[test]
     fn test_coin_ins_populated_with_empty_charms() {
         // Create a mock previous transaction that has outputs with coin amounts
@@ -474,6 +482,9 @@ mod test {
         assert!(tx.ins[0].1.is_empty(), "input charms should be empty for raw BTC");
     }
 
+    /// Additional test for the coin_ins issue with multiple inputs.
+    /// Verifies that `coin_ins` is correctly populated for all inputs when
+    /// multiple inputs with empty charms are used.
     #[test]
     fn test_coin_ins_with_multiple_inputs_some_empty_charms() {
         // Test scenario: multiple inputs, some with charms, some without
