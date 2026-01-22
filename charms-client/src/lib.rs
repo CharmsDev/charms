@@ -34,6 +34,8 @@ pub const V6_SPELL_VK: &str = "0x005a1df17094445572e4dd474b3e5dd9093936cba62ca3a
 pub const V7_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef39390c357432ad9aa";
 /// Verification key for version `8` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V8_SPELL_VK: &str = "0x00e440d40e331c16bc4c78d2dbc6bb35876e6ea944e943de359a075e07385abc";
+/// Verification key for version `9` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V9_SPELL_VK: &str = "0x00713f077ec2bd68157512835dc678053565a889935ecd5789ce2fa097c93ee9";
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -55,9 +57,11 @@ pub const V7: u32 = 7;
 pub const V8: u32 = 8;
 /// Version `9` of the protocol.
 pub const V9: u32 = 9;
+/// Version `10` of the protocol.
+pub const V10: u32 = 10;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V9;
+pub const CURRENT_VERSION: u32 = V10;
 
 /// Maps the index of the charm's app (in [`NormalizedSpell`].`app_public_inputs`) to the charm's
 /// data.
