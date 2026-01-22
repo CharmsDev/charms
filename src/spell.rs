@@ -31,7 +31,6 @@ pub use charms_client::{
 use charms_client::{
     MOCK_SPELL_VK,
     tx::{Chain, Tx, by_txid},
-    well_formed,
 };
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
@@ -1125,16 +1124,9 @@ impl ProveSpellTxImpl {
         let app_private_inputs = &prove_request.app_private_inputs;
         let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
 
-        charms_client::ensure_no_zero_amounts(norm_spell)?;
         ensure_all_prev_txs_are_present(norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
         let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, self.mock);
-
-        ensure!(well_formed(
-            &norm_spell,
-            &prev_spells,
-            &tx_ins_beamed_source_utxos
-        ));
 
         let tx = to_tx(
             &norm_spell,
@@ -1150,14 +1142,38 @@ impl ProveSpellTxImpl {
             &prove_request.binaries,
         )?;
 
-        // prove charms-app-checker run
-        let cycles = AppRunner::new(true).run_all(
-            &prove_request.binaries,
-            &tx,
-            &norm_spell.app_public_inputs,
-            &app_private_inputs,
-        )?;
-        let total_cycles = cycles.iter().sum();
+        let app_input = match prove_request.binaries.is_empty() {
+            true => None,
+            false => Some(AppInput {
+                app_binaries: prove_request.binaries.clone(),
+                app_private_inputs: app_private_inputs.clone(),
+            }),
+        };
+
+        ensure!(
+            charms_client::is_correct(
+                &norm_spell,
+                &prev_txs,
+                app_input.clone(),
+                SPELL_VK,
+                &tx_ins_beamed_source_utxos,
+                self.mock,
+            ),
+            "spell verification failed"
+        );
+
+        // Calculate cycles for fee estimation
+        let total_cycles = if let Some(app_input) = &app_input {
+            let cycles = AppRunner::new(true).run_all(
+                &app_input.app_binaries,
+                &tx,
+                &norm_spell.app_public_inputs,
+                &app_input.app_private_inputs,
+            )?;
+            cycles.iter().sum()
+        } else {
+            0
+        };
 
         match prove_request.chain {
             Chain::Bitcoin => {
