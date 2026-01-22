@@ -20,16 +20,19 @@ use cml_chain::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
             add_change_if_needed,
         },
+        withdrawal_builder::SingleWithdrawalBuilder,
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
     },
+    certs::Credential,
+    crypto::ScriptHash,
     fees::LinearFee,
-    plutus::{
-        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag,
-    },
+    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
 };
+use cml_core::serialization::RawBytesEncoding;
+use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -102,6 +105,8 @@ fn tx_outputs(
     Ok(scripts)
 }
 
+const SCROLLS_V10: [u8; 28] = hex!("944b39378927530026312d267179720519d203f7bc5a6730411fb9ef");
+
 /// Build a transaction only dealing with Charms tokens
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -135,6 +140,16 @@ pub fn from_spell(
     add_spell_data(&mut tx_b, spell_data, change_address)?;
 
     tx_b.add_collateral(collateral_input)?;
+
+    // Add 0 ADA withdrawal from script
+    let script_hash = ScriptHash::from_raw_bytes(&SCROLLS_V10).expect("valid hex script hash");
+    let network_id = change_address
+        .network_id()
+        .map_err(|e| anyhow!("Failed to get network_id: {}", e))?;
+    let stake_credential = Credential::new_script(script_hash);
+    let reward_address = cml_chain::address::RewardAddress::new(network_id, stake_credential);
+    let withdrawal_builder = SingleWithdrawalBuilder::new(reward_address, 0u64.into());
+    tx_b.add_withdrawal(withdrawal_builder.payment_key()?);
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
