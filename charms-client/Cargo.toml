@@ -15,8 +15,8 @@ ark-groth16 = { workspace = true }
 ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
-charms-app-runner = { path = "../charms-app-runner", version = "0.11.1" }
-charms-data = { path = "../charms-data", version = "0.11.1" }
+charms-app-runner = { path = "../charms-app-runner", version = "0.12.0" }
+charms-data = { path = "../charms-data", version = "0.12.0" }
 cml-chain = { workspace = true, default-features = false }
 cml-core = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
