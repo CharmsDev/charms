@@ -3,7 +3,7 @@ use crate::{
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
         ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
-        from_strings,
+        ensure_exact_app_binaries, from_strings,
     },
 };
 use anyhow::{Result, ensure};
@@ -168,12 +168,7 @@ impl Check for SpellCli {
             &prev_txs,
         );
 
-        ensure_exact_app_binaries(
-            &norm_spell,
-            &app_private_inputs,
-            &charms_tx,
-            &binaries,
-        )?;
+        ensure_exact_app_binaries(&norm_spell, &app_private_inputs, &charms_tx, &binaries)?;
 
         let app_input = match binaries.is_empty() {
             true => None,
