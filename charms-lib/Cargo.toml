@@ -11,7 +11,7 @@ license.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-charms-client = { path = "../charms-client", version = "0.10.2" }
+charms-client = { path = "../charms-client", version = "0.10.3" }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.106", optional = true }
 
