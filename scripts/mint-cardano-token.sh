@@ -6,9 +6,21 @@ CARDANO_CLI="cardano-cli"
 NETWORK="--mainnet"
 POLICY_DIR="tmp/version-nft-policy"
 
+# Configurable asset name string (after CIP-67 NFT label prefix)
+ASSET_NAME_STRING="${1:-v10}"  # Default to "v10" if not provided
+
 # Token details
 POLICY_ID=$(cat "$POLICY_DIR/policyID" | tr -d '\n')
-ASSET_NAME_HEX="000de140763130"  # 000de140 (CIP-67 NFT label) + 763130 ("v10" as hex bytes)
+
+# CIP-67 NFT label prefix (000de140)
+NFT_LABEL_HEX="000de140"
+
+# Convert asset name string to hex
+ASSET_NAME_STRING_HEX=$(echo -n "$ASSET_NAME_STRING" | xxd -p -c 256)
+
+# Combine NFT label + string hex to form complete asset name
+ASSET_NAME_HEX="${NFT_LABEL_HEX}${ASSET_NAME_STRING_HEX}"
+
 TOKEN_AMOUNT="1"
 DESTINATION_ADDR="addr1q9rxvzdtgqpa9freesxr60pycnjhd42svuxyzunxqe3g3vafswgqe992qm02xq7jcuxvj4wq2nvclckrglfwxxxjhn2sx9g840"
 
@@ -20,8 +32,10 @@ echo "========================================="
 echo "Cardano Token Minting Script"
 echo "========================================="
 echo "Policy ID: $POLICY_ID"
-echo "Asset Name (hex): $ASSET_NAME_HEX"
-echo "Asset Name (decoded): v10"
+echo "NFT Label (hex): $NFT_LABEL_HEX (CIP-67 label 222)"
+echo "Asset Name String: $ASSET_NAME_STRING"
+echo "Asset Name String (hex): $ASSET_NAME_STRING_HEX"
+echo "Full Asset Name (hex): $ASSET_NAME_HEX"
 echo "Amount: $TOKEN_AMOUNT"
 echo "Destination: $DESTINATION_ADDR"
 echo "========================================="
