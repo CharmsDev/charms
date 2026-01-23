@@ -5,7 +5,6 @@ set -e
 CARDANO_CLI="cardano-cli"
 NETWORK="--mainnet"
 POLICY_DIR="tmp/version-nft-policy"
-WALLET_FILE="tmp/charms-inc-wallet/eternl-charms-inc-xpub179088l7cn0h-mm.json"
 
 # Token details
 POLICY_ID=$(cat "$POLICY_DIR/policyID" | tr -d '\n')
