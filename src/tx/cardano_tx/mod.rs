@@ -18,7 +18,7 @@ use cml_chain::{
         redeemer_builder::RedeemerWitnessKey,
         tx_builder::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
-            add_change_if_needed,
+            TransactionUnspentOutput, add_change_if_needed,
         },
         withdrawal_builder::SingleWithdrawalBuilder,
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
@@ -105,7 +105,12 @@ fn tx_outputs(
     Ok(scripts)
 }
 
-const SCROLLS_V10: [u8; 28] = hex!("944b39378927530026312d267179720519d203f7bc5a6730411fb9ef");
+const V10_NFT_TX_HASH: [u8; 32] =
+    hex!("dbc3c04cc77036130183a33e6dad60951c679b004f83a167f7ee285a1a20759d");
+const V10_NFT_OUTPUT_INDEX: u64 = 0;
+
+const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
+    hex!("944b39378927530026312d267179720519d203f7bc5a6730411fb9ef");
 
 /// Build a transaction only dealing with Charms tokens
 pub fn from_spell(
@@ -141,8 +146,22 @@ pub fn from_spell(
 
     tx_b.add_collateral(collateral_input)?;
 
+    // Add reference input
+    let ref_tx_hash = cml_chain::crypto::TransactionHash::from_raw_bytes(&V10_NFT_TX_HASH)
+        .expect("valid reference input tx hash");
+    let ref_input = TransactionInput::new(ref_tx_hash, V10_NFT_OUTPUT_INDEX);
+    // Create a dummy output for the reference input (actual output details don't matter for
+    // reference inputs)
+    let ref_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
+        change_address.clone(),
+        0u64.into(),
+    ));
+    let ref_utxo = TransactionUnspentOutput::new(ref_input, ref_output);
+    tx_b.add_reference_input(ref_utxo);
+
     // Add 0 ADA withdrawal from script
-    let script_hash = ScriptHash::from_raw_bytes(&SCROLLS_V10).expect("valid hex script hash");
+    let script_hash =
+        ScriptHash::from_raw_bytes(&SCROLLS_V10_SCRIPT_HASH).expect("valid hex script hash");
     let network_id = change_address
         .network_id()
         .map_err(|e| anyhow!("Failed to get network_id: {}", e))?;
