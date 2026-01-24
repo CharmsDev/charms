@@ -28,8 +28,7 @@ use cml_chain::{
     crypto::ScriptHash,
     fees::LinearFee,
     plutus::{
-        CostModels, ExUnitPrices, ExUnits, LegacyRedeemer, PlutusData, PlutusV3Script, RedeemerTag,
-        Redeemers,
+        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag, Redeemers,
     },
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
@@ -412,57 +411,35 @@ fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
 }
 
 /// Replace the withdrawal redeemer with the actual signature
-fn replace_withdrawal_redeemer(tx: Transaction, signature: Vec<u8>) -> anyhow::Result<Transaction> {
+fn replace_withdrawal_redeemer(
+    mut tx: Transaction,
+    signature: Vec<u8>,
+) -> anyhow::Result<Transaction> {
     // Get mutable witness set
-    let mut witness_set = tx.witness_set.clone();
+    let witness_set = &mut tx.witness_set;
 
     // Get redeemers (should exist since we added withdrawal with dummy signature)
-    let Some(redeemers) = witness_set.redeemers else {
+    let Some(Redeemers::ArrLegacyRedeemer {
+        arr_legacy_redeemer,
+        ..
+    }) = witness_set.redeemers.as_mut()
+    else {
         bail!("Transaction missing redeemers");
     };
 
-    // Extract the redeemer list based on the variant
-    let legacy_redeemers = match redeemers {
-        Redeemers::ArrLegacyRedeemer {
-            arr_legacy_redeemer,
-            ..
-        } => arr_legacy_redeemer,
-        Redeemers::MapRedeemerKeyToRedeemerVal { .. } => {
-            bail!("MapRedeemerKeyToRedeemerVal format not supported for redeemer replacement");
-        }
-    };
-
-    // Find and replace the withdrawal redeemer (RedeemerTag::Reward, index 0)
-    let mut new_redeemers = Vec::new();
     let mut found = false;
 
-    for redeemer in legacy_redeemers {
+    for redeemer in arr_legacy_redeemer.iter_mut() {
         if redeemer.tag == RedeemerTag::Reward && redeemer.index == 0 {
-            // Replace the data with the real signature
-            let new_redeemer = LegacyRedeemer::new(
-                RedeemerTag::Reward,
-                0,
-                PlutusData::new_bytes(signature.clone()),
-                redeemer.ex_units.clone(),
-            );
-            new_redeemers.push(new_redeemer);
+            redeemer.data = PlutusData::new_bytes(signature.clone());
             found = true;
-        } else {
-            new_redeemers.push(redeemer);
+            break;
         }
     }
 
     ensure!(found, "Could not find withdrawal redeemer to replace");
 
-    witness_set.redeemers = Some(Redeemers::new_arr_legacy_redeemer(new_redeemers));
-
-    // Create new transaction with updated witness set
-    Ok(Transaction::new(
-        tx.body,
-        witness_set,
-        tx.is_valid,
-        tx.auxiliary_data,
-    ))
+    Ok(tx)
 }
 
 pub async fn make_transactions(
