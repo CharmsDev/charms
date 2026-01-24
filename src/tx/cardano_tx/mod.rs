@@ -330,9 +330,10 @@ fn add_mint(
 }
 
 fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
+    const ASSET_AMOUNT_BOUND: u64 = 1u64 << 63;
     for (_, assets) in assets.iter() {
         for (_, amount) in assets.iter() {
-            ensure!(*amount < (1u64 << 63));
+            ensure!(*amount < ASSET_AMOUNT_BOUND, "asset amount exceeds bound");
         }
     }
     Ok(())
