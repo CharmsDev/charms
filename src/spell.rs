@@ -742,7 +742,7 @@ pub struct MockProver {
 }
 
 impl ProveSpellTxImpl {
-    fn do_prove_spell_tx(
+    async fn do_prove_spell_tx(
         &self,
         prove_request: ProveRequest,
         app_cycles: u64,
@@ -816,7 +816,8 @@ impl ProveSpellTxImpl {
                     charms_fee,
                     total_cycles,
                     collateral_utxo,
-                )?;
+                )
+                .await?;
                 Ok(txs)
             }
         }
@@ -949,7 +950,8 @@ impl ProveSpellTx for ProveSpellTxImpl {
                                 },
                             ))?;
 
-                            let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles)?;
+                            let r: Vec<Tx> =
+                                self.do_prove_spell_tx(prove_request, app_cycles).await?;
 
                             let _: () = block_on(con.set(
                                 request_key.as_str(),
@@ -971,7 +973,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                 }
             }
         } else {
-            self.do_prove_spell_tx(prove_request, app_cycles)
+            self.do_prove_spell_tx(prove_request, app_cycles).await
         }
     }
 
@@ -980,7 +982,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
     async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
         let (_norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
         if self.mock {
-            return Self::do_prove_spell_tx(self, prove_request, app_cycles);
+            return Self::do_prove_spell_tx(self, prove_request, app_cycles).await;
         }
 
         let response = retry(0, || async {

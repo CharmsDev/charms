@@ -1,5 +1,6 @@
 use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail, ensure};
+use candid::{Decode, Encode, Principal};
 use charms_client::{
     NormalizedSpell,
     cardano_tx::{CardanoTx, multi_asset, tx_hash},
@@ -8,7 +9,7 @@ use charms_client::{
 };
 use charms_data::{TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Value,
+    OrderedHashMap, PolicyId, Rational, Serialize, Value,
     address::Address,
     assets::{AssetBundle, ClampedSub},
     builders::{
@@ -26,14 +27,18 @@ use cml_chain::{
     certs::Credential,
     crypto::ScriptHash,
     fees::LinearFee,
-    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
+    plutus::{
+        CostModels, ExUnitPrices, ExUnits, LegacyRedeemer, PlutusData, PlutusV3Script, RedeemerTag,
+        Redeemers,
+    },
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
-use serde::{Deserialize, Serialize};
+use ic_agent::Agent;
+use serde::{Deserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
 
 fn tx_inputs(
@@ -112,6 +117,60 @@ const V10_NFT_OUTPUT_INDEX: u64 = 0;
 const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
     hex!("944b39378927530026312d267179720519d203f7bc5a6730411fb9ef");
 
+const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
+
+/// Call ICP canister to sign the transaction
+async fn call_scrolls_sign(
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    tx: &Transaction,
+) -> anyhow::Result<Vec<u8>> {
+    // Create ICP agent
+    let agent = Agent::builder()
+        .with_url("https://ic0.app")
+        .build()
+        .context("Failed to create ICP agent")?;
+
+    // Convert prev_txs to vector of hex-encoded CBOR
+    let mut prev_txs_hex = Vec::new();
+    for (_, prev_tx) in prev_txs_by_id {
+        let Tx::Cardano(CardanoTx(tx)) = prev_tx else {
+            bail!("Expected Cardano transaction in prev_txs");
+        };
+        let cbor_bytes = tx.to_cbor_bytes();
+        prev_txs_hex.push(hex::encode(&cbor_bytes));
+    }
+
+    // Encode final transaction to hex CBOR
+    let tx_cbor = tx.to_cbor_bytes();
+    let tx_hex = hex::encode(&tx_cbor);
+
+    // Prepare Candid arguments
+    let canister_id =
+        Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
+
+    let args = Encode!(&prev_txs_hex, &tx_hex).context("Failed to encode Candid arguments")?;
+
+    // Call the canister
+    let response = agent
+        .update(&canister_id, "sign")
+        .with_arg(args)
+        .call_and_wait()
+        .await
+        .context("Failed to call ICP canister sign method")?;
+
+    // Decode response as byte array
+    let signature: Vec<u8> =
+        Decode!(&response, Vec<u8>).context("Failed to decode signature from canister response")?;
+
+    ensure!(
+        signature.len() == 64,
+        "Expected 64-byte Schnorr signature, got {} bytes",
+        signature.len()
+    );
+
+    Ok(signature)
+}
+
 /// Build a transaction only dealing with Charms tokens
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -168,7 +227,14 @@ pub fn from_spell(
     let stake_credential = Credential::new_script(script_hash);
     let reward_address = cml_chain::address::RewardAddress::new(network_id, stake_credential);
     let withdrawal_builder = SingleWithdrawalBuilder::new(reward_address, 0u64.into());
-    tx_b.add_withdrawal(withdrawal_builder.payment_key()?);
+
+    // Use dummy 64-byte signature as redeemer (will be replaced with real signature later)
+    let dummy_signature = vec![0u8; 64];
+    let withdraw_redeemer = PlutusData::new_bytes(dummy_signature);
+    let psw = PlutusScriptWitness::Ref(script_hash);
+    let ppw = PartialPlutusWitness::new(psw, withdraw_redeemer);
+
+    tx_b.add_withdrawal(withdrawal_builder.plutus_script(ppw, vec![].into())?);
 
     let input_total = tx_b.get_total_input()?;
     let output_total = tx_b.get_total_output()?;
@@ -179,6 +245,12 @@ pub fn from_spell(
             ExUnits::new(14000000, 10000000000),
         );
     }
+
+    // Set execution units for withdrawal redeemer
+    tx_b.set_exunits(
+        RedeemerWitnessKey::new(RedeemerTag::Reward, 0),
+        ExUnits::new(14000000, 10000000000),
+    );
 
     let fee = tx_b
         .min_fee(true)
@@ -230,7 +302,7 @@ fn add_spell_data(
     Ok(())
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, SerdeSerialize)]
 #[serde(rename_all = "camelCase")]
 struct ProtocolParams {
     tx_fee_per_byte: u64,
@@ -339,7 +411,61 @@ fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn make_transactions(
+/// Replace the withdrawal redeemer with the actual signature
+fn replace_withdrawal_redeemer(tx: Transaction, signature: Vec<u8>) -> anyhow::Result<Transaction> {
+    // Get mutable witness set
+    let mut witness_set = tx.witness_set.clone();
+
+    // Get redeemers (should exist since we added withdrawal with dummy signature)
+    let Some(redeemers) = witness_set.redeemers else {
+        bail!("Transaction missing redeemers");
+    };
+
+    // Extract the redeemer list based on the variant
+    let legacy_redeemers = match redeemers {
+        Redeemers::ArrLegacyRedeemer {
+            arr_legacy_redeemer,
+            ..
+        } => arr_legacy_redeemer,
+        Redeemers::MapRedeemerKeyToRedeemerVal { .. } => {
+            bail!("MapRedeemerKeyToRedeemerVal format not supported for redeemer replacement");
+        }
+    };
+
+    // Find and replace the withdrawal redeemer (RedeemerTag::Reward, index 0)
+    let mut new_redeemers = Vec::new();
+    let mut found = false;
+
+    for redeemer in legacy_redeemers {
+        if redeemer.tag == RedeemerTag::Reward && redeemer.index == 0 {
+            // Replace the data with the real signature
+            let new_redeemer = LegacyRedeemer::new(
+                RedeemerTag::Reward,
+                0,
+                PlutusData::new_bytes(signature.clone()),
+                redeemer.ex_units.clone(),
+            );
+            new_redeemers.push(new_redeemer);
+            found = true;
+        } else {
+            new_redeemers.push(redeemer);
+        }
+    }
+
+    ensure!(found, "Could not find withdrawal redeemer to replace");
+
+    witness_set.redeemers = Some(Redeemers::new_arr_legacy_redeemer(new_redeemers));
+
+    // Create new transaction with updated witness set
+    Ok(Transaction::new(
+        tx.body,
+        witness_set,
+        tx.is_valid,
+        tx.auxiliary_data,
+    ))
+}
+
+pub async fn make_transactions(
     spell: &NormalizedSpell,
     funding_utxo: UtxoId,
     funding_utxo_value: u64,
@@ -361,7 +487,7 @@ pub fn make_transactions(
         .transpose()?;
     let change_address = Address::from_bech32(change_address).map_err(|e| anyhow!("{}", e))?;
 
-    let tx = from_spell(
+    let mut tx = from_spell(
         spell,
         prev_txs_by_id,
         &change_address,
@@ -370,6 +496,12 @@ pub fn make_transactions(
         funding_utxo_value,
         collateral_utxo,
     )?;
+
+    // Get the real Schnorr signature from ICP canister
+    let signature = call_scrolls_sign(prev_txs_by_id, &tx).await?;
+
+    // Replace the dummy signature with the real one
+    tx = replace_withdrawal_redeemer(tx, signature)?;
 
     let tx = match underlying_tx {
         Some(u_tx) => combine(u_tx, tx),
