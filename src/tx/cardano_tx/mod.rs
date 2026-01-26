@@ -27,6 +27,7 @@ use cml_chain::{
     certs::Credential,
     crypto::ScriptHash,
     fees::LinearFee,
+    min_ada::min_ada_required,
     plutus::{
         CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag, Redeemers,
     },
@@ -133,7 +134,7 @@ async fn call_scrolls_sign(
     let mut prev_txs_hex = Vec::new();
     for (_, prev_tx) in prev_txs_by_id {
         let Tx::Cardano(CardanoTx(tx)) = prev_tx else {
-            bail!("Expected Cardano transaction in prev_txs");
+            continue;
         };
         let cbor_bytes = tx.to_cbor_bytes();
         prev_txs_hex.push(hex::encode(&cbor_bytes));
@@ -183,7 +184,7 @@ pub fn from_spell(
     let Some(collateral_utxo) = collateral_utxo else {
         unreachable!()
     };
-    let mut tx_b = transaction_builder();
+    let (mut tx_b, tx_b_c) = transaction_builder();
 
     tx_inputs(
         &mut tx_b,
@@ -200,7 +201,7 @@ pub fn from_spell(
     let collateral_input = input_builder_result(change_address, collateral_utxo, 10_000_000)?;
     tx_b.add_input(funding_input)?;
 
-    add_spell_data(&mut tx_b, spell_data, change_address)?;
+    add_spell_data(&mut tx_b, spell_data, change_address, &tx_b_c)?;
 
     tx_b.add_collateral(collateral_input)?;
 
@@ -287,15 +288,18 @@ fn add_spell_data(
     tx_b: &mut TransactionBuilder,
     spell_data: &[u8],
     change_address: &Address,
+    tx_b_c: &ProtocolParams,
 ) -> anyhow::Result<()> {
-    let spell_data_output = TransactionOutputBuilder::new()
+    let mut spell_data_output = TransactionOutputBuilder::new()
         .with_address(change_address.clone())
         .with_data(DatumOption::new_datum(PlutusData::new_bytes(
             spell_data.to_vec(),
         )))
         .next()?
-        .with_value(4310 * (227 + spell_data.len() as u64))
+        .with_value(0)
         .build()?;
+    let ada_value = min_ada_required(&spell_data_output.output, tx_b_c.utxo_cost_per_byte)?;
+    spell_data_output.output.set_amount(ada_value.into());
 
     tx_b.add_output(spell_data_output)?;
     Ok(())
@@ -317,7 +321,7 @@ struct ProtocolParams {
     cost_models: BTreeMap<String, Vec<i64>>,
 }
 
-fn transaction_builder() -> TransactionBuilder {
+fn transaction_builder() -> (TransactionBuilder, ProtocolParams) {
     const PROTOCOL_JSON: &[u8] = include_bytes!("./protocol.json");
     let protocol_params: ProtocolParams = serde_json::from_slice(PROTOCOL_JSON).unwrap();
 
@@ -351,7 +355,10 @@ fn transaction_builder() -> TransactionBuilder {
         }))
         .build()
         .expect("failed to build transaction builder config");
-    TransactionBuilder::new(transaction_builder_config)
+    (
+        TransactionBuilder::new(transaction_builder_config.clone()),
+        protocol_params,
+    )
 }
 
 #[cfg(test)]

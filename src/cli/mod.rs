@@ -97,14 +97,14 @@ pub struct SpellProveParams {
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
 
-    /// Pre-requisite transactions (hex-encoded) separated by commas (`,`).
+    /// Pre-requisite transactions (hex-encoded).
     /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
     /// If the spell has any reference UTXOs, the transactions creating them must also be included.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long)]
     prev_txs: Vec<String>,
 
     /// Paths to the apps' Wasm binaries.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long)]
     app_bins: Vec<PathBuf>,
 
     /// UTXO ID of the funding transaction output (txid:vout).
@@ -144,13 +144,13 @@ pub struct SpellCheckParams {
     spell: PathBuf,
 
     /// Paths to the apps' Wasm binaries.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long)]
     app_bins: Vec<PathBuf>,
 
-    /// Pre-requisite transactions (hex-encoded) separated by commas (`,`).
+    /// Pre-requisite transactions (hex-encoded).
     /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
     /// If the spell has any reference UTXOs, the transactions creating them must also be included.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long)]
     prev_txs: Option<Vec<String>>,
 
     /// Is mock mode enabled?
