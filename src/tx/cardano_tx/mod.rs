@@ -28,9 +28,7 @@ use cml_chain::{
     crypto::ScriptHash,
     fees::LinearFee,
     min_ada::min_ada_required,
-    plutus::{
-        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag, Redeemers,
-    },
+    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
@@ -120,25 +118,12 @@ const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
 /// Call ICP canister to sign the transaction
-async fn call_scrolls_sign(
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-    tx: &Transaction,
-) -> anyhow::Result<Vec<u8>> {
+async fn call_scrolls_sign(tx: &Transaction) -> anyhow::Result<Transaction> {
     // Create ICP agent
     let agent = Agent::builder()
         .with_url("https://ic0.app")
         .build()
         .context("Failed to create ICP agent")?;
-
-    // Convert prev_txs to vector of hex-encoded CBOR
-    let mut prev_txs_hex = Vec::new();
-    for (_, prev_tx) in prev_txs_by_id {
-        let Tx::Cardano(CardanoTx(tx)) = prev_tx else {
-            continue;
-        };
-        let cbor_bytes = tx.to_cbor_bytes();
-        prev_txs_hex.push(hex::encode(&cbor_bytes));
-    }
 
     // Encode final transaction to hex CBOR
     let tx_cbor = tx.to_cbor_bytes();
@@ -148,7 +133,7 @@ async fn call_scrolls_sign(
     let canister_id =
         Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
 
-    let args = Encode!(&prev_txs_hex, &tx_hex).context("Failed to encode Candid arguments")?;
+    let args = Encode!(&tx_hex).context("Failed to encode Candid arguments")?;
 
     // Call the canister
     let response = agent
@@ -159,16 +144,11 @@ async fn call_scrolls_sign(
         .context("Failed to call ICP canister sign method")?;
 
     // Decode response as byte array
-    let signature: Vec<u8> =
-        Decode!(&response, Vec<u8>).context("Failed to decode signature from canister response")?;
+    let signed_tx_hex = Decode!(&response, anyhow::Result<String, String>)
+        .context("Failed to decode signature from canister response")?
+        .map_err(|e| anyhow!("Canister returned error: {}", e))?;
 
-    ensure!(
-        signature.len() == 64,
-        "Expected 64-byte Schnorr signature, got {} bytes",
-        signature.len()
-    );
-
-    Ok(signature)
+    Ok(CardanoTx::from_hex(&signed_tx_hex)?.0)
 }
 
 /// Build a transaction only dealing with Charms tokens
@@ -417,38 +397,6 @@ fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Replace the withdrawal redeemer with the actual signature
-fn replace_withdrawal_redeemer(
-    mut tx: Transaction,
-    signature: Vec<u8>,
-) -> anyhow::Result<Transaction> {
-    // Get mutable witness set
-    let witness_set = &mut tx.witness_set;
-
-    // Get redeemers (should exist since we added withdrawal with dummy signature)
-    let Some(Redeemers::ArrLegacyRedeemer {
-        arr_legacy_redeemer,
-        ..
-    }) = witness_set.redeemers.as_mut()
-    else {
-        bail!("Transaction missing redeemers");
-    };
-
-    let mut found = false;
-
-    for redeemer in arr_legacy_redeemer.iter_mut() {
-        if redeemer.tag == RedeemerTag::Reward && redeemer.index == 0 {
-            redeemer.data = PlutusData::new_bytes(signature.clone());
-            found = true;
-            break;
-        }
-    }
-
-    ensure!(found, "Could not find withdrawal redeemer to replace");
-
-    Ok(tx)
-}
-
 pub async fn make_transactions(
     spell: &NormalizedSpell,
     funding_utxo: UtxoId,
@@ -471,7 +419,7 @@ pub async fn make_transactions(
         .transpose()?;
     let change_address = Address::from_bech32(change_address).map_err(|e| anyhow!("{}", e))?;
 
-    let mut tx = from_spell(
+    let tx = from_spell(
         spell,
         prev_txs_by_id,
         &change_address,
@@ -481,16 +429,13 @@ pub async fn make_transactions(
         collateral_utxo,
     )?;
 
-    // Get the real Schnorr signature from ICP canister
-    let signature = call_scrolls_sign(prev_txs_by_id, &tx).await?;
-
-    // Replace the dummy signature with the real one
-    tx = replace_withdrawal_redeemer(tx, signature)?;
-
     let tx = match underlying_tx {
         Some(u_tx) => combine(u_tx, tx),
         None => tx,
     };
+
+    // Get the real Schnorr signature from ICP canister
+    let tx = call_scrolls_sign(&tx).await?;
 
     Ok(vec![tx]
         .into_iter()
