@@ -9,7 +9,7 @@ use charms_client::{
 };
 use charms_data::{TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Script, Serialize, Value,
+    OrderedHashMap, PolicyId, Rational, Serialize, Value,
     address::Address,
     assets::{AssetBundle, ClampedSub},
     builders::{
@@ -115,11 +115,6 @@ const V10_NFT_OUTPUT_INDEX: u64 = 0;
 const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
     hex!("5f4f4ab1d5f62929f95367889c0206e08cbe1c596fd3d5940d7eccda");
 
-// The reference script from the V10 NFT UTXO (PlutusV3)
-const SCROLLS_V10_REFERENCE_SCRIPT: &[u8] = &hex!(
-    "58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001"
-);
-
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
 /// Call ICP canister to sign the transaction
@@ -190,29 +185,19 @@ pub fn from_spell(
 
     tx_b.add_collateral(collateral_input)?;
 
-    // Add reference input with the PlutusV3 script
+    // Add reference input
+    // Note: For reference inputs, we provide minimal output info since the actual
+    // output with the reference script exists on-chain and will be looked up by nodes
     let ref_tx_hash = cml_chain::crypto::TransactionHash::from_raw_bytes(&V10_NFT_TX_HASH)
         .expect("valid reference input tx hash");
     let ref_input = TransactionInput::new(ref_tx_hash, V10_NFT_OUTPUT_INDEX);
 
-    // Create the PlutusV3 script from the reference script bytes
-    let plutus_v3_script = PlutusV3Script::from_raw_bytes(SCROLLS_V10_REFERENCE_SCRIPT)
-        .expect("valid PlutusV3 script");
-    let script_ref = Script::PlutusV3 {
-        script: plutus_v3_script,
-        len_encoding: Default::default(),
-        tag_encoding: None,
-    };
-
-    // Create output with reference script (address and value don't matter for ref inputs,
-    // but the script reference is required)
-    let ref_output_result = TransactionOutputBuilder::new()
-        .with_address(change_address.clone())
-        .with_reference_script(script_ref)
-        .next()?
-        .with_value(0)
-        .build()?;
-    let ref_output = ref_output_result.output;
+    // Create a minimal dummy output - the actual on-chain output has the reference script
+    // but we don't need to include it here for fee calculation purposes
+    let ref_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
+        change_address.clone(),
+        1896400u64.into(), // Actual ADA amount from on-chain UTXO
+    ));
 
     let ref_utxo = TransactionUnspentOutput::new(ref_input, ref_output);
     tx_b.add_reference_input(ref_utxo);
@@ -261,9 +246,9 @@ pub fn from_spell(
     );
     add_change_if_needed(&mut tx_b, change_address, true)?; // MUST add an output
 
-    let tx = tx_b
-        .build(ChangeSelectionAlgo::Default, change_address)?
-        .build_unchecked();
+    // Build with proper fee calculation - the builder recalculates fee after adding change
+    let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
+    let tx = built_tx.build_unchecked();
 
     Ok(tx)
 }
