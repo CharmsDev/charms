@@ -9,7 +9,7 @@ use charms_client::{
 };
 use charms_data::{TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Serialize, Value,
+    OrderedHashMap, PolicyId, Rational, Script, Serialize, Value,
     address::Address,
     assets::{AssetBundle, ClampedSub},
     builders::{
@@ -115,6 +115,9 @@ const V10_NFT_OUTPUT_INDEX: u64 = 0;
 const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
     hex!("944b39378927530026312d267179720519d203f7bc5a6730411fb9ef");
 
+// The reference script from the V10 NFT UTXO (PlutusV3)
+const SCROLLS_V10_REFERENCE_SCRIPT: &[u8] = &hex!("589e0101003229800aba2aba1aab9eaab9dab9a9bae002488888966002646464b30013370e900218031baa0018994c0040166eb8c024c028c028c028c028c028c028c028c028c028c028c028c020dd518048024dd71804801aed46010600e6ea80062c8028c01cc020004c01c004c010dd5003c52689b2b2004261225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001");
+
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
 /// Call ICP canister to sign the transaction
@@ -185,16 +188,30 @@ pub fn from_spell(
 
     tx_b.add_collateral(collateral_input)?;
 
-    // Add reference input
+    // Add reference input with the PlutusV3 script
     let ref_tx_hash = cml_chain::crypto::TransactionHash::from_raw_bytes(&V10_NFT_TX_HASH)
         .expect("valid reference input tx hash");
     let ref_input = TransactionInput::new(ref_tx_hash, V10_NFT_OUTPUT_INDEX);
-    // Create a dummy output for the reference input (actual output details don't matter for
-    // reference inputs)
-    let ref_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
-        change_address.clone(),
-        0u64.into(),
-    ));
+
+    // Create the PlutusV3 script from the reference script bytes
+    let plutus_v3_script = PlutusV3Script::from_raw_bytes(SCROLLS_V10_REFERENCE_SCRIPT)
+        .expect("valid PlutusV3 script");
+    let script_ref = Script::PlutusV3 {
+        script: plutus_v3_script,
+        len_encoding: Default::default(),
+        tag_encoding: None,
+    };
+
+    // Create output with reference script (address and value don't matter for ref inputs,
+    // but the script reference is required)
+    let ref_output_result = TransactionOutputBuilder::new()
+        .with_address(change_address.clone())
+        .with_reference_script(script_ref)
+        .next()?
+        .with_value(0)
+        .build()?;
+    let ref_output = ref_output_result.output;
+
     let ref_utxo = TransactionUnspentOutput::new(ref_input, ref_output);
     tx_b.add_reference_input(ref_utxo);
 
