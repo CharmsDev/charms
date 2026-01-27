@@ -222,14 +222,14 @@ pub fn from_spell(
     for i in 0..scripts_count {
         tx_b.set_exunits(
             RedeemerWitnessKey::new(RedeemerTag::Mint, i as u64),
-            ExUnits::new(14000000, 10000000000),
+            ExUnits::new(250000, 150000000),
         );
     }
 
     // Set execution units for withdrawal redeemer
     tx_b.set_exunits(
         RedeemerWitnessKey::new(RedeemerTag::Reward, 0),
-        ExUnits::new(14000000, 10000000000),
+        ExUnits::new(400000, 300000000),
     );
 
     let fee = tx_b
