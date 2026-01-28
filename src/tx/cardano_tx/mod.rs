@@ -19,7 +19,7 @@ use cml_chain::{
         redeemer_builder::RedeemerWitnessKey,
         tx_builder::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
-            TransactionUnspentOutput, add_change_if_needed,
+            TransactionUnspentOutput,
         },
         withdrawal_builder::SingleWithdrawalBuilder,
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
@@ -278,10 +278,8 @@ pub fn from_spell(
     // Set the fee manually since build() doesn't account for reference script cost correctly
     tx_b.set_fee(base_fee);
 
-    // Add change output manually
-    add_change_if_needed(&mut tx_b, change_address, true)?;
-
-    // Build the transaction without recalculating fee
+    // Build the transaction - it will add change based on the fee we just set
+    // We use build_unchecked() to bypass fee validation since we manually calculated it
     let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
     let tx = built_tx.build_unchecked();
 
