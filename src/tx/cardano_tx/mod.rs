@@ -239,9 +239,6 @@ pub fn from_spell(
 
     tx_b.add_withdrawal(withdrawal_builder.plutus_script(ppw, vec![].into())?);
 
-    let input_total = tx_b.get_total_input()?;
-    let output_total = tx_b.get_total_output()?;
-
     for i in 0..scripts_count {
         tx_b.set_exunits(
             RedeemerWitnessKey::new(RedeemerTag::Mint, i as u64),
@@ -255,33 +252,36 @@ pub fn from_spell(
         ExUnits::new(400000, 300000000),
     );
 
-    // Calculate minimum fee including script execution costs
-    let mut base_fee = tx_b
-        .min_fee(true)
-        .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
+    // Build the transaction first - let it calculate fee and add change
+    let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
+    let mut tx = built_tx.build_unchecked();
 
     // WORKAROUND: The transaction builder doesn't correctly calculate reference script fees
     // when using PlutusScriptWitness::Ref. We need to add the missing fee manually.
     // After testing, the missing amount is consistently 2840 lovelace.
     const MISSING_REF_SCRIPT_FEE: u64 = 2840;
 
-    eprintln!("DEBUG: base_fee={}, adding missing ref script fee={}",
-              base_fee, MISSING_REF_SCRIPT_FEE);
+    let original_fee = tx.body.fee;
+    let corrected_fee = original_fee + MISSING_REF_SCRIPT_FEE;
 
-    base_fee = base_fee + MISSING_REF_SCRIPT_FEE;
+    eprintln!("DEBUG: original_fee={}, corrected_fee={}, diff={}",
+              original_fee, corrected_fee, MISSING_REF_SCRIPT_FEE);
 
-    ensure!(
-        input_total.partial_cmp(&output_total.checked_add(&base_fee.into())?)
-            == Some(std::cmp::Ordering::Greater)
-    );
+    // Manually adjust the fee in the transaction body
+    tx.body.fee = corrected_fee;
 
-    // Set the fee manually since build() doesn't account for reference script cost correctly
-    tx_b.set_fee(base_fee);
-
-    // Build the transaction - it will add change based on the fee we just set
-    // We use build_unchecked() to bypass fee validation since we manually calculated it
-    let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
-    let tx = built_tx.build_unchecked();
+    // Also need to adjust the change output to account for the increased fee
+    // The last output is typically the change output
+    if let Some(last_output) = tx.body.outputs.last_mut() {
+        let current_amount = last_output.amount().coin;
+        if current_amount > MISSING_REF_SCRIPT_FEE {
+            let new_amount = current_amount - MISSING_REF_SCRIPT_FEE;
+            last_output.set_amount(new_amount.into());
+            eprintln!("DEBUG: Adjusted change output from {} to {}", current_amount, new_amount);
+        } else {
+            bail!("Change output too small to adjust for missing fee");
+        }
+    }
 
     Ok(tx)
 }
