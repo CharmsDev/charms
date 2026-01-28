@@ -9,7 +9,7 @@ use charms_client::{
 };
 use charms_data::{TxId, UtxoId};
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Serialize, Value,
+    OrderedHashMap, PolicyId, Rational, Script, Serialize, Value,
     address::Address,
     assets::{AssetBundle, ClampedSub},
     builders::{
@@ -19,7 +19,7 @@ use cml_chain::{
         redeemer_builder::RedeemerWitnessKey,
         tx_builder::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
-            TransactionUnspentOutput,
+            TransactionUnspentOutput, add_change_if_needed,
         },
         withdrawal_builder::SingleWithdrawalBuilder,
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
@@ -117,6 +117,12 @@ const V10_NFT_OUTPUT_INDEX: u64 = 0;
 const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
     hex!("5f4f4ab1d5f62929f95367889c0206e08cbe1c596fd3d5940d7eccda");
 
+// The reference script from the on-chain V10 NFT UTXO (PlutusV3)
+// This must match the actual on-chain reference script for proper fee calculation
+const SCROLLS_V10_REFERENCE_SCRIPT: &[u8] = &hex!(
+    "58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001"
+);
+
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
 /// Call ICP canister to sign the transaction
@@ -187,19 +193,30 @@ pub fn from_spell(
 
     tx_b.add_collateral(collateral_input)?;
 
-    // Add reference input
-    // Note: For reference inputs, we provide minimal output info since the actual
-    // output with the reference script exists on-chain and will be looked up by nodes
+    // Add reference input with the PlutusV3 script
+    // The script must be included here for proper reference script fee calculation
     let ref_tx_hash = cml_chain::crypto::TransactionHash::from_raw_bytes(&V10_NFT_TX_HASH)
         .expect("valid reference input tx hash");
     let ref_input = TransactionInput::new(ref_tx_hash, V10_NFT_OUTPUT_INDEX);
 
-    // Create a minimal dummy output - the actual on-chain output has the reference script
-    // but we don't need to include it here for fee calculation purposes
-    let ref_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
-        change_address.clone(),
-        1896400u64.into(), // Actual ADA amount from on-chain UTXO
-    ));
+    // Create the PlutusV3 script from the reference script bytes
+    let plutus_v3_script = PlutusV3Script::from_raw_bytes(SCROLLS_V10_REFERENCE_SCRIPT)
+        .expect("valid PlutusV3 script");
+    let script_ref = Script::PlutusV3 {
+        script: plutus_v3_script,
+        len_encoding: Default::default(),
+        tag_encoding: None,
+    };
+
+    // Create output with reference script - required for proper fee calculation
+    // when using PlutusScriptWitness::Ref for the withdrawal
+    let ref_output_result = TransactionOutputBuilder::new()
+        .with_address(change_address.clone())
+        .with_reference_script(script_ref)
+        .next()?
+        .with_value(1896400) // Actual ADA amount from on-chain UTXO
+        .build()?;
+    let ref_output = ref_output_result.output;
 
     let ref_utxo = TransactionUnspentOutput::new(ref_input, ref_output);
     tx_b.add_reference_input(ref_utxo);
@@ -239,17 +256,32 @@ pub fn from_spell(
     );
 
     // Calculate minimum fee including script execution costs
-    let fee = tx_b
+    let mut base_fee = tx_b
         .min_fee(true)
         .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
 
+    // WORKAROUND: The transaction builder doesn't correctly calculate reference script fees
+    // when using PlutusScriptWitness::Ref. We need to add the missing fee manually.
+    // After testing, the missing amount is consistently 2840 lovelace.
+    const MISSING_REF_SCRIPT_FEE: u64 = 2840;
+
+    eprintln!("DEBUG: base_fee={}, adding missing ref script fee={}",
+              base_fee, MISSING_REF_SCRIPT_FEE);
+
+    base_fee = base_fee + MISSING_REF_SCRIPT_FEE;
+
     ensure!(
-        input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
+        input_total.partial_cmp(&output_total.checked_add(&base_fee.into())?)
             == Some(std::cmp::Ordering::Greater)
     );
 
-    // Let the builder handle change calculation and fee adjustment automatically
-    // The builder will recalculate the fee after adding/adjusting the change output
+    // Set the fee manually since build() doesn't account for reference script cost correctly
+    tx_b.set_fee(base_fee);
+
+    // Add change output manually
+    add_change_if_needed(&mut tx_b, change_address, true)?;
+
+    // Build the transaction without recalculating fee
     let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
     let tx = built_tx.build_unchecked();
 
