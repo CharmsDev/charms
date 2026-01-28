@@ -19,6 +19,10 @@ charms-app-runner = { path = "../charms-app-runner", version = "0.12.0" }
 charms-data = { path = "../charms-data", version = "0.12.0" }
 cml-chain = { workspace = true, default-features = false }
 cml-core = { workspace = true, default-features = false }
+pallas-primitives = { workspace = true }
+pallas-addresses = { workspace = true }
+pallas-codec = { workspace = true }
+pallas-crypto = { workspace = true }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }

@@ -1,114 +1,37 @@
 use crate::spell::CharmsFee;
-use anyhow::{Context, Error, anyhow, bail, ensure};
+use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
-use charms_client::{
-    NormalizedSpell,
-    cardano_tx::{CardanoTx, multi_asset, tx_hash},
-    charms,
-    tx::Tx,
-};
-use charms_data::{TxId, UtxoId};
+use charms_client::{NormalizedSpell, cardano_tx::CardanoTx, charms, tx::Tx};
+use charms_data::TxId;
 use cml_chain::{
-    OrderedHashMap, PolicyId, Rational, Script, Serialize, Value,
-    address::Address,
-    assets::{AssetBundle, ClampedSub},
-    builders::{
-        input_builder::{InputBuilderResult, SingleInputBuilder},
-        mint_builder::SingleMintBuilder,
-        output_builder::TransactionOutputBuilder,
-        redeemer_builder::RedeemerWitnessKey,
-        tx_builder::{
-            ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
-            TransactionUnspentOutput,
-        },
-        withdrawal_builder::SingleWithdrawalBuilder,
-        witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
-    },
-    certs::Credential,
-    crypto::ScriptHash,
-    fees::LinearFee,
-    min_ada::min_ada_required,
-    plutus::{
-        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusScript, PlutusV3Script, RedeemerTag,
-    },
-    transaction::{
-        ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
-    },
+    Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
+    assets::MultiAsset, plutus::PlutusV3Script as CmlPlutusV3Script,
+    transaction::Transaction as CmlTransaction,
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
 use ic_agent::Agent;
+use pallas_codec::minicbor;
+use pallas_primitives::conway::{
+    self, BoundedBytes, ExUnits, MaybeIndefArray, NonEmptyKeyValuePairs, PlutusData, PlutusScript,
+    PostAlonzoTransactionOutput, PseudoTransactionOutput, Redeemer, RedeemerTag, Redeemers, Value,
+    WitnessSet,
+};
+use pallas_txbuilder::{BuildConway, Input, Output, ScriptKind, StagingTransaction};
 use serde::{Deserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
 
-fn tx_inputs(
-    tx_b: &mut TransactionBuilder,
-    ins: &[UtxoId],
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-) -> anyhow::Result<()> {
-    for utxo_id in ins {
-        let input = tx_input(utxo_id);
-        let output = tx_output(prev_txs_by_id, utxo_id)?;
-        let input_builder = SingleInputBuilder::new(input, output);
-        let in_b_result = input_builder.payment_key()?; // TODO impl spending from other addresses
-        tx_b.add_input(in_b_result)?;
-    }
+// Re-export UtxoId from charms_data
+pub use charms_data::UtxoId;
 
-    Ok(())
-}
-
-fn tx_input(utxo_id: &UtxoId) -> TransactionInput {
-    TransactionInput::new(tx_hash(utxo_id.0), utxo_id.1 as u64)
-}
-
-fn tx_output(
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-    utxo_id: &UtxoId,
-) -> anyhow::Result<TransactionOutput> {
-    let tx = prev_txs_by_id
-        .get(&utxo_id.0)
-        .ok_or_else(|| anyhow!("could not find prev_tx by id {}", utxo_id.0))?;
-    let Tx::Cardano(CardanoTx(tx)) = tx else {
-        bail!("expected CardanoTx, got {:?}", tx);
-    };
-    let output = tx
-        .body
-        .outputs
-        .get(utxo_id.1 as usize)
-        .cloned()
-        .ok_or_else(|| anyhow!("could not find output by index {}", utxo_id.1))?;
-    Ok(output)
-}
+// Pallas types for internal use
+type PallasPolicyId = pallas_crypto::hash::Hash<28>;
+type PallasAssetName = pallas_primitives::conway::Bytes;
+type PallasPlutusV3Script = PlutusScript<3>;
+type PallasMultiasset = pallas_primitives::conway::Multiasset<u64>;
 
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
-
-fn tx_outputs(
-    tx_b: &mut TransactionBuilder,
-    spell: &NormalizedSpell,
-) -> anyhow::Result<BTreeMap<PolicyId, PlutusV3Script>> {
-    let outs = &spell.tx.outs;
-    let coin_outs = spell.tx.coins.as_ref().expect("spell coins are expected");
-
-    let mut scripts = BTreeMap::new();
-
-    for (output, coin) in outs.iter().zip(coin_outs.iter()) {
-        let address = Address::from_raw_bytes(&coin.dest)
-            .map_err(|e| anyhow!("Failed to convert address: {}", e))?;
-        let amount = coin.amount;
-        let (multiasset, more_scripts) = multi_asset(&charms(spell, output))?;
-
-        let value = Value::new(amount.into(), multiasset);
-        scripts.extend(more_scripts);
-        let out_b = TransactionOutputBuilder::new()
-            .with_address(address)
-            .next()?
-            .with_value(value);
-        tx_b.add_output(out_b.build()?)?;
-    }
-
-    Ok(scripts)
-}
 
 const V10_NFT_TX_HASH: [u8; 32] =
     hex!("7643e7489208dc60e11b8866ec409398cd197c09eb3f6ab814756437d28258ac");
@@ -118,209 +41,11 @@ const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
     hex!("5f4f4ab1d5f62929f95367889c0206e08cbe1c596fd3d5940d7eccda");
 
 // The reference script from the on-chain V10 NFT UTXO (PlutusV3)
-// This must match the actual on-chain reference script for proper fee calculation
 const SCROLLS_V10_REFERENCE_SCRIPT: &[u8] = &hex!(
     "58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001"
 );
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
-
-/// Call ICP canister to sign the transaction
-async fn call_scrolls_sign(tx: &Transaction) -> anyhow::Result<Transaction> {
-    // Create ICP agent
-    let agent = Agent::builder()
-        .with_url("https://ic0.app")
-        .build()
-        .context("Failed to create ICP agent")?;
-
-    // Encode final transaction to hex CBOR
-    let tx_cbor = tx.to_cbor_bytes();
-    let tx_hex = hex::encode(&tx_cbor);
-
-    // Prepare Candid arguments
-    let canister_id =
-        Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
-
-    let args = Encode!(&tx_hex).context("Failed to encode Candid arguments")?;
-
-    // Call the canister
-    let response = agent
-        .update(&canister_id, "sign")
-        .with_arg(args)
-        .call_and_wait()
-        .await
-        .context("Failed to call ICP canister sign method")?;
-
-    // Decode response as byte array
-    let signed_tx_hex = Decode!(&response, anyhow::Result<String, String>)
-        .context("Failed to decode signature from canister response")?
-        .map_err(|e| anyhow!("Canister returned error: {}", e))?;
-
-    Ok(CardanoTx::from_hex(&signed_tx_hex)?.0)
-}
-
-/// Build a transaction only dealing with Charms tokens
-pub fn from_spell(
-    spell: &NormalizedSpell,
-    prev_txs_by_id: &BTreeMap<TxId, Tx>,
-    change_address: &Address,
-    spell_data: &[u8],
-    funding_utxo: UtxoId,
-    funding_utxo_value: u64,
-    collateral_utxo: Option<UtxoId>,
-) -> anyhow::Result<Transaction> {
-    let Some(collateral_utxo) = collateral_utxo else {
-        unreachable!()
-    };
-    let (mut tx_b, tx_b_c) = transaction_builder();
-
-    tx_inputs(
-        &mut tx_b,
-        spell.tx.ins.as_ref().expect("tx ins are expected"),
-        prev_txs_by_id,
-    )?;
-
-    let scripts = tx_outputs(&mut tx_b, spell)?;
-    let scripts_count = scripts.len() as u64;
-
-    add_mint(&mut tx_b, scripts, spell.version)?;
-
-    let funding_input = input_builder_result(change_address, funding_utxo, funding_utxo_value)?;
-    let collateral_input = input_builder_result(change_address, collateral_utxo, 10_000_000)?;
-    tx_b.add_input(funding_input)?;
-
-    add_spell_data(&mut tx_b, spell_data, change_address, &tx_b_c)?;
-
-    tx_b.add_collateral(collateral_input)?;
-
-    // Add reference input with the PlutusV3 script
-    // The script must be included here for proper reference script fee calculation
-    let ref_tx_hash = cml_chain::crypto::TransactionHash::from_raw_bytes(&V10_NFT_TX_HASH)
-        .expect("valid reference input tx hash");
-    let ref_input = TransactionInput::new(ref_tx_hash, V10_NFT_OUTPUT_INDEX);
-
-    // Create the PlutusV3 script from the reference script bytes
-    let plutus_v3_script = PlutusV3Script::from_raw_bytes(SCROLLS_V10_REFERENCE_SCRIPT)
-        .expect("valid PlutusV3 script");
-    let script_ref = Script::PlutusV3 {
-        script: plutus_v3_script,
-        len_encoding: Default::default(),
-        tag_encoding: None,
-    };
-
-    // Create output with reference script - required for proper fee calculation
-    // when using PlutusScriptWitness::Ref for the withdrawal
-    let ref_output_result = TransactionOutputBuilder::new()
-        .with_address(change_address.clone())
-        .with_reference_script(script_ref)
-        .next()?
-        .with_value(1896400) // Actual ADA amount from on-chain UTXO
-        .build()?;
-    let ref_output = ref_output_result.output;
-
-    let ref_utxo = TransactionUnspentOutput::new(ref_input, ref_output);
-    tx_b.add_reference_input(ref_utxo);
-
-    // Add 0 ADA withdrawal from script
-    let script_hash =
-        ScriptHash::from_raw_bytes(&SCROLLS_V10_SCRIPT_HASH).expect("valid hex script hash");
-    let network_id = change_address
-        .network_id()
-        .map_err(|e| anyhow!("Failed to get network_id: {}", e))?;
-    let stake_credential = Credential::new_script(script_hash);
-    let reward_address = cml_chain::address::RewardAddress::new(network_id, stake_credential);
-    let withdrawal_builder = SingleWithdrawalBuilder::new(reward_address, 0u64.into());
-
-    // Use dummy 64-byte signature as redeemer (will be replaced with real signature later)
-    let dummy_signature = vec![0u8; 64];
-    let withdraw_redeemer = PlutusData::new_bytes(dummy_signature);
-    let psw = PlutusScriptWitness::Ref(script_hash);
-    let ppw = PartialPlutusWitness::new(psw, withdraw_redeemer);
-
-    tx_b.add_withdrawal(withdrawal_builder.plutus_script(ppw, vec![].into())?);
-
-    for i in 0..scripts_count {
-        tx_b.set_exunits(
-            RedeemerWitnessKey::new(RedeemerTag::Mint, i as u64),
-            ExUnits::new(250000, 150000000),
-        );
-    }
-
-    // Set execution units for withdrawal redeemer
-    tx_b.set_exunits(
-        RedeemerWitnessKey::new(RedeemerTag::Reward, 0),
-        ExUnits::new(400000, 300000000),
-    );
-
-    // Build the transaction first - let it calculate fee and add change
-    let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
-    let mut tx = built_tx.build_unchecked();
-
-    // WORKAROUND: The transaction builder doesn't correctly calculate reference script fees
-    // when using PlutusScriptWitness::Ref. We need to add the missing fee manually.
-    // After testing, the missing amount is consistently 2840 lovelace.
-    const MISSING_REF_SCRIPT_FEE: u64 = 2840;
-
-    let original_fee = tx.body.fee;
-    let corrected_fee = original_fee + MISSING_REF_SCRIPT_FEE;
-
-    eprintln!("DEBUG: original_fee={}, corrected_fee={}, diff={}",
-              original_fee, corrected_fee, MISSING_REF_SCRIPT_FEE);
-
-    // Manually adjust the fee in the transaction body
-    tx.body.fee = corrected_fee;
-
-    // Also need to adjust the change output to account for the increased fee
-    // The last output is typically the change output
-    if let Some(last_output) = tx.body.outputs.last_mut() {
-        let current_amount = last_output.amount().coin;
-        if current_amount > MISSING_REF_SCRIPT_FEE {
-            let new_amount = current_amount - MISSING_REF_SCRIPT_FEE;
-            last_output.set_amount(new_amount.into());
-            eprintln!("DEBUG: Adjusted change output from {} to {}", current_amount, new_amount);
-        } else {
-            bail!("Change output too small to adjust for missing fee");
-        }
-    }
-
-    Ok(tx)
-}
-
-fn input_builder_result(
-    address: &Address,
-    utxo_id: UtxoId,
-    utxo_value: u64,
-) -> Result<InputBuilderResult, Error> {
-    let funding_utxo_input = TransactionInput::new(tx_hash(utxo_id.0), utxo_id.1 as u64);
-    let funding_utxo_output = TransactionOutput::ConwayFormatTxOut(ConwayFormatTxOut::new(
-        address.clone(),
-        utxo_value.into(),
-    ));
-    let funding_input =
-        SingleInputBuilder::new(funding_utxo_input, funding_utxo_output).payment_key()?;
-    Ok(funding_input)
-}
-
-fn add_spell_data(
-    tx_b: &mut TransactionBuilder,
-    spell_data: &[u8],
-    change_address: &Address,
-    tx_b_c: &ProtocolParams,
-) -> anyhow::Result<()> {
-    let mut spell_data_output = TransactionOutputBuilder::new()
-        .with_address(change_address.clone())
-        .with_data(DatumOption::new_datum(PlutusData::new_bytes(
-            spell_data.to_vec(),
-        )))
-        .next()?
-        .with_value(0)
-        .build()?;
-    let ada_value = min_ada_required(&spell_data_output.output, tx_b_c.utxo_cost_per_byte)?;
-    spell_data_output.output.set_amount(ada_value.into());
-
-    tx_b.add_output(spell_data_output)?;
-    Ok(())
-}
 
 #[derive(Debug, Deserialize, SerdeSerialize)]
 #[serde(rename_all = "camelCase")]
@@ -338,100 +63,607 @@ struct ProtocolParams {
     cost_models: BTreeMap<String, Vec<i64>>,
 }
 
-fn transaction_builder() -> (TransactionBuilder, ProtocolParams) {
+fn load_protocol_params() -> ProtocolParams {
     const PROTOCOL_JSON: &[u8] = include_bytes!("./protocol.json");
-    let protocol_params: ProtocolParams = serde_json::from_slice(PROTOCOL_JSON).unwrap();
-
-    let transaction_builder_config = TransactionBuilderConfigBuilder::new()
-        .fee_algo(LinearFee::new(
-            protocol_params.tx_fee_per_byte,
-            protocol_params.tx_fee_fixed,
-            protocol_params.min_fee_ref_script_cost_per_byte,
-        ))
-        .pool_deposit(protocol_params.stake_pool_deposit)
-        .key_deposit(protocol_params.stake_address_deposit)
-        .max_value_size(protocol_params.max_value_size)
-        .max_tx_size(protocol_params.max_tx_size)
-        .coins_per_utxo_byte(protocol_params.utxo_cost_per_byte)
-        .ex_unit_prices(ExUnitPrices::new(
-            Rational::new(577, 10000),
-            Rational::new(721, 10000000),
-        ))
-        .collateral_percentage(protocol_params.collateral_percentage)
-        .max_collateral_inputs(protocol_params.max_collateral_inputs)
-        .cost_models(CostModels::new({
-            let mut r = OrderedHashMap::new();
-            protocol_params
-                .cost_models
-                .iter()
-                .enumerate()
-                .for_each(|(i, (_k, v))| {
-                    r.insert(i as u64, v.clone());
-                });
-            r
-        }))
-        .build()
-        .expect("failed to build transaction builder config");
-    (
-        TransactionBuilder::new(transaction_builder_config.clone()),
-        protocol_params,
-    )
+    serde_json::from_slice(PROTOCOL_JSON).expect("valid protocol.json")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Call ICP canister to sign the transaction
+async fn call_scrolls_sign(tx: &conway::Tx) -> anyhow::Result<conway::Tx> {
+    let agent = Agent::builder()
+        .with_url("https://ic0.app")
+        .build()
+        .context("Failed to create ICP agent")?;
 
-    #[test]
-    fn test_transaction_builder_does_not_panic() {
-        let _ = transaction_builder();
+    let mut tx_cbor = Vec::new();
+    minicbor::encode(tx, &mut tx_cbor).expect("CBOR encoding should not fail");
+    let tx_hex = hex::encode(&tx_cbor);
+
+    let canister_id =
+        Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
+
+    let args = Encode!(&tx_hex).context("Failed to encode Candid arguments")?;
+
+    let response = agent
+        .update(&canister_id, "sign")
+        .with_arg(args)
+        .call_and_wait()
+        .await
+        .context("Failed to call ICP canister sign method")?;
+
+    let signed_tx_hex = Decode!(&response, anyhow::Result<String, String>)
+        .context("Failed to decode signature from canister response")?
+        .map_err(|e| anyhow!("Canister returned error: {}", e))?;
+
+    // Parse the signed transaction back to pallas
+    let signed_tx_bytes = hex::decode(&signed_tx_hex)?;
+    let signed_tx: conway::Tx = minicbor::decode(&signed_tx_bytes)
+        .map_err(|e| anyhow!("failed to decode signed tx: {}", e))?;
+    Ok(signed_tx)
+}
+
+/// Convert pallas Tx to cml-chain Transaction via CBOR
+fn pallas_to_cml_tx(pallas_tx: &conway::Tx) -> anyhow::Result<CmlTransaction> {
+    let mut cbor_bytes = Vec::new();
+    minicbor::encode(pallas_tx, &mut cbor_bytes).expect("CBOR encoding should not fail");
+    CmlTransaction::from_cbor_bytes(&cbor_bytes)
+        .map_err(|e| anyhow!("failed to decode as cml tx: {:?}", e))
+}
+
+/// Convert TxId to pallas transaction hash
+fn pallas_tx_hash(tx_id: TxId) -> pallas_crypto::hash::Hash<32> {
+    let mut txid_bytes = tx_id.0;
+    txid_bytes.reverse(); // Charms use Bitcoin's reverse byte order for txids
+    pallas_crypto::hash::Hash::new(txid_bytes)
+}
+
+fn txbuilder_input(utxo_id: &UtxoId) -> Input {
+    let hash_bytes: [u8; 32] = *pallas_tx_hash(utxo_id.0);
+    Input::new(pallas_crypto::hash::Hash::new(hash_bytes), utxo_id.1 as u64)
+}
+
+/// Convert cml-chain CardanoTx to pallas Tx via CBOR
+fn cml_to_pallas_tx(cardano_tx: &CardanoTx) -> anyhow::Result<conway::Tx> {
+    let cbor_bytes = cardano_tx.0.to_cbor_bytes();
+    let pallas_tx: conway::Tx = minicbor::decode(&cbor_bytes)
+        .map_err(|e| anyhow!("failed to decode as pallas tx: {}", e))?;
+    Ok(pallas_tx)
+}
+
+fn get_prev_output(
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    utxo_id: &UtxoId,
+) -> anyhow::Result<conway::TransactionOutput> {
+    let tx = prev_txs_by_id
+        .get(&utxo_id.0)
+        .ok_or_else(|| anyhow!("could not find prev_tx by id {}", utxo_id.0))?;
+    let Tx::Cardano(cardano_tx) = tx else {
+        bail!("expected CardanoTx, got {:?}", tx);
+    };
+    let pallas_tx = cml_to_pallas_tx(cardano_tx)?;
+    let output = pallas_tx
+        .transaction_body
+        .outputs
+        .get(utxo_id.1 as usize)
+        .cloned()
+        .ok_or_else(|| anyhow!("could not find output by index {}", utxo_id.1))?;
+    Ok(output)
+}
+
+fn txbuilder_output(address: &[u8], lovelace: u64, assets: Option<&PallasMultiasset>) -> Output {
+    let mut output = Output::new(
+        pallas_addresses::Address::from_bytes(address).expect("valid address"),
+        lovelace,
+    );
+    if let Some(ma) = assets {
+        for (policy_id, asset_names) in ma.iter() {
+            for (asset_name, amount) in asset_names.iter() {
+                output = output
+                    .add_asset(*policy_id, asset_name.to_vec(), *amount)
+                    .expect("valid asset");
+            }
+        }
+    }
+    output
+}
+
+/// Calculate minimum ADA for an output based on protocol parameters
+fn min_ada_for_output(output_size_bytes: usize, utxo_cost_per_byte: u64) -> u64 {
+    // Cardano minimum UTXO formula: max(lovelace_per_utxo_byte * (utxo_size + 160), min_utxo)
+    // The 160 is the constant overhead
+    let size_with_overhead = output_size_bytes as u64 + 160;
+    utxo_cost_per_byte * size_with_overhead
+}
+
+/// Convert cml-chain MultiAsset to pallas Multiasset
+fn cml_to_pallas_multiasset(cml_ma: &MultiAsset) -> PallasMultiasset {
+    let pairs: Vec<_> = cml_ma
+        .iter()
+        .filter_map(|(policy, assets)| {
+            let policy_bytes: [u8; 28] = policy
+                .to_raw_bytes()
+                .try_into()
+                .expect("policy id is 28 bytes");
+            let pallas_policy = PallasPolicyId::new(policy_bytes);
+            let asset_pairs: Vec<_> = assets
+                .iter()
+                .map(|(name, amount)| {
+                    let pallas_name = PallasAssetName::from(name.inner.clone());
+                    (pallas_name, *amount)
+                })
+                .collect();
+            NonEmptyKeyValuePairs::from_vec(asset_pairs)
+                .map(|assets_kvp| (pallas_policy, assets_kvp))
+        })
+        .collect();
+
+    NonEmptyKeyValuePairs::from_vec(pairs).unwrap_or_else(|| NonEmptyKeyValuePairs::Def(vec![]))
+}
+
+/// Convert cml-chain PlutusV3Script to pallas PlutusScript<3>
+fn cml_to_pallas_script(cml_script: &CmlPlutusV3Script) -> PallasPlutusV3Script {
+    // cml_script.inner contains the raw script bytes
+    // Wrap in pallas PlutusScript
+    PlutusScript(pallas_primitives::conway::Bytes::from(
+        cml_script.inner.clone(),
+    ))
+}
+
+/// Convert cml-chain PolicyId to pallas Hash<28>
+fn cml_to_pallas_policy_id(cml_policy: &CmlPolicyId) -> PallasPolicyId {
+    let policy_bytes: [u8; 28] = cml_policy
+        .to_raw_bytes()
+        .try_into()
+        .expect("policy id is 28 bytes");
+    PallasPolicyId::new(policy_bytes)
+}
+
+/// Get multi-asset and scripts for charms using cml-chain's multi_asset, converting to pallas types
+fn pallas_multi_asset(
+    charms: &charms_data::Charms,
+) -> anyhow::Result<(
+    PallasMultiasset,
+    BTreeMap<PallasPolicyId, PallasPlutusV3Script>,
+)> {
+    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms)?;
+
+    let pallas_ma = cml_to_pallas_multiasset(&cml_ma);
+
+    let pallas_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = cml_scripts
+        .into_iter()
+        .map(|(policy, script)| {
+            let pallas_policy = cml_to_pallas_policy_id(&policy);
+            let pallas_script = cml_to_pallas_script(&script);
+            (pallas_policy, pallas_script)
+        })
+        .collect();
+
+    Ok((pallas_ma, pallas_scripts))
+}
+
+/// Build a transaction using pallas
+pub fn from_spell(
+    spell: &NormalizedSpell,
+    prev_txs_by_id: &BTreeMap<TxId, Tx>,
+    change_address: &[u8],
+    spell_data: &[u8],
+    funding_utxo: UtxoId,
+    funding_utxo_value: u64,
+    collateral_utxo: Option<UtxoId>,
+) -> anyhow::Result<conway::Tx> {
+    let protocol_params = load_protocol_params();
+    let collateral_utxo = collateral_utxo.ok_or_else(|| anyhow!("collateral_utxo is required"))?;
+
+    let spell_ins = spell.tx.ins.as_ref().expect("tx ins are expected");
+    let spell_outs = &spell.tx.outs;
+    let coin_outs = spell.tx.coins.as_ref().expect("spell coins are expected");
+
+    // Collect all scripts for minting
+    let mut all_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
+
+    // Calculate minted/burned assets by comparing inputs and outputs
+    let mut input_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
+        BTreeMap::new();
+    let mut output_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
+        BTreeMap::new();
+
+    // Collect input assets
+    for utxo_id in spell_ins {
+        let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
+        if let Some(ma) = get_output_multiasset(&prev_output) {
+            for (policy, assets) in ma.iter() {
+                for (name, amount) in assets.iter() {
+                    *input_assets
+                        .entry(*policy)
+                        .or_default()
+                        .entry(name.clone())
+                        .or_default() += u64::from(*amount);
+                }
+            }
+        }
+    }
+
+    // Collect output assets and scripts
+    for (spell_out, _coin) in spell_outs.iter().zip(coin_outs.iter()) {
+        let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out))?;
+        all_scripts.extend(scripts);
+        for (policy, assets) in multiasset.iter() {
+            for (name, amount) in assets.iter() {
+                *output_assets
+                    .entry(*policy)
+                    .or_default()
+                    .entry(name.clone())
+                    .or_default() += *amount;
+            }
+        }
+    }
+
+    // Build the transaction using pallas-txbuilder
+    let mut staging_tx = StagingTransaction::new();
+
+    // Add spell inputs
+    for utxo_id in spell_ins {
+        staging_tx = staging_tx.input(txbuilder_input(utxo_id));
+    }
+
+    // Add funding input
+    staging_tx = staging_tx.input(txbuilder_input(&funding_utxo));
+
+    // Add spell outputs
+    for (spell_out, coin) in spell_outs.iter().zip(coin_outs.iter()) {
+        let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out))?;
+        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset));
+        staging_tx = staging_tx.output(output);
+    }
+
+    // Add spell data output
+    // Wrap spell_data in PlutusData::BoundedBytes and CBOR-encode it
+    let spell_datum = PlutusData::BoundedBytes(BoundedBytes::from(spell_data.to_vec()));
+    let mut spell_datum_cbor = Vec::new();
+    minicbor::encode(&spell_datum, &mut spell_datum_cbor).expect("CBOR encoding should not fail");
+
+    // Calculate min ADA for the spell data output
+    // The output size includes: address (57 bytes) + datum + overhead
+    // Use a more conservative estimate to ensure we meet minimum requirements
+    let spell_output_size = change_address.len() + spell_datum_cbor.len() + 50;
+    let spell_data_min_ada =
+        min_ada_for_output(spell_output_size, protocol_params.utxo_cost_per_byte);
+    // Add 10% buffer to ensure we meet minimum
+    let spell_data_min_ada = spell_data_min_ada + spell_data_min_ada / 10;
+
+    let spell_data_output = Output::new(
+        pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
+        spell_data_min_ada,
+    )
+    .set_inline_datum(spell_datum_cbor);
+    staging_tx = staging_tx.output(spell_data_output);
+
+    // Add collateral input
+    staging_tx = staging_tx.collateral_input(txbuilder_input(&collateral_utxo));
+
+    // Add reference input (V10 NFT with script)
+    let ref_input = Input::new(
+        pallas_crypto::hash::Hash::new(V10_NFT_TX_HASH),
+        V10_NFT_OUTPUT_INDEX,
+    );
+    staging_tx = staging_tx.reference_input(ref_input);
+
+    // Calculate mint (output - input for each asset)
+    let mut mint_map: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, i64>> = BTreeMap::new();
+
+    // Add positive amounts (minted)
+    for (policy, assets) in &output_assets {
+        for (name, out_amount) in assets {
+            let in_amount = input_assets
+                .get(policy)
+                .and_then(|a| a.get(name))
+                .copied()
+                .unwrap_or(0);
+            let diff = *out_amount as i64 - in_amount as i64;
+            if diff != 0 {
+                *mint_map
+                    .entry(*policy)
+                    .or_default()
+                    .entry(name.clone())
+                    .or_default() = diff;
+            }
+        }
+    }
+
+    // Add negative amounts (burned)
+    for (policy, assets) in &input_assets {
+        for (name, in_amount) in assets {
+            if !output_assets
+                .get(policy)
+                .map_or(false, |a| a.contains_key(name))
+            {
+                let diff = -(*in_amount as i64);
+                *mint_map
+                    .entry(*policy)
+                    .or_default()
+                    .entry(name.clone())
+                    .or_default() = diff;
+            }
+        }
+    }
+
+    // Add mint assets
+    for (policy, assets) in &mint_map {
+        for (name, amount) in assets {
+            staging_tx = staging_tx
+                .mint_asset(*policy, name.to_vec(), *amount)
+                .map_err(|e| anyhow!("mint error: {:?}", e))?;
+        }
+    }
+
+    // Add mint scripts and redeemers
+    // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
+    let redeemer_raw = create_mint_redeemer(spell.version);
+    let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
+    let mut redeemer_cbor = Vec::new();
+    minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
+        .expect("CBOR encoding should not fail");
+
+    for (policy, script) in &all_scripts {
+        // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
+        let script_bytes = script.0.to_vec();
+
+        staging_tx = staging_tx
+            .script(ScriptKind::PlutusV3, script_bytes)
+            .add_mint_redeemer(
+                *policy,
+                redeemer_cbor.clone(),
+                Some(pallas_txbuilder::ExUnits {
+                    mem: 250000,
+                    steps: 150000000,
+                }),
+            );
+    }
+
+    // Set network ID from change address
+    let network_id = if change_address[0] & 0x0F == 0x01 {
+        1u8
+    } else {
+        0u8
+    };
+    staging_tx = staging_tx.network_id(network_id);
+
+    // Set language view for PlutusV3 cost model
+    if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
+        staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
+    }
+
+    // Set fee (will be adjusted later)
+    staging_tx = staging_tx.fee(500000); // Initial estimate
+
+    // Set change address
+    staging_tx = staging_tx.change_address(
+        pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
+    );
+
+    // Build the transaction with pallas-txbuilder
+    let built_tx = staging_tx
+        .build_conway_raw()
+        .map_err(|e| anyhow!("build error: {:?}", e))?;
+
+    // Decode the built transaction bytes back to conway::Tx so we can modify it
+    let mut tx: conway::Tx = minicbor::decode(&built_tx.tx_bytes.0)
+        .map_err(|e| anyhow!("failed to decode built tx: {}", e))?;
+
+    // Add withdrawal to transaction body (pallas-txbuilder doesn't support withdrawals)
+    let reward_account = create_reward_account(&SCROLLS_V10_SCRIPT_HASH, network_id);
+    let withdrawals = NonEmptyKeyValuePairs::Def(vec![(reward_account, 0u64)]);
+    tx.transaction_body.withdrawals = Some(withdrawals);
+
+    // Add withdrawal redeemer to witness set
+    let dummy_signature = vec![0u8; 64];
+    let withdrawal_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(dummy_signature));
+
+    // Get existing redeemers as Redeemer structs (legacy array format)
+    let mut all_redeemers: Vec<Redeemer> = match &tx.transaction_witness_set.redeemer {
+        Some(Redeemers::Map(map)) => map
+            .iter()
+            .map(|(k, v)| Redeemer {
+                tag: k.tag,
+                index: k.index,
+                data: v.data.clone(),
+                ex_units: v.ex_units,
+            })
+            .collect(),
+        Some(Redeemers::List(list)) => list.iter().cloned().collect(),
+        None => vec![],
+    };
+
+    // Add withdrawal redeemer
+    let withdrawal_redeemer = Redeemer {
+        tag: RedeemerTag::Reward,
+        index: 0,
+        data: withdrawal_redeemer_data,
+        ex_units: ExUnits {
+            mem: 400000,
+            steps: 300000000,
+        },
+    };
+    all_redeemers.push(withdrawal_redeemer);
+
+    // Sort redeemers by tag then index (required by Cardano)
+    all_redeemers.sort_by(|a, b| {
+        let tag_cmp = (a.tag as u8).cmp(&(b.tag as u8));
+        if tag_cmp != std::cmp::Ordering::Equal {
+            tag_cmp
+        } else {
+            a.index.cmp(&b.index)
+        }
+    });
+
+    // Use Redeemers::List (legacy array format) for compatibility with ICP canister
+    tx.transaction_witness_set.redeemer =
+        Some(Redeemers::List(MaybeIndefArray::Def(all_redeemers)));
+
+    // Recompute script_data_hash since we added a redeemer
+    tx.transaction_body.script_data_hash = Some(compute_script_data_hash(
+        &tx.transaction_witness_set,
+        &protocol_params,
+    )?);
+
+    // Calculate total input value
+    let total_input = funding_utxo_value
+        + spell_ins
+            .iter()
+            .map(|id| {
+                get_prev_output(prev_txs_by_id, id)
+                    .map(|o| get_output_coin(&o))
+                    .unwrap_or(0)
+            })
+            .sum::<u64>();
+
+    // Calculate fee
+    // The base fee formula is: txFeeFixed + txFeePerByte * tx_size
+    // Plus reference script fee which follows a tiered formula based on script size
+    // The Scrolls V10 reference script is ~4700 bytes on-chain (the full PlutusV3 script),
+    // which results in approximately 70000 lovelace of reference script fees.
+    const REF_SCRIPT_FEE_ESTIMATE: u64 = 75000; // Conservative estimate for V10 ref script
+
+    // Signature overhead: payment key vkeywitness (~102 bytes)
+    const SIGNATURE_OVERHEAD: u64 = 110;
+
+    // Calculate current tx size
+    let tx_size = {
+        let mut buf = Vec::new();
+        minicbor::encode(&tx, &mut buf).expect("CBOR encoding should not fail");
+        buf.len() as u64
+    };
+
+    // Base fee for tx body + signature overhead + change output overhead
+    let base_fee = protocol_params.tx_fee_fixed
+        + (protocol_params.tx_fee_per_byte * (tx_size + SIGNATURE_OVERHEAD + 70));
+
+    // Total fee including reference script
+    let fee = base_fee + REF_SCRIPT_FEE_ESTIMATE;
+
+    tx.transaction_body.fee = fee;
+
+    // Calculate outputs total
+    let total_output: u64 = tx
+        .transaction_body
+        .outputs
+        .iter()
+        .map(|o| get_output_coin(o))
+        .sum();
+
+    // Add change output if needed
+    if total_input > total_output + fee {
+        let change_amount = total_input - total_output - fee;
+        let change_output = PseudoTransactionOutput::PostAlonzo(PostAlonzoTransactionOutput {
+            address: pallas_primitives::conway::Bytes::from(change_address.to_vec()),
+            value: Value::Coin(change_amount),
+            datum_option: None,
+            script_ref: None,
+        });
+        tx.transaction_body.outputs.push(change_output);
+    }
+
+    Ok(tx)
+}
+
+fn get_output_coin(output: &conway::TransactionOutput) -> u64 {
+    match output {
+        PseudoTransactionOutput::Legacy(legacy) => match &legacy.amount {
+            pallas_primitives::alonzo::Value::Coin(c) => *c,
+            pallas_primitives::alonzo::Value::Multiasset(c, _) => *c,
+        },
+        PseudoTransactionOutput::PostAlonzo(post) => match &post.value {
+            Value::Coin(c) => *c,
+            Value::Multiasset(c, _) => *c,
+        },
     }
 }
 
-fn add_mint(
-    tx_b: &mut TransactionBuilder,
-    scripts: BTreeMap<PolicyId, PlutusV3Script>,
-    protocol_version: u32,
-) -> anyhow::Result<()> {
-    let out_v = tx_b.get_explicit_output()?.multiasset;
-    let in_v = tx_b.get_explicit_input()?.multiasset;
-    let minted_assets = out_v.clamped_sub(&in_v);
-    let burned_assets = in_v.clamped_sub(&out_v);
+fn get_output_multiasset(
+    output: &conway::TransactionOutput,
+) -> Option<conway::Multiasset<pallas_primitives::conway::PositiveCoin>> {
+    match output {
+        PseudoTransactionOutput::Legacy(legacy) => match &legacy.amount {
+            pallas_primitives::alonzo::Value::Coin(_) => None,
+            pallas_primitives::alonzo::Value::Multiasset(_, ma) => {
+                // Convert alonzo to conway format
+                let pairs: Vec<_> = ma
+                    .iter()
+                    .filter_map(|(p, assets)| {
+                        let converted: Vec<_> = assets
+                            .iter()
+                            .filter_map(|(n, a)| {
+                                pallas_primitives::conway::PositiveCoin::try_from(*a)
+                                    .ok()
+                                    .map(|pc| (n.clone(), pc))
+                            })
+                            .collect();
+                        NonEmptyKeyValuePairs::from_vec(converted).map(|kvp| (*p, kvp))
+                    })
+                    .collect();
+                NonEmptyKeyValuePairs::from_vec(pairs)
+            }
+        },
+        PseudoTransactionOutput::PostAlonzo(post) => match &post.value {
+            Value::Coin(_) => None,
+            Value::Multiasset(_, ma) => Some(ma.clone()),
+        },
+    }
+}
 
-    check_asset_amounts(&minted_assets)?;
-    check_asset_amounts(&burned_assets)?;
-    let minted_assets: AssetBundle<i64> = unsafe { std::mem::transmute(minted_assets) };
-    let burned_assets: AssetBundle<i64> = unsafe { std::mem::transmute(burned_assets) };
+fn create_reward_account(
+    script_hash: &[u8; 28],
+    network_id: u8,
+) -> pallas_primitives::conway::Bytes {
+    // Reward address format: header byte (0xF0 for mainnet script, 0xF1 for testnet script) + 28-byte script hash
+    let header = if network_id == 1 { 0xF1u8 } else { 0xF0u8 }; // script credential
+    let mut account = Vec::with_capacity(29);
+    account.push(header);
+    account.extend_from_slice(script_hash);
+    pallas_primitives::conway::Bytes::from(account)
+}
 
-    let mint = minted_assets.clamped_sub(&burned_assets);
-
-    // Create protocol version NFT asset_name as redeemer
+fn create_mint_redeemer(protocol_version: u32) -> Vec<u8> {
     // Format: NFT_LABEL (000de140) + "v<protocol_version>" as bytes
     const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
     let version_string = format!("v{}", protocol_version);
     let mut redeemer_bytes = NFT_LABEL.to_vec();
     redeemer_bytes.extend_from_slice(version_string.as_bytes());
-    let redeemer = PlutusData::new_bytes(redeemer_bytes);
-
-    for (policy_id, assets) in mint.iter() {
-        let mint_b = SingleMintBuilder::new(assets.clone());
-        let script = scripts[policy_id].clone(); // scripts MUST have all token policies at this point
-        let psw = PlutusScriptWitness::Script(PlutusScript::PlutusV3(script));
-        let ppw = PartialPlutusWitness::new(psw, redeemer.clone());
-        tx_b.add_mint(mint_b.plutus_script(ppw, vec![].into()))?;
-    }
-
-    Ok(())
+    redeemer_bytes
 }
 
-fn check_asset_amounts(assets: &AssetBundle<u64>) -> anyhow::Result<()> {
-    const ASSET_AMOUNT_BOUND: u64 = 1u64 << 63;
-    for (_, assets) in assets.iter() {
-        for (_, amount) in assets.iter() {
-            ensure!(*amount < ASSET_AMOUNT_BOUND, "asset amount exceeds bound");
-        }
+fn compute_script_data_hash(
+    witness_set: &WitnessSet,
+    protocol_params: &ProtocolParams,
+) -> anyhow::Result<pallas_crypto::hash::Hash<32>> {
+    // script_data_hash = hash(redeemers || datums || language_views)
+    // Following the pallas-txbuilder ScriptData::hash() implementation
+
+    let mut hash_input = Vec::new();
+
+    // Encode redeemers
+    if let Some(ref redeemers) = witness_set.redeemer {
+        minicbor::encode(redeemers, &mut hash_input).expect("CBOR encoding should not fail");
     }
-    Ok(())
+
+    // Encode datums only if present (NOT an empty array when absent)
+    if let Some(ref datums) = witness_set.plutus_data {
+        let datums_vec: Vec<_> = datums.iter().cloned().collect();
+        minicbor::encode(&datums_vec, &mut hash_input).expect("CBOR encoding should not fail");
+    }
+
+    // Encode language views (cost models)
+    // For PlutusV3 (version 2 in CBOR), format is: { 2: [cost_model_values] }
+    if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
+        // Use minicbor Encoder to build the language view CBOR
+        let mut encoder = minicbor::Encoder::new(Vec::new());
+        encoder.map(1).expect("map encoding");
+        encoder.u8(2).expect("key encoding"); // PlutusV3 = 2
+        encoder.encode(v3_costs).expect("cost model encoding");
+        hash_input.extend_from_slice(encoder.writer());
+    }
+
+    Ok(pallas_crypto::hash::Hasher::<256>::hash(&hash_input))
 }
 
 pub async fn make_transactions(
@@ -454,12 +686,16 @@ pub async fn make_transactions(
             Ok(tx)
         })
         .transpose()?;
-    let change_address = Address::from_bech32(change_address).map_err(|e| anyhow!("{}", e))?;
+
+    // Parse bech32 address to bytes
+    let change_address_parsed = pallas_addresses::Address::from_bech32(change_address)
+        .map_err(|e| anyhow!("invalid bech32 address: {:?}", e))?;
+    let change_address_bytes = change_address_parsed.to_vec();
 
     let tx = from_spell(
         spell,
         prev_txs_by_id,
-        &change_address,
+        &change_address_bytes,
         spell_data,
         funding_utxo,
         funding_utxo_value,
@@ -467,19 +703,51 @@ pub async fn make_transactions(
     )?;
 
     let tx = match underlying_tx {
-        Some(u_tx) => combine(u_tx, tx),
+        Some(u_tx) => {
+            // Convert cml-chain Transaction to pallas Tx for combining
+            let pallas_u_tx = cml_to_pallas_tx(&CardanoTx(u_tx))?;
+            combine(pallas_u_tx, tx)
+        }
         None => tx,
     };
 
     // Get the real Schnorr signature from ICP canister
-    let tx = call_scrolls_sign(&tx).await?;
+    // The canister replaces the dummy withdrawal redeemer with the real Schnorr signature
+    let mut signed_tx = call_scrolls_sign(&tx).await?;
 
-    Ok(vec![tx]
-        .into_iter()
-        .map(|tx| Tx::Cardano(CardanoTx(tx)))
-        .collect())
+    // Recompute script_data_hash after ICP canister signing
+    // The canister modifies the withdrawal redeemer, so the hash must be recalculated
+    let protocol_params = load_protocol_params();
+    signed_tx.transaction_body.script_data_hash = Some(compute_script_data_hash(
+        &signed_tx.transaction_witness_set,
+        &protocol_params,
+    )?);
+
+    // Convert pallas Tx back to cml-chain Transaction for CardanoTx
+    let cml_tx = pallas_to_cml_tx(&signed_tx)?;
+
+    Ok(vec![Tx::Cardano(CardanoTx(cml_tx))])
 }
 
-fn combine(_base_tx: Transaction, _tx: Transaction) -> Transaction {
+fn combine(_base_tx: conway::Tx, _tx: conway::Tx) -> conway::Tx {
     todo!()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_params_load() {
+        let params = load_protocol_params();
+        assert!(params.tx_fee_per_byte > 0);
+        assert!(params.utxo_cost_per_byte > 0);
+    }
+
+    #[test]
+    fn test_create_reward_account() {
+        let account = create_reward_account(&SCROLLS_V10_SCRIPT_HASH, 1);
+        assert_eq!(account.len(), 29);
+        assert_eq!(account[0], 0xF1); // testnet script
+    }
 }
