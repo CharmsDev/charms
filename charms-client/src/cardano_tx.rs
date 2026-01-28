@@ -281,7 +281,9 @@ pub fn tx_hash(tx_id: TxId) -> TransactionHash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use charms_data::B32;
     use cml_core::serialization::RawBytesEncoding;
+    use std::str::FromStr;
     use uplc::ast::{DeBruijn, Program};
 
     const UNPARAMETERIZED_MAIN_SCRIPT: &[u8] = &hex!(
@@ -318,10 +320,15 @@ mod tests {
     fn charms_app_policy_id() {
         let app = App {
             tag: TOKEN,
-            identity: Default::default(),
-            vk: Default::default(),
+            identity: B32::from_str(
+                "3d7fe7e4cea6121947af73d70e5119bebd8aa5b7edfe74bfaf6e779a1847bd9b",
+            )
+            .unwrap(),
+            vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
+                .unwrap(),
         };
-        let (_policy_id, script) = policy_id(&app);
+        let (policy_id, script) = policy_id(&app);
+        dbg!(policy_id.to_hex());
         let app_script = script.to_cbor_bytes();
 
         let mut buffer = Vec::new();

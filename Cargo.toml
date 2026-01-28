@@ -36,7 +36,7 @@ charms-client = { path = "./charms-client", version = "0.12.0" }
 charms-data = { path = "./charms-data", version = "0.12.0" }
 charms-lib = { path = "./charms-lib", version = "0.12.0" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "0.12.0" }
-clap = { version = "4.5.54", features = ["derive"] }
+clap = { version = "4.5.55", features = ["derive"] }
 clap_complete = { version = "4.5.65" }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
@@ -117,7 +117,7 @@ sp1-prover = { version = "5.2.4" }
 sp1-sdk = { version = "5.2.4", default-features = false, features = ["network"] }
 sp1-verifier = { version = "5.2.4" }
 sp1-zkvm = { version = "5.2.4" }
-test-strategy = { version = "0.4.3" }
+test-strategy = { version = "0.4.4" }
 tracing = { version = "0.1" }
 
 [profile.test]

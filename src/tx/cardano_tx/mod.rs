@@ -19,7 +19,7 @@ use cml_chain::{
         redeemer_builder::RedeemerWitnessKey,
         tx_builder::{
             ChangeSelectionAlgo, TransactionBuilder, TransactionBuilderConfigBuilder,
-            TransactionUnspentOutput, add_change_if_needed,
+            TransactionUnspentOutput,
         },
         withdrawal_builder::SingleWithdrawalBuilder,
         witness_builder::{PartialPlutusWitness, PlutusScriptWitness},
@@ -28,7 +28,9 @@ use cml_chain::{
     crypto::ScriptHash,
     fees::LinearFee,
     min_ada::min_ada_required,
-    plutus::{CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusV3Script, RedeemerTag},
+    plutus::{
+        CostModels, ExUnitPrices, ExUnits, PlutusData, PlutusScript, PlutusV3Script, RedeemerTag,
+    },
     transaction::{
         ConwayFormatTxOut, DatumOption, Transaction, TransactionInput, TransactionOutput,
     },
@@ -236,6 +238,7 @@ pub fn from_spell(
         ExUnits::new(400000, 300000000),
     );
 
+    // Calculate minimum fee including script execution costs
     let fee = tx_b
         .min_fee(true)
         .with_context(|| format!("Failed to calculate minimum fee. tx builder: {:?}", &tx_b))?;
@@ -244,9 +247,9 @@ pub fn from_spell(
         input_total.partial_cmp(&output_total.checked_add(&fee.into())?)
             == Some(std::cmp::Ordering::Greater)
     );
-    add_change_if_needed(&mut tx_b, change_address, true)?; // MUST add an output
 
-    // Build with proper fee calculation - the builder recalculates fee after adding change
+    // Let the builder handle change calculation and fee adjustment automatically
+    // The builder will recalculate the fee after adding/adjusting the change output
     let built_tx = tx_b.build(ChangeSelectionAlgo::Default, change_address)?;
     let tx = built_tx.build_unchecked();
 
@@ -383,7 +386,7 @@ fn add_mint(
     for (policy_id, assets) in mint.iter() {
         let mint_b = SingleMintBuilder::new(assets.clone());
         let script = scripts[policy_id].clone(); // scripts MUST have all token policies at this point
-        let psw = PlutusScriptWitness::Script(script.into());
+        let psw = PlutusScriptWitness::Script(PlutusScript::PlutusV3(script));
         let ppw = PartialPlutusWitness::new(psw, redeemer.clone());
         tx_b.add_mint(mint_b.plutus_script(ppw, vec![].into()))?;
     }
