@@ -8,6 +8,7 @@ use cml_chain::{
     plutus::{PlutusData, PlutusV3Script},
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
+use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
 use serde_with::serde_as;
 use std::collections::BTreeMap;
@@ -158,8 +159,22 @@ pub fn policy_id(app: &App) -> (PolicyId, PlutusV3Script) {
             .expect("app VK should successfully apply to the Charms app proxy script");
     let script = PlutusV3Script::from_cbor_bytes(&program)
         .expect("script should successfully deserialize from CBOR");
-    let policy_id = script.hash();
+    // NOTE: cml-chain's script.hash() computes blake2b-224(0x03 || flat_bytes), but the
+    // Cardano ledger expects blake2b-224(0x03 || cbor_bytes). We compute the correct hash here.
+    let policy_id = compute_script_hash(&script);
     (policy_id, script)
+}
+
+/// Compute the correct script hash for a PlutusV3 script.
+/// The Cardano ledger expects: blake2b-224(0x03 || cbor_bytes)
+/// where cbor_bytes includes the CBOR header (e.g., 59026b for a 619-byte script).
+fn compute_script_hash(script: &PlutusV3Script) -> PolicyId {
+    use pallas_crypto::hash::Hasher;
+    let cbor_bytes = script.to_cbor_bytes();
+    let mut data = vec![0x03u8]; // PlutusV3 namespace prefix
+    data.extend_from_slice(&cbor_bytes);
+    let hash = Hasher::<224>::hash(&data);
+    PolicyId::from_raw_bytes(hash.as_ref()).expect("hash should be valid policy id")
 }
 
 pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
@@ -317,6 +332,132 @@ mod tests {
     }
 
     #[test]
+    fn test_flat_encoding_roundtrip() {
+        // Test if round-tripping through uplc changes the flat encoding
+        // Get the raw flat bytes from CHARMS_APP_PROXY_SCRIPT (skip CBOR header)
+        // CBOR header is 590244 (3 bytes: 59 = bytes with 2-byte length, 0244 = 580)
+        let original_flat = &CHARMS_APP_PROXY_SCRIPT[3..];
+        eprintln!("Original flat length: {}", original_flat.len());
+        eprintln!(
+            "Original flat first 10 bytes: {}",
+            hex::encode(&original_flat[..10])
+        );
+
+        // Parse from flat
+        let program =
+            Program::<DeBruijn>::from_flat(original_flat).expect("should parse from flat");
+        eprintln!(
+            "Parsed program version: {}.{}.{}",
+            program.version.0, program.version.1, program.version.2
+        );
+
+        // Re-encode to flat
+        let re_encoded = program.to_flat().expect("should encode to flat");
+        eprintln!("Re-encoded flat length: {}", re_encoded.len());
+        eprintln!(
+            "Re-encoded flat first 10 bytes: {}",
+            hex::encode(&re_encoded[..10])
+        );
+
+        // Compare
+        eprintln!("Same encoding: {}", original_flat == re_encoded.as_slice());
+
+        if original_flat != re_encoded.as_slice() {
+            eprintln!("\nDifferences found!");
+            for (i, (a, b)) in original_flat.iter().zip(re_encoded.iter()).enumerate() {
+                if a != b {
+                    eprintln!("  Byte {}: original={:02x}, re-encoded={:02x}", i, a, b);
+                }
+            }
+            if original_flat.len() != re_encoded.len() {
+                eprintln!(
+                    "  Length differs: {} vs {}",
+                    original_flat.len(),
+                    re_encoded.len()
+                );
+            }
+        }
+
+        // The encoding should be stable - this would catch any issues with the flat encoding
+        assert_eq!(
+            original_flat,
+            re_encoded.as_slice(),
+            "Flat encoding changed after round-trip!"
+        );
+    }
+
+    #[test]
+    fn test_apply_params_encoding() {
+        // Test what apply_params_to_script produces
+        let app = App {
+            tag: TOKEN,
+            identity: B32::from_str(
+                "3d7fe7e4cea6121947af73d70e5119bebd8aa5b7edfe74bfaf6e779a1847bd9b",
+            )
+            .unwrap(),
+            vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
+                .unwrap(),
+        };
+
+        let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
+        eprintln!(
+            "param_data CBOR: {}",
+            hex::encode(param_data.to_cbor_bytes())
+        );
+
+        // Apply params
+        let program_cbor =
+            uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), CHARMS_APP_PROXY_SCRIPT)
+                .expect("apply_params_to_script should work");
+
+        eprintln!("Result CBOR length: {}", program_cbor.len());
+        eprintln!(
+            "Result CBOR first 10 bytes: {}",
+            hex::encode(&program_cbor[..10])
+        );
+
+        // Extract flat bytes (skip CBOR header)
+        // The header could be 59 XX XX (3 bytes) for lengths up to 65535
+        let flat_bytes = if program_cbor[0] == 0x59 {
+            &program_cbor[3..]
+        } else if program_cbor[0] == 0x58 {
+            &program_cbor[2..]
+        } else {
+            panic!("Unexpected CBOR header: {:02x}", program_cbor[0]);
+        };
+
+        eprintln!("Flat bytes length: {}", flat_bytes.len());
+        eprintln!("Flat bytes first 10: {}", hex::encode(&flat_bytes[..10]));
+
+        // Parse the flat bytes
+        let program = Program::<DeBruijn>::from_flat(flat_bytes).expect("should parse from flat");
+        eprintln!(
+            "Parsed program version: {}.{}.{}",
+            program.version.0, program.version.1, program.version.2
+        );
+        eprintln!("Program pretty:\n{}", program.to_pretty());
+
+        // Re-encode to flat and compare
+        let re_encoded = program.to_flat().expect("should encode to flat");
+        eprintln!("\nRe-encoded flat length: {}", re_encoded.len());
+        eprintln!(
+            "Re-encoded flat first 10: {}",
+            hex::encode(&re_encoded[..10])
+        );
+
+        if flat_bytes != re_encoded.as_slice() {
+            eprintln!("\nEncoding changed after round-trip!");
+            for (i, (a, b)) in flat_bytes.iter().zip(re_encoded.iter()).enumerate() {
+                if a != b {
+                    eprintln!("  Byte {}: original={:02x}, re-encoded={:02x}", i, a, b);
+                }
+            }
+        } else {
+            eprintln!("\nEncoding is stable after round-trip");
+        }
+    }
+
+    #[test]
     fn charms_app_policy_id() {
         let app = App {
             tag: TOKEN,
@@ -327,13 +468,231 @@ mod tests {
             vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
                 .unwrap(),
         };
+
+        // Check intermediate steps
+        let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(app.vk.0.to_vec())]);
+        eprintln!(
+            "param_data CBOR: {}",
+            hex::encode(param_data.to_cbor_bytes())
+        );
+
+        let program_cbor =
+            uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), CHARMS_APP_PROXY_SCRIPT)
+                .expect("apply_params_to_script should work");
+        eprintln!("program_cbor length: {}", program_cbor.len());
+        eprintln!(
+            "program_cbor first 20 bytes: {}",
+            hex::encode(&program_cbor[..20])
+        );
+
+        // Try to parse the CBOR output
+        let mut buffer = Vec::new();
+        let program = Program::<DeBruijn>::from_cbor(&program_cbor, &mut buffer)
+            .expect("should parse from CBOR");
+        eprintln!(
+            "Parsed program version: {}.{}.{}",
+            program.version.0, program.version.1, program.version.2
+        );
+
+        // Encode back to flat and compare
+        let flat_bytes = program.to_flat().expect("should encode to flat");
+        eprintln!("Flat encoding length: {}", flat_bytes.len());
+        eprintln!(
+            "Flat encoding first 20 bytes: {}",
+            hex::encode(&flat_bytes[..20])
+        );
+
         let (policy_id, script) = policy_id(&app);
         dbg!(policy_id.to_hex());
+
+        // Check what's in script.inner
+        eprintln!("script.inner length: {}", script.inner.len());
+        eprintln!(
+            "script.inner first 20 bytes: {}",
+            hex::encode(&script.inner[..20])
+        );
+        eprintln!("script.inner == flat_bytes: {}", script.inner == flat_bytes);
+
+        // Check if the first 3 bytes indicate the right version
+        eprintln!(
+            "UPLC version from inner: {}.{}.{}",
+            script.inner[0], script.inner[1], script.inner[2]
+        );
+
         let app_script = script.to_cbor_bytes();
 
         let mut buffer = Vec::new();
         let program = Program::<DeBruijn>::from_cbor(&app_script, &mut buffer).unwrap();
         // eprintln!("{}", program.to_pretty());
         assert_eq!(622, program.to_cbor().unwrap().len());
+    }
+
+    #[test]
+    fn test_script_bytes() {
+        let app = App {
+            tag: TOKEN,
+            identity: B32::from_str(
+                "3d7fe7e4cea6121947af73d70e5119bebd8aa5b7edfe74bfaf6e779a1847bd9b",
+            )
+            .unwrap(),
+            vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
+                .unwrap(),
+        };
+        let (policy_id, script) = policy_id(&app);
+        eprintln!("policy_id: {}", policy_id.to_hex());
+        eprintln!("script.inner length: {}", script.inner.len());
+        eprintln!(
+            "script.inner first 20 bytes: {}",
+            hex::encode(&script.inner[..20])
+        );
+        eprintln!(
+            "script.to_cbor_bytes length: {}",
+            script.to_cbor_bytes().len()
+        );
+        eprintln!(
+            "script.to_cbor_bytes first 20 bytes: {}",
+            hex::encode(&script.to_cbor_bytes()[..20])
+        );
+        eprintln!(
+            "script.to_raw_bytes length: {}",
+            script.to_raw_bytes().len()
+        );
+        eprintln!(
+            "script.to_raw_bytes first 20 bytes: {}",
+            hex::encode(&script.to_raw_bytes()[..20])
+        );
+
+        // Also test SCROLLS_V10 reference script for comparison
+        let scrolls_v10_cbor = hex::decode("58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001").unwrap();
+        // Decode CBOR to get raw bytes (58ca is the CBOR header)
+        let scrolls_raw = &scrolls_v10_cbor[2..]; // Skip 58ca header
+        match Program::<DeBruijn>::from_flat(scrolls_raw) {
+            Ok(program) => {
+                eprintln!(
+                    "SCROLLS_V10 parsed! version: {}.{}.{}",
+                    program.version.0, program.version.1, program.version.2
+                );
+            }
+            Err(e) => {
+                eprintln!("SCROLLS_V10 failed to parse: {:?}", e);
+            }
+        }
+
+        // Test the exact bytes extracted from a failing transaction
+        let extracted_script = hex::decode("010100332229800aba2aba1aba0aab9faab9eaab9dab9a9bae0039bae0024888888889660033001300537540152259800800c5300103d87a80008992cc004006266e9520003300a300b0024bd7044cc00c00c0050091805800a010918049805000cdc3a400091111991194c004c02cdd5000cc03c01e44464b30013008300f37540031325980099b87323322330020020012259800800c00e2646644b30013372201400515980099b8f00a0028800c01901544cc014014c06c0110151bae3014001375a602a002602e00280a8c8c8cc004004dd59806980a1baa300d3014375400844b3001001801c4c8cc896600266e4403000a2b30013371e0180051001803202c899802802980e002202c375c602a0026eacc058004c0600050160a5eb7bdb180520004800a264b3001300a301137540031323322330020020012259800800c528456600266ebc00cc050c0600062946266004004603200280990161bab30163017301730173017301730173017301730173013375400a66e952004330143374a90011980a180a98091baa0014bd7025eb822c8080c050c054c054c054c044dd5180518089baa0018b201e301330103754003164038600a6eb0c020c03cdd5000cc03c00d222259800980400244ca600201d375c005004400c6eb8c04cc040dd5002c56600266e1d200200489919914c0040426eb801200c8028c050004c050c054004c040dd5002c5900e201c1807180780118068021801801a29344d959003130011e581c1775920b2f415d295553835fb7d26d8186cff73d352c9e9b98cad240004c01225820c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f0001").unwrap();
+        match Program::<DeBruijn>::from_flat(&extracted_script) {
+            Ok(program) => {
+                eprintln!(
+                    "Extracted script parsed! version: {}.{}.{}",
+                    program.version.0, program.version.1, program.version.2
+                );
+            }
+            Err(e) => {
+                eprintln!("Extracted script failed to parse: {:?}", e);
+            }
+        }
+
+        // Try to parse with uplc from flat encoding
+        match Program::<DeBruijn>::from_flat(&script.inner) {
+            Ok(program) => {
+                eprintln!(
+                    "Successfully parsed UPLC program from flat! version: {}.{}.{}",
+                    program.version.0, program.version.1, program.version.2
+                );
+            }
+            Err(e) => {
+                eprintln!("Failed to parse UPLC program from flat: {:?}", e);
+                // Try from cbor
+                let mut buffer = Vec::new();
+                match Program::<DeBruijn>::from_cbor(&script.to_cbor_bytes(), &mut buffer) {
+                    Ok(program) => {
+                        eprintln!(
+                            "Successfully parsed UPLC program from CBOR! version: {}.{}.{}",
+                            program.version.0, program.version.1, program.version.2
+                        );
+                    }
+                    Err(e2) => {
+                        eprintln!("Also failed to parse from CBOR: {:?}", e2);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_save_and_decode_scripts() {
+        let app = App {
+            tag: TOKEN,
+            identity: B32::from_str(
+                "3d7fe7e4cea6121947af73d70e5119bebd8aa5b7edfe74bfaf6e779a1847bd9b",
+            )
+            .unwrap(),
+            vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
+                .unwrap(),
+        };
+        let (_, script) = policy_id(&app);
+
+        // Save our script flat bytes
+        let our_flat = &script.inner;
+        std::fs::write("/tmp/our_script_flat.hex", hex::encode(our_flat)).unwrap();
+        eprintln!(
+            "Saved our script to /tmp/our_script_flat.hex ({} bytes flat)",
+            our_flat.len()
+        );
+
+        // Save SCROLLS_V10 flat bytes for comparison
+        let scrolls_cbor = hex::decode("58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001").unwrap();
+        let scrolls_flat = &scrolls_cbor[2..]; // Skip 58ca CBOR header
+        std::fs::write("/tmp/scrolls_flat.hex", hex::encode(scrolls_flat)).unwrap();
+        eprintln!(
+            "Saved SCROLLS_V10 to /tmp/scrolls_flat.hex ({} bytes flat)",
+            scrolls_flat.len()
+        );
+
+        // Also save the base script (CHARMS_APP_PROXY_SCRIPT) before param application
+        let base_flat = &CHARMS_APP_PROXY_SCRIPT[3..]; // Skip 590244 CBOR header
+        std::fs::write("/tmp/base_script_flat.hex", hex::encode(base_flat)).unwrap();
+        eprintln!(
+            "Saved base script to /tmp/base_script_flat.hex ({} bytes flat)",
+            base_flat.len()
+        );
+    }
+
+    #[test]
+    fn test_script_hash_both_ways() {
+        use pallas_crypto::hash::Hasher;
+
+        let app = App {
+            tag: TOKEN,
+            identity: B32::from_str(
+                "3d7fe7e4cea6121947af73d70e5119bebd8aa5b7edfe74bfaf6e779a1847bd9b",
+            )
+            .unwrap(),
+            vk: B32::from_str("c975d4e0c292fb95efbda5c13312d6ac1d8b5aeff7f0f1e5578645a2da70ff5f")
+                .unwrap(),
+        };
+        let (policy_id, script) = policy_id(&app);
+
+        // Method 1: Hash flat bytes with 0x03 prefix (what cml-chain does)
+        let flat_bytes = &script.inner;
+        let mut data1 = vec![0x03u8]; // PlutusV3 namespace
+        data1.extend_from_slice(flat_bytes);
+        let hash1 = Hasher::<224>::hash(&data1);
+
+        // Method 2: Hash CBOR-wrapped bytes with 0x03 prefix
+        let cbor_bytes = script.to_cbor_bytes();
+        let mut data2 = vec![0x03u8]; // PlutusV3 namespace
+        data2.extend_from_slice(&cbor_bytes);
+        let hash2 = Hasher::<224>::hash(&data2);
+
+        eprintln!("Policy ID from cml-chain: {}", policy_id.to_hex());
+        eprintln!("Hash of flat bytes:       {}", hex::encode(hash1));
+        eprintln!("Hash of CBOR bytes:       {}", hex::encode(hash2));
+        eprintln!(
+            "Expected from cli:        b8f72e95dee612df98ac5a90b7604f7815c2af07a6db209a5c70abe4"
+        );
+        eprintln!("");
+        eprintln!("Flat bytes length: {}", flat_bytes.len());
+        eprintln!("CBOR bytes length: {}", cbor_bytes.len());
     }
 }

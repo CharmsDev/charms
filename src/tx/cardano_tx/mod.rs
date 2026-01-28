@@ -750,4 +750,135 @@ mod tests {
         assert_eq!(account.len(), 29);
         assert_eq!(account[0], 0xF1); // testnet script
     }
+
+    #[test]
+    fn test_analyze_saved_tx() {
+        // Load the saved transaction from the test file
+        let tx_json = std::fs::read_to_string("tmp/bro/tx.draft.json");
+        if tx_json.is_err() {
+            eprintln!("Skipping test - no saved transaction found");
+            return;
+        }
+        let tx_json = tx_json.unwrap();
+
+        // Parse JSON to get cborHex
+        let parsed: serde_json::Value = serde_json::from_str(&tx_json).unwrap();
+        let cbor_hex = parsed["cborHex"].as_str().unwrap();
+        let tx_bytes = hex::decode(cbor_hex).unwrap();
+
+        // Parse as pallas Tx
+        let tx: conway::Tx = minicbor::decode(&tx_bytes).unwrap();
+
+        eprintln!("\n=== Transaction Analysis ===");
+        eprintln!("Inputs: {}", tx.transaction_body.inputs.len());
+        eprintln!("Outputs: {}", tx.transaction_body.outputs.len());
+
+        if let Some(ref scripts) = tx.transaction_witness_set.plutus_v3_script {
+            eprintln!("\nPlutusV3 scripts: {} scripts", scripts.len());
+            for (i, script) in scripts.iter().enumerate() {
+                let script_bytes = &script.0;
+                eprintln!("  Script {}: {} bytes", i, script_bytes.len());
+                eprintln!(
+                    "    First 20 bytes: {}",
+                    hex::encode(&script_bytes[..20.min(script_bytes.len())])
+                );
+                if script_bytes.len() >= 3 {
+                    eprintln!(
+                        "    UPLC Version: {}.{}.{}",
+                        script_bytes[0], script_bytes[1], script_bytes[2]
+                    );
+                }
+
+                // Compute hash
+                let hash = {
+                    use pallas_crypto::hash::Hasher;
+                    let mut data = vec![0x03u8]; // PlutusV3 namespace
+                    data.extend_from_slice(script_bytes);
+                    Hasher::<224>::hash(&data)
+                };
+                eprintln!("    Script hash: {}", hex::encode(hash));
+            }
+        } else {
+            eprintln!("\nNo PlutusV3 scripts in witness set");
+        }
+
+        if let Some(ref redeemers) = tx.transaction_witness_set.redeemer {
+            match redeemers {
+                Redeemers::List(list) => {
+                    eprintln!("\nRedeemers (List): {} redeemers", list.len());
+                    for r in list.iter() {
+                        eprintln!("  Tag: {:?}, Index: {}", r.tag, r.index);
+                    }
+                }
+                Redeemers::Map(map) => {
+                    eprintln!("\nRedeemers (Map): {} redeemers", map.len());
+                }
+            }
+        }
+
+        // Check CBOR encoding
+        eprintln!("\n=== CBOR Encoding Check ===");
+
+        // Re-encode and compare
+        let mut re_encoded = Vec::new();
+        minicbor::encode(&tx, &mut re_encoded).unwrap();
+        eprintln!("Original tx bytes: {}", tx_bytes.len());
+        eprintln!("Re-encoded bytes: {}", re_encoded.len());
+        eprintln!("Match: {}", tx_bytes == re_encoded);
+
+        if tx_bytes != re_encoded {
+            eprintln!("Difference found:");
+            for (i, (a, b)) in tx_bytes.iter().zip(re_encoded.iter()).enumerate() {
+                if a != b {
+                    eprintln!(
+                        "  First diff at byte {}: original=0x{:02x}, re-encoded=0x{:02x}",
+                        i, a, b
+                    );
+                    eprintln!(
+                        "  Context: original[{}..{}] = {}",
+                        i.saturating_sub(5),
+                        (i + 10).min(tx_bytes.len()),
+                        hex::encode(&tx_bytes[i.saturating_sub(5)..(i + 10).min(tx_bytes.len())])
+                    );
+                    eprintln!(
+                        "  Context: re-encoded[{}..{}] = {}",
+                        i.saturating_sub(5),
+                        (i + 10).min(re_encoded.len()),
+                        hex::encode(
+                            &re_encoded[i.saturating_sub(5)..(i + 10).min(re_encoded.len())]
+                        )
+                    );
+                    break;
+                }
+            }
+            if tx_bytes.len() != re_encoded.len() {
+                eprintln!("  Length diff: {} vs {}", tx_bytes.len(), re_encoded.len());
+            }
+        }
+
+        // Encode witness set specifically
+        let mut ws_encoded = Vec::new();
+        minicbor::encode(&tx.transaction_witness_set, &mut ws_encoded).unwrap();
+        eprintln!("\nWitness set CBOR: {} bytes", ws_encoded.len());
+        eprintln!(
+            "  First 30 bytes: {}",
+            hex::encode(&ws_encoded[..30.min(ws_encoded.len())])
+        );
+
+        // Check if the script appears correctly in the witness set
+        if let Some(ref scripts) = tx.transaction_witness_set.plutus_v3_script {
+            // Search for where script bytes appear in the witness set encoding
+            let script_bytes = &scripts[0].0;
+            let script_start = hex::encode(&script_bytes[..10]);
+            let ws_hex = hex::encode(&ws_encoded);
+            if let Some(pos) = ws_hex.find(&script_start) {
+                eprintln!("\nScript found in witness set at hex position: {}", pos);
+                // Check what's before the script bytes
+                let before_start = pos.saturating_sub(20);
+                eprintln!("  Bytes before script: {}", &ws_hex[before_start..pos]);
+            }
+        }
+
+        eprintln!("\n=== End Analysis ===\n");
+    }
 }
