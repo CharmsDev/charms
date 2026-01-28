@@ -202,10 +202,13 @@ fn cml_to_pallas_multiasset(cml_ma: &MultiAsset) -> PallasMultiasset {
 
 /// Convert cml-chain PlutusV3Script to pallas PlutusScript<3>
 fn cml_to_pallas_script(cml_script: &CmlPlutusV3Script) -> PallasPlutusV3Script {
-    // cml_script.inner contains the raw script bytes
-    // Wrap in pallas PlutusScript
+    // cml_script.inner contains the flat-encoded script bytes
+    // The Cardano ledger expects scripts in the witness set to be CBOR-wrapped:
+    // script_hash = blake2b-224(0x03 || cbor_bytes)
+    // where cbor_bytes = CBOR-encode(flat_bytes) as a bytestring
+    // to_cbor_bytes() returns the CBOR-wrapped bytes
     PlutusScript(pallas_primitives::conway::Bytes::from(
-        cml_script.inner.clone(),
+        cml_script.to_cbor_bytes(),
     ))
 }
 
