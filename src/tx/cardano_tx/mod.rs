@@ -34,16 +34,8 @@ pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
 const V10_NFT_TX_HASH: [u8; 32] =
-    hex!("7643e7489208dc60e11b8866ec409398cd197c09eb3f6ab814756437d28258ac");
+    hex!("49d1f96be0002bcd0241917142aa6a58344923eda8ed54fb46da4ec5f4e3bff2");
 const V10_NFT_OUTPUT_INDEX: u64 = 0;
-
-const SCROLLS_V10_SCRIPT_HASH: [u8; 28] =
-    hex!("5f4f4ab1d5f62929f95367889c0206e08cbe1c596fd3d5940d7eccda");
-
-// The reference script from the on-chain V10 NFT UTXO (PlutusV3)
-const SCROLLS_V10_REFERENCE_SCRIPT: &[u8] = &hex!(
-    "58ca0101003229800aba2aba1aab9eaab9dab9a9bae0024888889660026464646644b30013370e900200144ca600200f375c60166018601860186018601860186018601860186018601860146ea8c02c01a6eb800976a300a3009375400715980099b874801800a2653001375a6016003300b300c0019bae0024889288c024dd5001c59007200e300637540026010004600e6010002600e00260086ea801e29344d95900213001225820aa75665a675fc5bcbaded7b8ae8d833b07d3559ab352db6c83efd361392840cb0001"
-);
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
@@ -695,13 +687,6 @@ mod tests {
         let params = load_protocol_params();
         assert!(params.tx_fee_per_byte > 0);
         assert!(params.utxo_cost_per_byte > 0);
-    }
-
-    #[test]
-    fn test_create_reward_account() {
-        let account = create_reward_account(&SCROLLS_V10_SCRIPT_HASH, 1);
-        assert_eq!(account.len(), 29);
-        assert_eq!(account[0], 0xF1); // testnet script
     }
 
     #[test]
