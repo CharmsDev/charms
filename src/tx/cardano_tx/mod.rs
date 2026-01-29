@@ -444,6 +444,14 @@ pub fn from_spell(
         pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
     );
 
+    // Require signature by VKey (32-byte public key, hashed to 28-byte key hash)
+    // TODO enforce in the Charms main (mint and spend) validator
+    let required_vkey: [u8; 32] =
+        hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a");
+    let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
+    dbg!(hex::encode(&vkey_hash));
+    staging_tx = staging_tx.disclosed_signer(vkey_hash);
+
     // Build the transaction with pallas-txbuilder
     let built_tx = staging_tx
         .build_conway_raw()
@@ -452,62 +460,6 @@ pub fn from_spell(
     // Decode the built transaction bytes back to conway::Tx so we can modify it
     let mut tx: conway::Tx = minicbor::decode(&built_tx.tx_bytes.0)
         .map_err(|e| anyhow!("failed to decode built tx: {}", e))?;
-
-    // Add withdrawal to transaction body (pallas-txbuilder doesn't support withdrawals)
-    let reward_account = create_reward_account(&SCROLLS_V10_SCRIPT_HASH, network_id);
-    let withdrawals = NonEmptyKeyValuePairs::Def(vec![(reward_account, 0u64)]);
-    tx.transaction_body.withdrawals = Some(withdrawals);
-
-    // Add withdrawal redeemer to witness set
-    let dummy_signature = vec![0u8; 64];
-    let withdrawal_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(dummy_signature));
-
-    // Get existing redeemers as Redeemer structs (legacy array format)
-    let mut all_redeemers: Vec<Redeemer> = match &tx.transaction_witness_set.redeemer {
-        Some(Redeemers::Map(map)) => map
-            .iter()
-            .map(|(k, v)| Redeemer {
-                tag: k.tag,
-                index: k.index,
-                data: v.data.clone(),
-                ex_units: v.ex_units,
-            })
-            .collect(),
-        Some(Redeemers::List(list)) => list.iter().cloned().collect(),
-        None => vec![],
-    };
-
-    // Add withdrawal redeemer
-    let withdrawal_redeemer = Redeemer {
-        tag: RedeemerTag::Reward,
-        index: 0,
-        data: withdrawal_redeemer_data,
-        ex_units: ExUnits {
-            mem: 400000,
-            steps: 300000000,
-        },
-    };
-    all_redeemers.push(withdrawal_redeemer);
-
-    // Sort redeemers by tag then index (required by Cardano)
-    all_redeemers.sort_by(|a, b| {
-        let tag_cmp = (a.tag as u8).cmp(&(b.tag as u8));
-        if tag_cmp != std::cmp::Ordering::Equal {
-            tag_cmp
-        } else {
-            a.index.cmp(&b.index)
-        }
-    });
-
-    // Use Redeemers::List (legacy array format) for compatibility with ICP canister
-    tx.transaction_witness_set.redeemer =
-        Some(Redeemers::List(MaybeIndefArray::Def(all_redeemers)));
-
-    // Recompute script_data_hash since we added a redeemer
-    tx.transaction_body.script_data_hash = Some(compute_script_data_hash(
-        &tx.transaction_witness_set,
-        &protocol_params,
-    )?);
 
     // Calculate total input value
     let total_input = funding_utxo_value
@@ -618,7 +570,8 @@ fn create_reward_account(
     script_hash: &[u8; 28],
     network_id: u8,
 ) -> pallas_primitives::conway::Bytes {
-    // Reward address format: header byte (0xF0 for mainnet script, 0xF1 for testnet script) + 28-byte script hash
+    // Reward address format: header byte (0xF0 for mainnet script, 0xF1 for testnet script) +
+    // 28-byte script hash
     let header = if network_id == 1 { 0xF1u8 } else { 0xF0u8 }; // script credential
     let mut account = Vec::with_capacity(29);
     account.push(header);
@@ -714,17 +667,10 @@ pub async fn make_transactions(
         None => tx,
     };
 
-    // Get the real Schnorr signature from ICP canister
-    // The canister replaces the dummy withdrawal redeemer with the real Schnorr signature
-    let mut signed_tx = call_scrolls_sign(&tx).await?;
-
-    // Recompute script_data_hash after ICP canister signing
-    // The canister modifies the withdrawal redeemer, so the hash must be recalculated
-    let protocol_params = load_protocol_params();
-    signed_tx.transaction_body.script_data_hash = Some(compute_script_data_hash(
-        &signed_tx.transaction_witness_set,
-        &protocol_params,
-    )?);
+    // Get the real Schnorr signature from ICP canister.
+    // The canister signs tx_body.hash() BEFORE replacing the redeemer, then replaces
+    // the dummy redeemer with the actual signature.
+    let signed_tx = call_scrolls_sign(&tx).await?;
 
     // Convert pallas Tx back to cml-chain Transaction for CardanoTx
     let cml_tx = pallas_to_cml_tx(&signed_tx)?;
@@ -883,5 +829,127 @@ mod tests {
         }
 
         eprintln!("\n=== End Analysis ===\n");
+    }
+
+    #[test]
+    fn test_script_data_hash_computation() {
+        // Load the saved transaction
+        let tx_json = std::fs::read_to_string("tmp/tx.draft.json");
+        if tx_json.is_err() {
+            eprintln!("Skipping test - no saved transaction found");
+            return;
+        }
+        let tx_json = tx_json.unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&tx_json).unwrap();
+        let cbor_hex = parsed["cborHex"].as_str().unwrap();
+        let tx_bytes = hex::decode(cbor_hex).unwrap();
+
+        let tx: conway::Tx = minicbor::decode(&tx_bytes).unwrap();
+
+        // Get script_data_hash from tx body
+        let body_script_data_hash = tx.transaction_body.script_data_hash;
+        eprintln!(
+            "\nscript_data_hash in tx body: {:?}",
+            body_script_data_hash.map(|h| hex::encode(h))
+        );
+
+        // Compute script_data_hash from witness set
+        let protocol_params = load_protocol_params();
+        let computed_hash =
+            compute_script_data_hash(&tx.transaction_witness_set, &protocol_params).unwrap();
+        eprintln!("Computed script_data_hash: {}", hex::encode(computed_hash));
+
+        // Check if they match
+        if let Some(body_hash) = body_script_data_hash {
+            if body_hash == computed_hash {
+                eprintln!("✓ script_data_hash MATCHES!");
+            } else {
+                eprintln!("✗ script_data_hash MISMATCH!");
+                eprintln!("  Body:     {}", hex::encode(body_hash));
+                eprintln!("  Computed: {}", hex::encode(computed_hash));
+            }
+        }
+
+        // Print redeemer details
+        if let Some(ref redeemers) = tx.transaction_witness_set.redeemer {
+            eprintln!("\nRedeemer details:");
+            match redeemers {
+                Redeemers::List(list) => {
+                    for (i, r) in list.iter().enumerate() {
+                        let mut data_cbor = Vec::new();
+                        minicbor::encode(&r.data, &mut data_cbor).unwrap();
+                        eprintln!(
+                            "  Redeemer {}: tag={:?}, index={}, data_len={}, data_hex={}",
+                            i,
+                            r.tag,
+                            r.index,
+                            data_cbor.len(),
+                            if data_cbor.len() <= 100 {
+                                hex::encode(&data_cbor)
+                            } else {
+                                format!("{}...", hex::encode(&data_cbor[..50]))
+                            }
+                        );
+                    }
+                }
+                Redeemers::Map(map) => {
+                    eprintln!("  Map format with {} entries", map.len());
+                }
+            }
+        }
+
+        // Compute tx body hash
+        let mut body_cbor = Vec::new();
+        minicbor::encode(&tx.transaction_body, &mut body_cbor).unwrap();
+        let tx_body_hash = pallas_crypto::hash::Hasher::<256>::hash(&body_cbor);
+        eprintln!("\nTx body hash (txid): {}", hex::encode(tx_body_hash));
+
+        // Now simulate what the canister saw:
+        // Replace the signature with dummy (64 bytes of zeros) and recompute
+        let mut tx_with_dummy = tx.clone();
+        if let Some(Redeemers::List(ref list)) = tx_with_dummy.transaction_witness_set.redeemer {
+            let mut new_redeemers: Vec<Redeemer> = Vec::new();
+            for r in list.iter() {
+                let mut new_r = r.clone();
+                if r.tag == RedeemerTag::Reward {
+                    new_r.data = PlutusData::BoundedBytes(BoundedBytes::from(vec![0u8; 64]));
+                }
+                new_redeemers.push(new_r);
+            }
+            tx_with_dummy.transaction_witness_set.redeemer =
+                Some(Redeemers::List(MaybeIndefArray::Def(new_redeemers)));
+        }
+
+        // Compute script_data_hash with dummy redeemer
+        let dummy_script_data_hash =
+            compute_script_data_hash(&tx_with_dummy.transaction_witness_set, &protocol_params)
+                .unwrap();
+        eprintln!(
+            "\nscript_data_hash with DUMMY redeemer: {}",
+            hex::encode(dummy_script_data_hash)
+        );
+
+        // Update body with dummy script_data_hash
+        tx_with_dummy.transaction_body.script_data_hash = Some(dummy_script_data_hash);
+
+        // Compute tx body hash (what the canister signed)
+        let mut dummy_body_cbor = Vec::new();
+        minicbor::encode(&tx_with_dummy.transaction_body, &mut dummy_body_cbor).unwrap();
+        let dummy_tx_body_hash = pallas_crypto::hash::Hasher::<256>::hash(&dummy_body_cbor);
+        eprintln!(
+            "Tx body hash with dummy (canister signed this): {}",
+            hex::encode(dummy_tx_body_hash)
+        );
+
+        eprintln!(
+            "\nThe signature verifies over: {}",
+            hex::encode(dummy_tx_body_hash)
+        );
+        eprintln!(
+            "But the on-chain script sees:  {}",
+            hex::encode(tx_body_hash)
+        );
+        eprintln!("These are DIFFERENT, so signature verification fails!");
     }
 }
