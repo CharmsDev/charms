@@ -399,28 +399,30 @@ pub fn from_spell(
         }
     }
 
-    // Add mint scripts and redeemers
-    // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
-    let redeemer_raw = create_mint_redeemer(spell.version);
-    let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
-    let mut redeemer_cbor = Vec::new();
-    minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
-        .expect("CBOR encoding should not fail");
+    // Add mint scripts and redeemers (only if there's actual minting/burning)
+    if !mint_map.is_empty() {
+        // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
+        let redeemer_raw = create_mint_redeemer(spell.version);
+        let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
+        let mut redeemer_cbor = Vec::new();
+        minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
+            .expect("CBOR encoding should not fail");
 
-    for (policy, script) in &all_scripts {
-        // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
-        let script_bytes = script.0.to_vec();
+        for (policy, script) in &all_scripts {
+            // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
+            let script_bytes = script.0.to_vec();
 
-        staging_tx = staging_tx
-            .script(ScriptKind::PlutusV3, script_bytes)
-            .add_mint_redeemer(
-                *policy,
-                redeemer_cbor.clone(),
-                Some(pallas_txbuilder::ExUnits {
-                    mem: 250000,
-                    steps: 150000000,
-                }),
-            );
+            staging_tx = staging_tx
+                .script(ScriptKind::PlutusV3, script_bytes)
+                .add_mint_redeemer(
+                    *policy,
+                    redeemer_cbor.clone(),
+                    Some(pallas_txbuilder::ExUnits {
+                        mem: 250000,
+                        steps: 150000000,
+                    }),
+                );
+        }
     }
 
     // Set network ID from change address
@@ -431,9 +433,11 @@ pub fn from_spell(
     };
     staging_tx = staging_tx.network_id(network_id);
 
-    // Set language view for PlutusV3 cost model
-    if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
-        staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
+    // Set language view for PlutusV3 cost model (only if there are scripts)
+    if !mint_map.is_empty() {
+        if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
+            staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
+        }
     }
 
     // Set fee (will be adjusted later)
