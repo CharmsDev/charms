@@ -39,6 +39,10 @@ const V10_NFT_OUTPUT_INDEX: u64 = 0;
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
+/// Script hash for the Scrolls withdraw validator (parameterized with the required vkey_hash)
+const SCROLLS_WITHDRAW_SCRIPT_HASH: [u8; 28] =
+    hex!("29764648940a3b7208bc99a246bc96a69817bea017560972432f076f");
+
 #[derive(Debug, Deserialize, SerdeSerialize)]
 #[serde(rename_all = "camelCase")]
 struct ProtocolParams {
@@ -456,6 +460,51 @@ pub fn from_spell(
     // Decode the built transaction bytes back to conway::Tx so we can modify it
     let mut tx: conway::Tx = minicbor::decode(&built_tx.tx_bytes.0)
         .map_err(|e| anyhow!("failed to decode built tx: {}", e))?;
+
+    // Add Scrolls withdraw-0 redeemer for the reference script
+    // The Scrolls validator just checks that the required vkey is in extra_signatories
+    let scrolls_reward_account = create_reward_account(&SCROLLS_WITHDRAW_SCRIPT_HASH, network_id);
+    tx.transaction_body.withdrawals = Some(
+        NonEmptyKeyValuePairs::from_vec(vec![(
+            scrolls_reward_account,
+            0, // withdraw 0 coins
+        )])
+        .expect("non-empty withdrawals"),
+    );
+
+    // Add the withdraw redeemer (empty byte array)
+    let withdraw_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(Vec::new()));
+    let withdraw_redeemer = Redeemer {
+        tag: RedeemerTag::Reward,
+        index: 0, // First (and only) withdrawal
+        data: withdraw_redeemer_data,
+        ex_units: ExUnits {
+            mem: 50000,
+            steps: 30000000,
+        },
+    };
+
+    // Add the withdraw redeemer to the existing redeemers
+    match &mut tx.transaction_witness_set.redeemer {
+        Some(Redeemers::List(MaybeIndefArray::Def(list))) => {
+            list.push(withdraw_redeemer);
+        }
+        Some(Redeemers::List(MaybeIndefArray::Indef(list))) => {
+            list.push(withdraw_redeemer);
+        }
+        None => {
+            tx.transaction_witness_set.redeemer =
+                Some(Redeemers::List(MaybeIndefArray::Def(vec![
+                    withdraw_redeemer,
+                ])));
+        }
+        _ => bail!("Unexpected redeemer format"),
+    }
+
+    // Recompute script_data_hash since we added a redeemer
+    let new_script_data_hash =
+        compute_script_data_hash(&tx.transaction_witness_set, &protocol_params)?;
+    tx.transaction_body.script_data_hash = Some(new_script_data_hash);
 
     // Calculate total input value
     let total_input = funding_utxo_value
