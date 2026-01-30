@@ -74,6 +74,7 @@ async fn call_scrolls_sign(tx: &conway::Tx) -> anyhow::Result<conway::Tx> {
     let mut tx_cbor = Vec::new();
     minicbor::encode(tx, &mut tx_cbor).expect("CBOR encoding should not fail");
     let tx_hex = hex::encode(&tx_cbor);
+    dbg!(&tx_hex);
 
     let canister_id =
         Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
