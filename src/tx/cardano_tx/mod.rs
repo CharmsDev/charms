@@ -2,7 +2,7 @@ use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
 use charms_client::{NormalizedSpell, cardano_tx::CardanoTx, charms, tx::Tx};
-use charms_data::TxId;
+use charms_data::{TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
     assets::MultiAsset, plutus::PlutusV3Script as CmlPlutusV3Script,
@@ -241,6 +241,35 @@ fn pallas_multi_asset(
     Ok((pallas_ma, pallas_scripts))
 }
 
+/// Computes the permutation mapping original spell input order to Cardano's sorted order.
+/// Returns a vector where `permutation[i]` = position of original spell input `i` in sorted tx.
+/// The funding UTXO is included in sorting but excluded from the output permutation.
+fn compute_input_permutation(spell_ins: &[UtxoId], funding_utxo: &UtxoId) -> Vec<u32> {
+    // Combine spell inputs and funding UTXO for sorting
+    // Original order: [spell_ins..., funding_utxo]
+    // Create (original_index, utxo_id) pairs and sort by Cardano's canonical order
+    let mut indexed: Vec<(usize, &UtxoId)> = spell_ins
+        .iter()
+        .chain(std::iter::once(funding_utxo))
+        .enumerate()
+        .collect();
+    indexed.sort_by_key(|(_, utxo)| {
+        // Cardano uses big-endian tx hash, Charms uses little-endian (Bitcoin style)
+        let mut tx_hash = utxo.0.0;
+        tx_hash.reverse();
+        (tx_hash, utxo.1)
+    });
+
+    // Build permutation for spell inputs only (exclude funding UTXO)
+    let mut permutation = vec![0u32; spell_ins.len()];
+    for (sorted_pos, (original_idx, _)) in indexed.iter().enumerate() {
+        if *original_idx < spell_ins.len() {
+            permutation[*original_idx] = sorted_pos as u32;
+        }
+    }
+    permutation
+}
+
 /// Build a transaction using pallas
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -473,8 +502,10 @@ pub fn from_spell(
         .expect("non-empty withdrawals"),
     );
 
-    // Add the withdraw redeemer (empty byte array)
-    let withdraw_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(Vec::new()));
+    // Compute input permutation and store in the withdraw redeemer
+    let permutation = compute_input_permutation(spell_ins, &funding_utxo);
+    let permutation_bytes = util::write(&permutation)?;
+    let withdraw_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(permutation_bytes));
     let withdraw_redeemer = Redeemer {
         tag: RedeemerTag::Reward,
         index: 0, // First (and only) withdrawal

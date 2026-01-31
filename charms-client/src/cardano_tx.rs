@@ -5,7 +5,7 @@ use cml_chain::{
     Deserialize, PolicyId, Serialize,
     assets::{AssetName, ClampedSub, MultiAsset},
     crypto::TransactionHash,
-    plutus::{PlutusData, PlutusV3Script},
+    plutus::{PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
 use cml_core::serialization::RawBytesEncoding;
@@ -94,7 +94,8 @@ impl EnchantedTx for CardanoTx {
             "spell tx outs mismatch"
         );
 
-        let spell = spell_with_committed_ins_and_coins(spell, self);
+        let permutation = extract_input_permutation(tx)?;
+        let spell = spell_with_committed_ins_and_coins(spell, self, &permutation);
 
         native_outs_comply(&spell, self)?;
 
@@ -264,11 +265,21 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
     Ok(())
 }
 
-fn spell_with_committed_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) -> NormalizedSpell {
+fn spell_with_committed_ins_and_coins(
+    spell: NormalizedSpell,
+    tx: &CardanoTx,
+    permutation: &[u32],
+) -> NormalizedSpell {
     let tx_ins: Vec<UtxoId> = tx.spell_ins();
 
+    // Restore the original order using permutation
+    let original_ins: Vec<UtxoId> = permutation
+        .iter()
+        .map(|&pos| tx_ins[pos as usize].clone())
+        .collect();
+
     let mut spell = spell;
-    spell.tx.ins = Some(tx_ins);
+    spell.tx.ins = Some(original_ins);
 
     if spell.version > V7 {
         let mut coins = tx.all_coin_outs();
@@ -277,6 +288,47 @@ fn spell_with_committed_ins_and_coins(spell: NormalizedSpell, tx: &CardanoTx) ->
     }
 
     spell
+}
+
+/// Extracts the input permutation from the withdraw-0 redeemer data.
+fn extract_input_permutation(tx: &Transaction) -> anyhow::Result<Vec<u32>> {
+    use cml_chain::plutus::Redeemers;
+
+    let redeemers = tx
+        .witness_set
+        .redeemers
+        .as_ref()
+        .ok_or_else(|| anyhow!("Transaction has no redeemers"))?;
+
+    match redeemers {
+        Redeemers::ArrLegacyRedeemer {
+            arr_legacy_redeemer,
+            ..
+        } => {
+            for redeemer in arr_legacy_redeemer {
+                if redeemer.tag == RedeemerTag::Reward {
+                    if let PlutusData::Bytes { bytes, .. } = &redeemer.data {
+                        return util::read(bytes.as_slice())
+                            .map_err(|e| anyhow!("Failed to decode input permutation: {}", e));
+                    }
+                }
+            }
+        }
+        Redeemers::MapRedeemerKeyToRedeemerVal {
+            map_redeemer_key_to_redeemer_val,
+            ..
+        } => {
+            for (key, val) in map_redeemer_key_to_redeemer_val.iter() {
+                if key.tag == RedeemerTag::Reward {
+                    if let PlutusData::Bytes { bytes, .. } = &val.data {
+                        return util::read(bytes.as_slice())
+                            .map_err(|e| anyhow!("Failed to decode input permutation: {}", e));
+                    }
+                }
+            }
+        }
+    }
+    bail!("Transaction has no withdraw redeemer with input permutation")
 }
 
 pub fn tx_id(transaction_hash: TransactionHash) -> TxId {
