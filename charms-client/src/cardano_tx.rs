@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, V7, V10, charms, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, charms, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
