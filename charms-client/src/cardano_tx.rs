@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 serde_with::serde_conv!(
     TransactionHex,
     Transaction,
-    |tx: &Transaction| hex::encode(tx.to_canonical_cbor_bytes()),
+    |tx: &Transaction| hex::encode(tx.to_cbor_bytes()),
     |s: String| Transaction::from_cbor_bytes(&hex::decode(s.as_bytes())?)
         .map_err(|e| anyhow!("{}", e))
 );
@@ -30,7 +30,7 @@ impl PartialEq for CardanoTx {
         if std::ptr::eq(self, other) {
             return true;
         }
-        self.0.to_canonical_cbor_bytes() == other.0.to_canonical_cbor_bytes()
+        self.0.to_cbor_bytes() == other.0.to_cbor_bytes()
     }
 }
 
@@ -118,7 +118,7 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn hex(&self) -> String {
-        hex::encode(self.0.to_canonical_cbor_bytes())
+        hex::encode(self.0.to_cbor_bytes())
     }
 
     fn spell_ins(&self) -> Vec<UtxoId> {
