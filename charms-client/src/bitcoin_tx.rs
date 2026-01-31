@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, V7, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V7, V10, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use bitcoin::{
     CompactTarget, MerkleBlock, Target, Transaction, TxIn, TxOut, Txid,
@@ -121,10 +121,7 @@ impl EnchantedTx for BitcoinTx {
     fn spell_ins(&self) -> Vec<UtxoId> {
         let tx = self.inner();
 
-        // Always exclude the last input (funding UTXO) from spell inputs
-        let inputs = &tx.input[..tx.input.len().saturating_sub(1)];
-
-        inputs
+        tx.input
             .iter()
             .map(|tx_in| {
                 let out_point = tx_in.previous_output;
@@ -197,7 +194,12 @@ pub(crate) fn spell_with_committed_ins_and_coins(
     tx: &BitcoinTx,
     mut spell: NormalizedSpell,
 ) -> NormalizedSpell {
-    let tx_ins = tx.spell_ins();
+    let mut tx_ins = tx.spell_ins();
+
+    // For V9 and earlier, exclude the last input (funding UTXO)
+    if spell.version < V10 {
+        tx_ins.pop();
+    }
 
     spell.tx.ins = Some(tx_ins);
     if spell.version > V7 {

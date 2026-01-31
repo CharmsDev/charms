@@ -60,8 +60,6 @@ impl Prove for SpellCli {
             spell,
             prev_txs,
             app_bins,
-            funding_utxo,
-            funding_utxo_value,
             change_address,
             fee_rate,
             chain,
@@ -71,8 +69,6 @@ impl Prove for SpellCli {
 
         let spell_prover = ProveSpellTxImpl::new(mock);
 
-        // Parse funding UTXO early: to fail fast
-        let funding_utxo = UtxoId::from_str(&funding_utxo)?;
         let collateral_utxo = collateral_utxo
             .map(|utxo| UtxoId::from_str(&utxo))
             .transpose()?;
@@ -94,8 +90,6 @@ impl Prove for SpellCli {
             tx_ins_beamed_source_utxos,
             binaries,
             prev_txs,
-            funding_utxo,
-            funding_utxo_value,
             change_address,
             fee_rate,
             chain,

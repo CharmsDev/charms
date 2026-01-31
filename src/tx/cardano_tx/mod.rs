@@ -243,16 +243,9 @@ fn pallas_multi_asset(
 
 /// Computes the permutation mapping original spell input order to Cardano's sorted order.
 /// Returns a vector where `permutation[i]` = position of original spell input `i` in sorted tx.
-/// The funding UTXO is included in sorting but excluded from the output permutation.
-fn compute_input_permutation(spell_ins: &[UtxoId], funding_utxo: &UtxoId) -> Vec<u32> {
-    // Combine spell inputs and funding UTXO for sorting
-    // Original order: [spell_ins..., funding_utxo]
+fn compute_input_permutation(spell_ins: &[UtxoId]) -> Vec<u32> {
     // Create (original_index, utxo_id) pairs and sort by Cardano's canonical order
-    let mut indexed: Vec<(usize, &UtxoId)> = spell_ins
-        .iter()
-        .chain(std::iter::once(funding_utxo))
-        .enumerate()
-        .collect();
+    let mut indexed: Vec<(usize, &UtxoId)> = spell_ins.iter().enumerate().collect();
     indexed.sort_by_key(|(_, utxo)| {
         // Cardano uses big-endian tx hash, Charms uses little-endian (Bitcoin style)
         let mut tx_hash = utxo.0.0;
@@ -260,12 +253,10 @@ fn compute_input_permutation(spell_ins: &[UtxoId], funding_utxo: &UtxoId) -> Vec
         (tx_hash, utxo.1)
     });
 
-    // Build permutation for spell inputs only (exclude funding UTXO)
+    // Build permutation mapping original index to sorted position
     let mut permutation = vec![0u32; spell_ins.len()];
     for (sorted_pos, (original_idx, _)) in indexed.iter().enumerate() {
-        if *original_idx < spell_ins.len() {
-            permutation[*original_idx] = sorted_pos as u32;
-        }
+        permutation[*original_idx] = sorted_pos as u32;
     }
     permutation
 }
@@ -276,8 +267,6 @@ pub fn from_spell(
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     change_address: &[u8],
     spell_data: &[u8],
-    funding_utxo: UtxoId,
-    funding_utxo_value: u64,
     collateral_utxo: Option<UtxoId>,
 ) -> anyhow::Result<conway::Tx> {
     let protocol_params = load_protocol_params();
@@ -334,9 +323,6 @@ pub fn from_spell(
     for utxo_id in spell_ins {
         staging_tx = staging_tx.input(txbuilder_input(utxo_id));
     }
-
-    // Add funding input
-    staging_tx = staging_tx.input(txbuilder_input(&funding_utxo));
 
     // Add spell outputs
     for (spell_out, coin) in spell_outs.iter().zip(coin_outs.iter()) {
@@ -503,7 +489,7 @@ pub fn from_spell(
     );
 
     // Compute input permutation and store in the withdraw redeemer
-    let permutation = compute_input_permutation(spell_ins, &funding_utxo);
+    let permutation = compute_input_permutation(spell_ins);
     let permutation_bytes = util::write(&permutation)?;
     let withdraw_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(permutation_bytes));
     let withdraw_redeemer = Redeemer {
@@ -538,16 +524,15 @@ pub fn from_spell(
         compute_script_data_hash(&tx.transaction_witness_set, &protocol_params)?;
     tx.transaction_body.script_data_hash = Some(new_script_data_hash);
 
-    // Calculate total input value
-    let total_input = funding_utxo_value
-        + spell_ins
-            .iter()
-            .map(|id| {
-                get_prev_output(prev_txs_by_id, id)
-                    .map(|o| get_output_coin(&o))
-                    .unwrap_or(0)
-            })
-            .sum::<u64>();
+    // Calculate total input value from spell inputs
+    let total_input: u64 = spell_ins
+        .iter()
+        .map(|id| {
+            get_prev_output(prev_txs_by_id, id)
+                .map(|o| get_output_coin(&o))
+                .unwrap_or(0)
+        })
+        .sum();
 
     // Calculate fee
     // The base fee formula is: txFeeFixed + txFeePerByte * tx_size
@@ -701,8 +686,6 @@ fn compute_script_data_hash(
 
 pub async fn make_transactions(
     spell: &NormalizedSpell,
-    funding_utxo: UtxoId,
-    funding_utxo_value: u64,
     change_address: &String,
     spell_data: &[u8],
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
@@ -730,8 +713,6 @@ pub async fn make_transactions(
         prev_txs_by_id,
         &change_address_bytes,
         spell_data,
-        funding_utxo,
-        funding_utxo_value,
         collateral_utxo,
     )?;
 

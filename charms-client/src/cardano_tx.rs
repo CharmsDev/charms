@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, V7, charms, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V7, V10, charms, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
@@ -122,7 +122,9 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn spell_ins(&self) -> Vec<UtxoId> {
-        self.0.body.inputs[..self.0.body.inputs.len() - 1] // exclude the funding input
+        self.0
+            .body
+            .inputs
             .iter()
             .map(|tx_in| {
                 let tx_id = tx_id(tx_in.transaction_id);
@@ -281,11 +283,10 @@ fn spell_with_committed_ins_and_coins(
     let mut spell = spell;
     spell.tx.ins = Some(original_ins);
 
-    if spell.version > V7 {
-        let mut coins = tx.all_coin_outs();
-        coins.truncate(spell.tx.outs.len());
-        spell.tx.coins = Some(coins);
-    }
+    // this code is coming online with V10, so `spell.version > V7` holds
+    let mut coins = tx.all_coin_outs();
+    coins.truncate(spell.tx.outs.len());
+    spell.tx.coins = Some(coins);
 
     spell
 }

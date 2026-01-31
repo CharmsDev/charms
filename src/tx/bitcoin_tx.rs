@@ -17,10 +17,8 @@ const DUST_LIMIT: Amount = Amount::from_sat(300);
 /// Adds spell data to a Bitcoin transaction via OP_RETURN output.
 ///
 /// # Arguments
-/// * `tx` - Base (unsigned) transaction to add the spell data to
+/// * `tx` - Base (unsigned) transaction to add the spell data to (includes all spell inputs)
 /// * `spell_data` - Raw byte data of the spell to commit
-/// * `funding_out_point` - UTXO to fund the transaction
-/// * `funding_output_value` - Value of the funding UTXO in sats
 /// * `change_pubkey` - Script pubkey for change output
 /// * `fee_rate` - Fee rate to calculate transaction fees
 /// * `prev_txs` - Map of previous transactions referenced by the spell
@@ -32,8 +30,6 @@ const DUST_LIMIT: Amount = Amount::from_sat(300);
 pub fn add_spell(
     tx: Transaction,
     spell_data: &[u8],
-    funding_out_point: OutPoint,
-    funding_output_value: Amount,
     change_pubkey: ScriptBuf,
     fee_rate: FeeRate,
     prev_txs: &BTreeMap<TxId, Tx>,
@@ -41,14 +37,6 @@ pub fn add_spell(
     charms_fee: Amount,
 ) -> anyhow::Result<Vec<Transaction>> {
     let mut tx = tx;
-
-    // Add funding input
-    tx.input.push(TxIn {
-        previous_output: funding_out_point,
-        script_sig: Default::default(),
-        sequence: Default::default(),
-        witness: Default::default(),
-    });
 
     // Add charms fee output if needed
     if let Some(charms_fee_pubkey) = charms_fee_pubkey {
@@ -86,8 +74,8 @@ pub fn add_spell(
         script_pubkey: op_return_script,
     });
 
-    // Calculate change amount
-    let change_amount = compute_change_amount(fee_rate, &tx, prev_txs, funding_output_value);
+    // Calculate change amount from spell inputs
+    let change_amount = compute_change_amount(fee_rate, &tx, prev_txs);
 
     // Add change output if above dust limit
     if change_amount >= DUST_LIMIT {
@@ -101,11 +89,11 @@ pub fn add_spell(
 }
 
 /// Calculate change amount for the transaction with OP_RETURN output.
+/// All inputs are spell inputs - fees come from the difference between inputs and outputs.
 fn compute_change_amount(
     fee_rate: FeeRate,
     tx: &Transaction,
     prev_txs: &BTreeMap<TxId, Tx>,
-    funding_output_value: Amount,
 ) -> Amount {
     // OP_RETURN output is already included in tx.output
     let change_output_weight = Weight::from_wu(172);
@@ -115,15 +103,8 @@ fn compute_change_amount(
 
     let fee = fee_rate.fee_wu(total_tx_weight).unwrap();
 
-    // Calculate total input amount: sum of spell inputs (excluding last funding input) + funding
-    let spell_inputs_amount = if tx.input.len() > 1 {
-        let mut tx_without_funding = tx.clone();
-        tx_without_funding.input.pop(); // Remove funding input
-        tx_total_amount_in(prev_txs, &tx_without_funding)
-    } else {
-        Amount::ZERO
-    };
-    let tx_amount_in = spell_inputs_amount + funding_output_value;
+    // All inputs are spell inputs
+    let tx_amount_in = tx_total_amount_in(prev_txs, tx);
     let tx_amount_out = tx.output.iter().map(|tx_out| tx_out.value).sum::<Amount>();
 
     tx_amount_in - tx_amount_out - fee
@@ -191,8 +172,6 @@ pub fn from_spell(spell: &NormalizedSpell) -> anyhow::Result<BitcoinTx> {
 
 pub fn make_transactions(
     spell: &NormalizedSpell,
-    funding_utxo: UtxoId,
-    funding_utxo_value: u64,
     change_address: &String,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     spell_data: &[u8],
@@ -208,8 +187,6 @@ pub fn make_transactions(
         a if a.is_valid_for_network(Network::Regtest) => Network::Regtest.to_core_arg(),
         _ => bail!("Invalid change address: {:?}", change_address),
     };
-
-    let funding_utxo = OutPoint::new(Txid::from_byte_array(funding_utxo.0.0), funding_utxo.1);
 
     // Parse change address into ScriptPubkey
     let change_address_checked = change_address.assume_checked();
@@ -240,8 +217,6 @@ pub fn make_transactions(
     let transactions = add_spell(
         tx,
         spell_data,
-        funding_utxo,
-        Amount::from_sat(funding_utxo_value),
         change_pubkey,
         fee_rate,
         &prev_txs_by_id,
@@ -257,35 +232,57 @@ pub fn make_transactions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::{ScriptBuf, Txid, absolute::LockTime, transaction::Version};
+    use bitcoin::{
+        OutPoint, ScriptBuf, TxIn, Txid, absolute::LockTime, hashes::Hash, transaction::Version,
+    };
     use std::collections::BTreeMap;
 
     #[test]
     fn test_add_spell_op_return() {
-        let dummy_tx = Transaction {
+        // Create a previous transaction with an output that provides funding
+        let prev_txid_bytes = [1u8; 32];
+        let prev_txid = Txid::from_byte_array(prev_txid_bytes);
+        let prev_tx = Transaction {
             version: Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(100_000), // 100k sats for fees
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+
+        let mut prev_txs: BTreeMap<TxId, Tx> = BTreeMap::new();
+        prev_txs.insert(
+            TxId(prev_txid_bytes),
+            Tx::Bitcoin(BitcoinTx::Simple(prev_tx)),
+        );
+
+        // Create the spell transaction with one input referencing the prev tx
+        let dummy_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: prev_txid,
+                    vout: 0,
+                },
+                script_sig: Default::default(),
+                sequence: Default::default(),
+                witness: Default::default(),
+            }],
             output: vec![],
         };
 
         let spell_data = b"spell";
-        let funding_out_point = OutPoint {
-            txid: Txid::all_zeros(),
-            vout: 0,
-        };
-        let funding_value = Amount::from_sat(10000);
         let change_pubkey = ScriptBuf::new();
         let fee_rate = FeeRate::from_sat_per_vb(1).unwrap();
-        let prev_txs = BTreeMap::new();
         let charms_fee_pubkey = None;
         let charms_fee = Amount::ZERO;
 
         let txs = add_spell(
             dummy_tx,
             spell_data,
-            funding_out_point,
-            funding_value,
             change_pubkey,
             fee_rate,
             &prev_txs,

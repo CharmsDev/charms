@@ -107,16 +107,6 @@ pub struct SpellProveParams {
     #[arg(long)]
     app_bins: Vec<PathBuf>,
 
-    /// UTXO ID of the funding transaction output (txid:vout).
-    /// This UTXO will be spent to pay the fees (at the `fee-rate` per vB) for the commit and spell
-    /// transactions. The rest of the value will be returned to the `change-address`.
-    #[arg(long, alias = "funding-utxo-id")]
-    funding_utxo: String,
-
-    /// Value of the funding UTXO in sats (for Bitcoin) or lovelace (for Cardano).
-    #[arg(long)]
-    funding_utxo_value: u64,
-
     /// Address to send the change to.
     #[arg(long)]
     change_address: String,

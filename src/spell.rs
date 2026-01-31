@@ -705,8 +705,6 @@ pub struct ProveRequest {
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
     pub prev_txs: Vec<Tx>,
-    pub funding_utxo: UtxoId,
-    pub funding_utxo_value: u64,
     pub change_address: String,
     pub fee_rate: f64,
     pub chain: Chain,
@@ -754,8 +752,6 @@ impl ProveSpellTxImpl {
             tx_ins_beamed_source_utxos,
             binaries,
             prev_txs,
-            funding_utxo,
-            funding_utxo_value,
             change_address,
             fee_rate,
             chain,
@@ -793,8 +789,6 @@ impl ProveSpellTxImpl {
             Chain::Bitcoin => {
                 let txs = bitcoin_tx::make_transactions(
                     &norm_spell,
-                    funding_utxo,
-                    funding_utxo_value,
                     &change_address,
                     &prev_txs_by_id,
                     &spell_data,
@@ -807,8 +801,6 @@ impl ProveSpellTxImpl {
             Chain::Cardano => {
                 let txs = cardano_tx::make_transactions(
                     &norm_spell,
-                    funding_utxo,
-                    funding_utxo_value,
                     &change_address,
                     &spell_data,
                     &prev_txs_by_id,
@@ -906,19 +898,13 @@ impl ProveSpellTx for ProveSpellTxImpl {
         let (norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
-            let request_key = prove_request.funding_utxo.to_string();
-            let lock_key = format!("LOCK_{}", request_key.as_str());
             let committed_data_hash = committed_data_hash(&norm_spell)?;
+            let request_key = hex::encode(committed_data_hash);
+            let lock_key = format!("LOCK_{}", request_key.as_str());
 
             let mut con = cache_client.get_multiplexed_async_connection().await?;
 
             match con.get(request_key.as_str()).await? {
-                Some(ProofState::Done { request_data, .. })
-                | Some(ProofState::Processing { request_data, .. })
-                    if request_data.committed_data_hash != committed_data_hash =>
-                {
-                    bail!("duplicate funding UTXO spend with different spell");
-                }
                 Some(ProofState::Done { result, .. }) => Ok(result),
                 _ => {
                     const LOCK_TTL: Duration = Duration::from_secs(5);
@@ -929,12 +915,6 @@ impl ProveSpellTx for ProveSpellTxImpl {
                     let result: Vec<Tx> = lock_manager
                         .using(lock_key.as_bytes(), LOCK_TTL, || async move {
                             match con.get(request_key.as_str()).await? {
-                                Some(ProofState::Done { request_data, .. })
-                                | Some(ProofState::Processing { request_data, .. })
-                                    if request_data.committed_data_hash != committed_data_hash =>
-                                {
-                                    bail!("duplicate funding UTXO spend with different spell");
-                                }
                                 Some(ProofState::Done { result, .. }) => {
                                     return Ok(result);
                                 }
@@ -1241,8 +1221,6 @@ impl ProveSpellTxImpl {
                     .sum();
                 let total_sats_out: u64 = coin_outs.iter().map(|o| o.amount).sum();
 
-                let funding_utxo_sats = prove_request.funding_utxo_value;
-
                 let bitcoin_tx = from_spell(&norm_spell)?;
                 let tx_size = bitcoin_tx.inner().vsize();
                 let mut norm_spell_for_size = norm_spell.clone();
@@ -1258,16 +1236,14 @@ impl ProveSpellTxImpl {
 
                 tracing::info!(
                     total_sats_in,
-                    funding_utxo_sats,
                     total_sats_out,
                     charms_fee,
                     estimated_bitcoin_fee
                 );
 
                 ensure!(
-                    total_sats_in + funding_utxo_sats
-                        > total_sats_out + charms_fee + estimated_bitcoin_fee,
-                    "total inputs value must be greater than total outputs value plus fees"
+                    total_sats_in > total_sats_out + charms_fee + estimated_bitcoin_fee,
+                    "spell inputs must have sufficient value to cover outputs and fees"
                 );
             }
             Chain::Cardano => {
