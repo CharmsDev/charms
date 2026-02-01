@@ -36,7 +36,6 @@ mod tests {
         println!("{}", serde_json::to_string_pretty(&norm_spell).unwrap());
     }
 
-    #[ignore] // TODO Requires Cardano transaction with a correct spell in test data
     #[test]
     fn test_extract_and_verify_spell_cardano() {
         let tx_json = include_str!("../test/cardano-tx.json");
