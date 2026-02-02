@@ -9,6 +9,6 @@ license.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-charms-data = { path = "../charms-data", version = "0.12.0" }
+charms-data = { path = "../charms-data", version = "11.0.0-dev" }
 sha2 = { workspace = true }
 wasmi = { version = "1.0.8", default-features = false, features = ["std", "prefer-btree-collections"] }

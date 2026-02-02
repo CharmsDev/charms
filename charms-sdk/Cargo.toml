@@ -8,4 +8,4 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-charms-data = { path = "../charms-data", version = "0.12.0" }
+charms-data = { path = "../charms-data", version = "11.0.0-dev" }

@@ -517,7 +517,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "charms-app-runner"
-version = "0.12.0"
+version = "11.0.0-dev"
 dependencies = [
  "anyhow",
  "charms-data",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "charms-client"
-version = "0.12.0"
+version = "11.0.0-dev"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "charms-data"
-version = "0.12.0"
+version = "11.0.0-dev"
 dependencies = [
  "anyhow",
  "ark-std",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "charms-spell-checker"
-version = "0.12.0"
+version = "11.0.0-dev"
 dependencies = [
  "charms-client",
  "charms-data",
