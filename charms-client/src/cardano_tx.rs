@@ -4,7 +4,7 @@ use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, uti
 use cml_chain::{
     Deserialize, PolicyId, Serialize,
     assets::{AssetName, ClampedSub, MultiAsset},
-    crypto::TransactionHash,
+    crypto::{Ed25519Signature, TransactionHash, Vkey},
     plutus::{PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
@@ -12,6 +12,10 @@ use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
 use serde_with::serde_as;
 use std::collections::BTreeMap;
+
+/// Ed25519 public key used by Scrolls to certify Cardano transaction finality.
+const FINALITY_VKEY: [u8; 32] =
+    hex!("fa868875d46c5dd4da079f4e17e5f94d89b7b64f748275b7810f5ec9d9011bb9");
 
 serde_with::serde_conv!(
     TransactionHex,
@@ -21,25 +25,49 @@ serde_with::serde_conv!(
         .map_err(|e| anyhow!("{}", e))
 );
 
+serde_with::serde_conv!(
+    SignatureHex,
+    Ed25519Signature,
+    |sig: &Ed25519Signature| sig.to_hex(),
+    |s: String| Ed25519Signature::from_hex(&s).map_err(|e| anyhow!("{}", e))
+);
+
 #[serde_as]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-pub struct CardanoTx(#[serde_as(as = "TransactionHex")] pub Transaction);
+#[serde(untagged)]
+pub enum CardanoTx {
+    Simple(#[serde_as(as = "TransactionHex")] Transaction),
+    WithFinalityProof {
+        #[serde_as(as = "TransactionHex")]
+        tx: Transaction,
+
+        #[serde_as(as = "SignatureHex")]
+        signature: Ed25519Signature,
+    },
+}
 
 impl PartialEq for CardanoTx {
     fn eq(&self, other: &Self) -> bool {
         if std::ptr::eq(self, other) {
             return true;
         }
-        self.0.to_cbor_bytes() == other.0.to_cbor_bytes()
+        self.inner().to_cbor_bytes() == other.inner().to_cbor_bytes()
     }
 }
 
 impl CardanoTx {
     pub fn from_hex(hex: &str) -> anyhow::Result<Self> {
-        Ok(Self(
+        Ok(Self::Simple(
             Transaction::from_cbor_bytes(&hex::decode(hex.as_bytes())?)
                 .map_err(|e| anyhow!("{}", e))?,
         ))
+    }
+
+    pub fn inner(&self) -> &Transaction {
+        match self {
+            CardanoTx::Simple(tx) => tx,
+            CardanoTx::WithFinalityProof { tx, .. } => tx,
+        }
     }
 }
 
@@ -49,7 +77,7 @@ impl EnchantedTx for CardanoTx {
         spell_vk: &str,
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell> {
-        let tx = &self.0;
+        let tx = self.inner();
 
         let inputs = &tx.body.inputs;
         ensure!(inputs.len() > 0, "Transaction has no inputs");
@@ -109,20 +137,20 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn tx_outs_len(&self) -> usize {
-        self.0.body.outputs.len()
+        self.inner().body.outputs.len()
     }
 
     fn tx_id(&self) -> TxId {
-        let transaction_hash = self.0.body.hash();
+        let transaction_hash = self.inner().body.hash();
         tx_id(transaction_hash)
     }
 
     fn hex(&self) -> String {
-        hex::encode(self.0.to_cbor_bytes())
+        hex::encode(self.inner().to_cbor_bytes())
     }
 
     fn spell_ins(&self) -> Vec<UtxoId> {
-        self.0
+        self.inner()
             .body
             .inputs
             .iter()
@@ -136,7 +164,9 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn all_coin_outs(&self) -> Vec<NativeOutput> {
-        (self.0.body.outputs)
+        self.inner()
+            .body
+            .outputs
             .iter()
             .map(|tx_out| NativeOutput {
                 amount: tx_out.amount().coin.into(),
@@ -146,8 +176,24 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn proven_final(&self) -> bool {
-        false
+        match self {
+            CardanoTx::Simple(_) => false,
+            CardanoTx::WithFinalityProof { tx, signature } => {
+                verify_finality_signature(tx, signature).is_ok()
+            }
+        }
     }
+}
+
+fn verify_finality_signature(tx: &Transaction, signature: &Ed25519Signature) -> anyhow::Result<()> {
+    let vkey =
+        Vkey::from_raw_bytes(&FINALITY_VKEY).map_err(|e| anyhow!("invalid finality vkey: {e}"))?;
+    let tx_body_hash = tx.body.hash();
+    ensure!(
+        vkey.verify(tx_body_hash.to_raw_bytes(), signature),
+        "finality signature verification failed"
+    );
+    Ok(())
 }
 
 /// This script is parameterized with app VK for every token, NFT or spending contract.
@@ -226,7 +272,7 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         .tx
         .outs
         .iter()
-        .zip(tx.0.body.outputs.iter())
+        .zip(tx.inner().body.outputs.iter())
         .enumerate()
     {
         let present_all = &native_out.amount().multiasset;
