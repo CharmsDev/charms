@@ -121,7 +121,7 @@ fn txbuilder_input(utxo_id: &UtxoId) -> Input {
 
 /// Convert cml-chain CardanoTx to pallas Tx via CBOR
 fn cml_to_pallas_tx(cardano_tx: &CardanoTx) -> anyhow::Result<conway::Tx> {
-    let cbor_bytes = cardano_tx.0.to_cbor_bytes();
+    let cbor_bytes = cardano_tx.inner().to_cbor_bytes();
     let pallas_tx: conway::Tx = minicbor::decode(&cbor_bytes)
         .map_err(|e| anyhow!("failed to decode as pallas tx: {}", e))?;
     Ok(pallas_tx)
@@ -696,10 +696,10 @@ pub async fn make_transactions(
 ) -> Result<Vec<Tx>, Error> {
     let underlying_tx = underlying_tx
         .map(|tx| {
-            let Tx::Cardano(CardanoTx(tx)) = tx else {
+            let Tx::Cardano(cardano_tx) = tx else {
                 bail!("not a Cardano transaction");
             };
-            Ok(tx)
+            Ok(cardano_tx.inner().clone())
         })
         .transpose()?;
 
@@ -719,7 +719,7 @@ pub async fn make_transactions(
     let tx = match underlying_tx {
         Some(u_tx) => {
             // Convert cml-chain Transaction to pallas Tx for combining
-            let pallas_u_tx = cml_to_pallas_tx(&CardanoTx(u_tx))?;
+            let pallas_u_tx = cml_to_pallas_tx(&CardanoTx::Simple(u_tx))?;
             combine(pallas_u_tx, tx)
         }
         None => tx,
@@ -733,7 +733,7 @@ pub async fn make_transactions(
     // Convert pallas Tx back to cml-chain Transaction for CardanoTx
     let cml_tx = pallas_to_cml_tx(&signed_tx)?;
 
-    Ok(vec![Tx::Cardano(CardanoTx(cml_tx))])
+    Ok(vec![Tx::Cardano(CardanoTx::Simple(cml_tx))])
 }
 
 fn combine(_base_tx: conway::Tx, _tx: conway::Tx) -> conway::Tx {
