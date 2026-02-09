@@ -248,9 +248,13 @@ pub fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
 
 pub fn multi_asset(
     charms: &Charms,
+    beamed_out: bool,
 ) -> anyhow::Result<(MultiAsset, BTreeMap<PolicyId, PlutusV3Script>)> {
     let mut multi_asset = MultiAsset::new();
     let mut scripts = BTreeMap::new();
+    if beamed_out {
+        return Ok((multi_asset, scripts));
+    }
     for (app, data) in charms {
         if app.tag != TOKEN && app.tag != NFT {
             continue; // TODO figure what to do with other tags
@@ -275,8 +279,12 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         .zip(tx.inner().body.outputs.iter())
         .enumerate()
     {
+        let is_beamed_out = (spell.tx.beamed_outs)
+            .as_ref()
+            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+
         let present_all = &native_out.amount().multiasset;
-        let (expected_charms, _) = multi_asset(&charms(spell, spell_out))?;
+        let (expected_charms, _) = multi_asset(&charms(spell, spell_out), is_beamed_out)?;
 
         let missing_charms = expected_charms.clamped_sub(&present_all);
         ensure!(

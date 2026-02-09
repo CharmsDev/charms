@@ -221,11 +221,12 @@ fn cml_to_pallas_policy_id(cml_policy: &CmlPolicyId) -> PallasPolicyId {
 /// Get multi-asset and scripts for charms using cml-chain's multi_asset, converting to pallas types
 fn pallas_multi_asset(
     charms: &charms_data::Charms,
+    beamed_out: bool,
 ) -> anyhow::Result<(
     PallasMultiasset,
     BTreeMap<PallasPolicyId, PallasPlutusV3Script>,
 )> {
-    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms)?;
+    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms, beamed_out)?;
 
     let pallas_ma = cml_to_pallas_multiasset(&cml_ma);
 
@@ -302,8 +303,12 @@ pub fn from_spell(
     }
 
     // Collect output assets and scripts
-    for (spell_out, _coin) in spell_outs.iter().zip(coin_outs.iter()) {
-        let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out))?;
+    for (i, (spell_out, _coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
+        let beamed_out = (spell.tx.beamed_outs)
+            .as_ref()
+            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+
+        let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
         all_scripts.extend(scripts);
         for (policy, assets) in multiasset.iter() {
             for (name, amount) in assets.iter() {
@@ -325,8 +330,12 @@ pub fn from_spell(
     }
 
     // Add spell outputs
-    for (spell_out, coin) in spell_outs.iter().zip(coin_outs.iter()) {
-        let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out))?;
+    for (i, (spell_out, coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
+        let beamed_out = (spell.tx.beamed_outs)
+            .as_ref()
+            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+
+        let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
         let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset));
         staging_tx = staging_tx.output(output);
     }
