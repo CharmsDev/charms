@@ -210,11 +210,14 @@ pub fn well_formed(
                 // prev_tx should be provided, so we know it doesn't carry a spell
                 return false;
             };
-            // tx_in_utxo must exist but not have any Charms
+            // tx_in_utxo must exist and either have no Charms or be beamed out
             check!(
                 (prev_spell.tx.outs)
                     .get(tx_in_utxo_id.1 as usize)
-                    .is_none_or(|charms| charms.is_empty())
+                    .is_none_or(|charms| charms.is_empty()
+                        || (prev_spell.tx.beamed_outs)
+                            .as_ref()
+                            .is_some_and(|beamed| beamed.contains_key(&tx_in_utxo_id.1)))
             );
 
             let beaming_txid = beaming_source_utxo_id.0;
