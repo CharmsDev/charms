@@ -3,13 +3,16 @@ use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
     Deserialize, PolicyId, Serialize,
+    address::Address,
     assets::{AssetName, ClampedSub, MultiAsset},
-    crypto::{Ed25519Signature, TransactionHash, Vkey},
+    certs::Credential,
+    crypto::{Ed25519Signature, ScriptHash, TransactionHash, Vkey},
     plutus::{PlutusData, PlutusV3Script, RedeemerTag},
     transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
+use pallas_crypto::hash::Hasher;
 use serde_with::serde_as;
 use std::collections::BTreeMap;
 
@@ -209,22 +212,40 @@ pub fn policy_id(app: &App) -> (PolicyId, PlutusV3Script) {
             .expect("app VK should successfully apply to the Charms app proxy script");
     let script = PlutusV3Script::from_cbor_bytes(&program)
         .expect("script should successfully deserialize from CBOR");
-    // NOTE: cml-chain's script.hash() computes blake2b-224(0x03 || flat_bytes), but the
-    // Cardano ledger expects blake2b-224(0x03 || cbor_bytes). We compute the correct hash here.
-    let policy_id = compute_script_hash(&script);
+    let policy_id = script_hash(&script);
     (policy_id, script)
+}
+
+pub fn proxy_script_hash(apps: &[&App]) -> (ScriptHash, PlutusV3Script) {
+    let apps_hash = apps_hash(apps);
+
+    let param_data = PlutusData::new_list(vec![PlutusData::new_bytes(apps_hash)]);
+    let program =
+        uplc::tx::apply_params_to_script(&param_data.to_cbor_bytes(), CHARMS_APP_PROXY_SCRIPT)
+            .expect("app VK should successfully apply to the Charms app proxy script");
+    let script = PlutusV3Script::from_cbor_bytes(&program)
+        .expect("script should successfully deserialize from CBOR");
+    let script_hash = script_hash(&script);
+    (script_hash, script)
+}
+
+fn apps_hash(apps: &[&App]) -> Vec<u8> {
+    let mut apps = apps.to_vec();
+    apps.sort();
+    let hasher = apps.iter().fold(Hasher::<256>::new(), |mut acc, &app| {
+        acc.input(&util::write(app).expect("infallible"));
+        acc
+    });
+    hasher.finalize().to_vec()
 }
 
 /// Compute the correct script hash for a PlutusV3 script.
 /// The Cardano ledger expects: blake2b-224(0x03 || cbor_bytes)
 /// where cbor_bytes includes the CBOR header (e.g., 59026b for a 619-byte script).
-fn compute_script_hash(script: &PlutusV3Script) -> PolicyId {
-    use pallas_crypto::hash::Hasher;
+fn script_hash(script: &PlutusV3Script) -> ScriptHash {
     let cbor_bytes = script.to_cbor_bytes();
-    let mut data = vec![0x03u8]; // PlutusV3 namespace prefix
-    data.extend_from_slice(&cbor_bytes);
-    let hash = Hasher::<224>::hash(&data);
-    PolicyId::from_raw_bytes(hash.as_ref()).expect("hash should be valid policy id")
+    let hash = Hasher::<224>::hash_tagged(&cbor_bytes, 0x03); // PlutusV3 namespace tag
+    ScriptHash::from_raw_bytes(hash.as_ref()).expect("hash should be valid")
 }
 
 pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
@@ -269,13 +290,12 @@ pub fn multi_asset(
     Ok((multi_asset, scripts))
 }
 
-/// Native outputs contain CNTs representing Charms
+/// Native outputs contain CNTs representing Charms.
+/// Native outputs with non-token Charms are at the Charms proxy script addresses.
 fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result<()> {
     // for each spell output, check that the corresponding native output has CNTs corresponding to
     // charms in it
-    for (i, (spell_out, native_out)) in spell
-        .tx
-        .outs
+    for (i, (spell_out, native_out)) in (spell.tx.outs)
         .iter()
         .zip(tx.inner().body.outputs.iter())
         .enumerate()
@@ -285,7 +305,11 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
             .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
 
         let present_all = &native_out.amount().multiasset;
-        let (expected_charms, _) = multi_asset(&charms(spell, spell_out), is_beamed_out)?;
+        let charms = charms(spell, spell_out);
+
+        native_out_address_complies(&charms, native_out.address())?;
+
+        let (expected_charms, _) = multi_asset(&charms, is_beamed_out)?;
 
         let missing_charms = expected_charms.clamped_sub(&present_all);
         ensure!(
@@ -320,6 +344,35 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         );
     }
     Ok(())
+}
+
+fn native_out_address_complies(charms: &Charms, address: &Address) -> anyhow::Result<()> {
+    let non_token_charms_apps = charms
+        .keys()
+        .filter(|&app| app.tag != TOKEN && app.tag != NFT)
+        .collect::<Vec<_>>();
+    let non_token_charms_present = !non_token_charms_apps.is_empty();
+
+    let is_address_charms_proxy_script: bool =
+        is_proxy_script_address(&non_token_charms_apps, address)?;
+
+    ensure!(
+        non_token_charms_present && is_address_charms_proxy_script
+            || !non_token_charms_present && !is_address_charms_proxy_script
+    );
+
+    Ok(())
+}
+
+fn is_proxy_script_address(apps: &[&App], address: &Address) -> anyhow::Result<bool> {
+    let (script_hash, _) = proxy_script_hash(apps);
+    if let Credential::Script { hash, .. } = address
+        .payment_cred()
+        .ok_or(anyhow!("Address does not have payment credential"))?
+    {
+        return Ok(hash == &script_hash);
+    }
+    Ok(false)
 }
 
 fn spell_with_committed_ins_and_coins(
@@ -780,6 +833,10 @@ mod tests {
                 .unwrap(),
         };
         let (policy_id, script) = policy_id(&app);
+        assert_eq!(
+            policy_id.to_hex(),
+            "b8f72e95dee612df98ac5a90b7604f7815c2af07a6db209a5c70abe4"
+        );
 
         // Method 1: Hash flat bytes with 0x03 prefix (what cml-chain does)
         let flat_bytes = &script.inner;
@@ -793,9 +850,9 @@ mod tests {
         data2.extend_from_slice(&cbor_bytes);
         let hash2 = Hasher::<224>::hash(&data2);
 
-        eprintln!("Policy ID from cml-chain: {}", policy_id.to_hex());
-        eprintln!("Hash of flat bytes:       {}", hex::encode(hash1));
-        eprintln!("Hash of CBOR bytes:       {}", hex::encode(hash2));
+        eprintln!("Policy ID:          {}", policy_id.to_hex());
+        eprintln!("Hash of flat bytes: {}", hex::encode(hash1));
+        eprintln!("Hash of CBOR bytes: {}", hex::encode(hash2));
         eprintln!(
             "Expected from cli:        b8f72e95dee612df98ac5a90b7604f7815c2af07a6db209a5c70abe4"
         );
