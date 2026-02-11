@@ -334,7 +334,7 @@ impl Spell {
                     .and_then(|beamed_to| beamed_to.get(&i).cloned()),
                 content: (norm_spell.tx.coins)
                     .as_ref()
-                    .and_then(|coins| coins.get((i as usize)))
+                    .and_then(|coins| coins.get(i as usize))
                     .map(|native_output| native_output.content.clone()),
             })
             .collect();
