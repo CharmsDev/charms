@@ -137,7 +137,7 @@ impl EnchantedTx for BitcoinTx {
             .map(|tx_out| NativeOutput {
                 amount: tx_out.value.to_sat(),
                 dest: tx_out.script_pubkey.to_bytes(),
-                content: tx_out.into(),
+                content: Some(tx_out.into()),
             })
             .collect()
     }
@@ -206,6 +206,12 @@ pub(crate) fn spell_with_committed_ins_and_coins(
     if spell.version > V7 {
         let mut coins = tx.all_coin_outs();
         coins.truncate(spell.tx.outs.len());
+        // `native_output.content` is available since V11
+        if spell.version <= V10 {
+            for native_output in &mut coins {
+                native_output.content = None;
+            }
+        }
         spell.tx.coins = Some(coins);
     }
 

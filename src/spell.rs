@@ -335,7 +335,7 @@ impl Spell {
                 content: (norm_spell.tx.coins)
                     .as_ref()
                     .and_then(|coins| coins.get(i as usize))
-                    .map(|native_output| native_output.content.clone()),
+                    .and_then(|native_output| native_output.content.clone()),
             })
             .collect();
 
@@ -357,7 +357,7 @@ fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
             Ok(NativeOutput {
                 amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
                 dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
-                content: output.content.clone().unwrap_or_default(),
+                content: output.content.clone(),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()

@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, charms, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V10, charms, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
@@ -174,7 +174,7 @@ impl EnchantedTx for CardanoTx {
             .map(|tx_out| NativeOutput {
                 amount: tx_out.amount().coin.into(),
                 dest: tx_out.address().to_raw_bytes(),
-                content: tx_out.into(),
+                content: Some(tx_out.into()),
             })
             .collect()
     }
@@ -394,6 +394,12 @@ fn spell_with_committed_ins_and_coins(
     // this code is coming online with V10, so `spell.version > V7` holds
     let mut coins = tx.all_coin_outs();
     coins.truncate(spell.tx.outs.len());
+    // `native_output.content` is available since V11
+    if spell.version <= V10 {
+        for native_output in &mut coins {
+            native_output.content = None;
+        }
+    }
     spell.tx.coins = Some(coins);
 
     spell
