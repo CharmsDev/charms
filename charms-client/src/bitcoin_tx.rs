@@ -137,6 +137,7 @@ impl EnchantedTx for BitcoinTx {
             .map(|tx_out| NativeOutput {
                 amount: tx_out.value.to_sat(),
                 dest: tx_out.script_pubkey.to_bytes(),
+                content: tx_out.into(),
             })
             .collect()
     }

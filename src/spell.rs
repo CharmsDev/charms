@@ -89,6 +89,8 @@ pub struct Output {
     pub charms: Option<KeyedCharms>,
     #[serde(alias = "beamed_to", skip_serializing_if = "Option::is_none")]
     pub beam_to: Option<B32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Data>,
 }
 
 /// Defines how spells are represented in their source form and in CLI outputs,
@@ -330,6 +332,10 @@ impl Spell {
                     .beamed_outs
                     .as_ref()
                     .and_then(|beamed_to| beamed_to.get(&i).cloned()),
+                content: (norm_spell.tx.coins)
+                    .as_ref()
+                    .and_then(|coins| coins.get((i as usize)))
+                    .map(|native_output| native_output.content.clone()),
             })
             .collect();
 
@@ -351,6 +357,7 @@ fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
             Ok(NativeOutput {
                 amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
                 dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
+                content: output.content.clone().unwrap_or_default(),
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()

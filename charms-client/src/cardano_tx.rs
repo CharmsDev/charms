@@ -171,6 +171,7 @@ impl EnchantedTx for CardanoTx {
             .map(|tx_out| NativeOutput {
                 amount: tx_out.amount().coin.into(),
                 dest: tx_out.address().to_raw_bytes(),
+                content: tx_out.into(),
             })
             .collect()
     }
