@@ -147,21 +147,20 @@ fn get_prev_output(
     Ok(output)
 }
 
-fn txbuilder_output(address: &[u8], lovelace: u64, assets: Option<&PallasMultiasset>) -> Output {
-    let mut output = Output::new(
-        pallas_addresses::Address::from_bytes(address).expect("valid address"),
-        lovelace,
-    );
+fn txbuilder_output(
+    address: &[u8],
+    lovelace: u64,
+    assets: Option<&PallasMultiasset>,
+) -> anyhow::Result<Output> {
+    let mut output = Output::new(pallas_addresses::Address::from_bytes(address)?, lovelace);
     if let Some(ma) = assets {
         for (policy_id, asset_names) in ma.iter() {
             for (asset_name, amount) in asset_names.iter() {
-                output = output
-                    .add_asset(*policy_id, asset_name.to_vec(), *amount)
-                    .expect("valid asset");
+                output = output.add_asset(*policy_id, asset_name.to_vec(), *amount)?;
             }
         }
     }
-    output
+    Ok(output)
 }
 
 /// Calculate minimum ADA for an output based on protocol parameters
@@ -336,7 +335,7 @@ pub fn from_spell(
             .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
 
         let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
-        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset));
+        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset))?;
         staging_tx = staging_tx.output(output);
     }
 

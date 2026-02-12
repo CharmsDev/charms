@@ -279,7 +279,7 @@ pub fn multi_asset(
     }
     for (app, data) in charms {
         if app.tag != TOKEN && app.tag != NFT {
-            continue; // TODO figure what to do with other tags
+            continue; // skip non-token charms
         }
         let (policy_id, script) = policy_id(app);
         let asset_name = asset_name(app)?;
