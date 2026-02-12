@@ -1,4 +1,4 @@
-use crate::{NormalizedSpell, Proof, V10, charms, tx, tx::EnchantedTx};
+use crate::{NormalizedSpell, Proof, V10, beamed_out_to_hash, charms, tx, tx::EnchantedTx};
 use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
@@ -300,9 +300,7 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
         .zip(tx.inner().body.outputs.iter())
         .enumerate()
     {
-        let is_beamed_out = (spell.tx.beamed_outs)
-            .as_ref()
-            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+        let is_beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let present_all = &native_out.amount().multiasset;
         let charms = charms(spell, spell_out);
