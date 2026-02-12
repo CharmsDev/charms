@@ -121,8 +121,12 @@ impl SP1CudaProver {
         let payload = ShrinkRequestPayload {
             reduced_proof: reduced_proof.clone(),
         };
-        let data = bincode::serialize(&payload)
-            .map_err(|e| SP1RecursionProverError::RuntimeError(format!("Failed to serialize shrink request: {}", e)))?;
+        let data = bincode::serialize(&payload).map_err(|e| {
+            SP1RecursionProverError::RuntimeError(format!(
+                "Failed to serialize shrink request: {}",
+                e
+            ))
+        })?;
         let request = sp1_cuda::proto::api::ShrinkRequest { data };
 
         let response = block_on(retry(RETRY_SECS, || self.client.shrink(request.clone())))
@@ -142,8 +146,12 @@ impl SP1CudaProver {
         let payload = WrapRequestPayload {
             reduced_proof: reduced_proof.clone(),
         };
-        let data = bincode::serialize(&payload)
-            .map_err(|e| SP1RecursionProverError::RuntimeError(format!("Failed to serialize wrap request: {}", e)))?;
+        let data = bincode::serialize(&payload).map_err(|e| {
+            SP1RecursionProverError::RuntimeError(format!(
+                "Failed to serialize wrap request: {}",
+                e
+            ))
+        })?;
         let request = sp1_cuda::proto::api::WrapRequest { data };
 
         let response = block_on(retry(RETRY_SECS, || self.client.wrap(request.clone())))

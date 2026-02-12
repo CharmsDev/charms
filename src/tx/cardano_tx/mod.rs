@@ -1,7 +1,7 @@
 use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
-use charms_client::{NormalizedSpell, cardano_tx::CardanoTx, charms, tx::Tx};
+use charms_client::{NormalizedSpell, beamed_out_to_hash, cardano_tx::CardanoTx, charms, tx::Tx};
 use charms_data::{TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
@@ -20,7 +20,6 @@ use pallas_primitives::conway::{
 use pallas_txbuilder::{BuildConway, Input, Output, ScriptKind, StagingTransaction};
 use serde::{Deserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
-
 // Re-export UtxoId from charms_data
 pub use charms_data::UtxoId;
 
@@ -147,21 +146,20 @@ fn get_prev_output(
     Ok(output)
 }
 
-fn txbuilder_output(address: &[u8], lovelace: u64, assets: Option<&PallasMultiasset>) -> Output {
-    let mut output = Output::new(
-        pallas_addresses::Address::from_bytes(address).expect("valid address"),
-        lovelace,
-    );
+fn txbuilder_output(
+    address: &[u8],
+    lovelace: u64,
+    assets: Option<&PallasMultiasset>,
+) -> anyhow::Result<Output> {
+    let mut output = Output::new(pallas_addresses::Address::from_bytes(address)?, lovelace);
     if let Some(ma) = assets {
         for (policy_id, asset_names) in ma.iter() {
             for (asset_name, amount) in asset_names.iter() {
-                output = output
-                    .add_asset(*policy_id, asset_name.to_vec(), *amount)
-                    .expect("valid asset");
+                output = output.add_asset(*policy_id, asset_name.to_vec(), *amount)?;
             }
         }
     }
-    output
+    Ok(output)
 }
 
 /// Calculate minimum ADA for an output based on protocol parameters
@@ -304,9 +302,7 @@ pub fn from_spell(
 
     // Collect output assets and scripts
     for (i, (spell_out, _coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
-        let beamed_out = (spell.tx.beamed_outs)
-            .as_ref()
-            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+        let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
         all_scripts.extend(scripts);
@@ -331,12 +327,10 @@ pub fn from_spell(
 
     // Add spell outputs
     for (i, (spell_out, coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
-        let beamed_out = (spell.tx.beamed_outs)
-            .as_ref()
-            .is_some_and(|beamed| beamed.contains_key(&(i as u32)));
+        let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
-        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset));
+        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset))?;
         staging_tx = staging_tx.output(output);
     }
 

@@ -176,9 +176,7 @@ pub fn well_formed(
             .is_some_and(|(n_spell, num_tx_outs)| {
                 let utxo_index = utxo_id.1;
 
-                let is_beamed_out = (n_spell.tx.beamed_outs.as_ref())
-                    .and_then(|beamed_outs| beamed_outs.get(&utxo_index))
-                    .is_some();
+                let is_beamed_out = beamed_out_to_hash(n_spell, utxo_index).is_some();
 
                 utxo_index <= *num_tx_outs as u32 && !is_beamed_out
             })
@@ -210,11 +208,12 @@ pub fn well_formed(
                 // prev_tx should be provided, so we know it doesn't carry a spell
                 return false;
             };
-            // tx_in_utxo must exist but not have any Charms
+            // tx_in_utxo must exist and either have no Charms or be beamed out
             check!(
                 (prev_spell.tx.outs)
                     .get(tx_in_utxo_id.1 as usize)
-                    .is_none_or(|charms| charms.is_empty())
+                    .is_none_or(|charms| charms.is_empty()
+                        || beamed_out_to_hash(prev_spell, tx_in_utxo_id.1).is_some())
             );
 
             let beaming_txid = beaming_source_utxo_id.0;
@@ -222,10 +221,7 @@ pub fn well_formed(
 
             prev_spells
                 .get(&beaming_txid)
-                .and_then(|(n_spell, _tx_outs)| {
-                    (n_spell.tx.beamed_outs.as_ref())
-                        .and_then(|beamed_outs| beamed_outs.get(&beaming_utxo_index))
-                })
+                .and_then(|(n_spell, _tx_outs)| beamed_out_to_hash(n_spell, beaming_utxo_index))
                 .is_some_and(|dest_utxo_hash| dest_utxo_hash == &utxo_id_hash(tx_in_utxo_id))
         });
     check!(beamed_source_utxos_point_to_placeholder_dest_utxos);
@@ -406,6 +402,12 @@ pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()
         }
     }
     Ok(())
+}
+
+pub fn beamed_out_to_hash(spell: &NormalizedSpell, i: u32) -> Option<&B32> {
+    (spell.tx.beamed_outs)
+        .as_ref()
+        .and_then(|beamed| beamed.get(&i))
 }
 
 #[cfg(test)]

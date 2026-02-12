@@ -69,6 +69,8 @@ pub struct Transaction {
 pub struct NativeOutput {
     pub amount: u64,
     pub dest: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<Data>,
 }
 
 /// Charms are tokens, NFTs or instances of arbitrary app state.
