@@ -567,6 +567,7 @@ dependencies = [
  "ciborium-io",
  "hex",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

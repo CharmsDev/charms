@@ -33,8 +33,8 @@ use charms_client::{
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
-    util,
+    App, AppInput, B32, Charms, Data, Metadata, NativeOutput, Transaction, TxId, UtxoId,
+    is_simple_transfer, util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -72,6 +72,8 @@ pub struct Input {
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub beamed_from: Option<UtxoId>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub meta: Option<Metadata>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -91,6 +93,10 @@ pub struct Output {
     pub beam_to: Option<B32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Data>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub meta: Option<Metadata>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub charm_meta: Option<BTreeMap<String, Metadata>>,
 }
 
 /// Defines how spells are represented in their source form and in CLI outputs,
@@ -119,6 +125,13 @@ pub struct Spell {
     pub refs: Option<Vec<Input>>,
     /// Transaction outputs.
     pub outs: Vec<Output>,
+
+    /// Spell-level metadata.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub meta: Option<Metadata>,
+    /// Per-public-input metadata. Keyed by app string key.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub public_input_meta: Option<BTreeMap<String, Metadata>>,
 }
 
 impl Spell {
@@ -132,6 +145,8 @@ impl Spell {
             ins: vec![],
             refs: None,
             outs: vec![],
+            meta: None,
+            public_input_meta: None,
         }
     }
 
@@ -236,6 +251,62 @@ impl Spell {
 
         let coins = get_coin_outs(&self.outs)?;
 
+        // Collect per-input metadata
+        let in_meta: BTreeMap<u32, Metadata> = self
+            .ins
+            .iter()
+            .enumerate()
+            .filter_map(|(i, input)| input.meta.as_ref().map(|m| (i as u32, m.clone())))
+            .collect();
+        let in_meta = Some(in_meta).filter(|m| !m.is_empty());
+
+        // Collect per-output metadata
+        let out_meta: BTreeMap<u32, Metadata> = self
+            .outs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, output)| output.meta.as_ref().map(|m| (i as u32, m.clone())))
+            .collect();
+        let out_meta = Some(out_meta).filter(|m| !m.is_empty());
+
+        // Collect per-charm metadata in outputs
+        let charm_meta: Vec<BTreeMap<u32, Metadata>> = self
+            .outs
+            .iter()
+            .map(|output| {
+                output
+                    .charm_meta
+                    .as_ref()
+                    .map(|cm| {
+                        cm.iter()
+                            .filter_map(|(k, m)| {
+                                let app = keyed_apps.get(k)?;
+                                let i = app_to_index.get(app)?;
+                                Some((*i, m.clone()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        let charm_meta = Some(charm_meta).filter(|v| v.iter().any(|m| !m.is_empty()));
+
+        // Collect per-public-input metadata
+        let public_input_meta: BTreeMap<u32, Metadata> = self
+            .public_input_meta
+            .as_ref()
+            .map(|pim| {
+                pim.iter()
+                    .filter_map(|(k, m)| {
+                        let app = keyed_apps.get(k)?;
+                        let i = app_to_index.get(app)?;
+                        Some((*i, m.clone()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let public_input_meta = Some(public_input_meta).filter(|m| !m.is_empty());
+
         let norm_spell = NormalizedSpell {
             version: self.version,
             tx: NormalizedTransaction {
@@ -244,9 +315,14 @@ impl Spell {
                 outs,
                 beamed_outs,
                 coins: Some(coins),
+                in_meta,
+                out_meta,
+                charm_meta,
             },
             app_public_inputs,
             mock,
+            meta: self.meta.clone(),
+            public_input_meta,
         };
 
         let keyed_private_inputs = self.private_args.as_ref().unwrap_or(&empty_map);
@@ -294,10 +370,16 @@ impl Spell {
         };
         let ins = norm_spell_ins
             .iter()
-            .map(|utxo_id| Input {
+            .enumerate()
+            .map(|(i, utxo_id)| Input {
                 utxo_id: Some(utxo_id.clone()),
                 charms: None,
                 beamed_from: None,
+                meta: norm_spell
+                    .tx
+                    .in_meta
+                    .as_ref()
+                    .and_then(|m| m.get(&(i as u32)).cloned()),
             })
             .collect();
 
@@ -307,6 +389,7 @@ impl Spell {
                     utxo_id: Some(utxo_id.clone()),
                     charms: None,
                     beamed_from: None,
+                    meta: None,
                 })
                 .collect::<Vec<_>>()
         });
@@ -336,8 +419,36 @@ impl Spell {
                     .as_ref()
                     .and_then(|coins| coins.get(i as usize))
                     .and_then(|native_output| native_output.content.clone()),
+                meta: norm_spell
+                    .tx
+                    .out_meta
+                    .as_ref()
+                    .and_then(|m| m.get(&i).cloned()),
+                charm_meta: norm_spell
+                    .tx
+                    .charm_meta
+                    .as_ref()
+                    .and_then(|cm| cm.get(i as usize))
+                    .map(|per_out| {
+                        per_out
+                            .iter()
+                            .map(|(idx, m)| (utils::str_index(idx), m.clone()))
+                            .collect()
+                    })
+                    .filter(|m: &BTreeMap<String, Metadata>| !m.is_empty()),
             })
             .collect();
+
+        let public_input_meta: BTreeMap<String, Metadata> = norm_spell
+            .public_input_meta
+            .as_ref()
+            .map(|pim| {
+                pim.iter()
+                    .map(|(i, m)| (utils::str_index(i), m.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let public_input_meta = Some(public_input_meta).filter(|m| !m.is_empty());
 
         Ok(Self {
             version: norm_spell.version,
@@ -347,6 +458,8 @@ impl Spell {
             ins,
             refs,
             outs,
+            meta: norm_spell.meta.clone(),
+            public_input_meta,
         })
     }
 }

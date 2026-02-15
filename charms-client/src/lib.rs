@@ -2,8 +2,8 @@ use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
 use anyhow::{anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
-    is_simple_transfer,
+    App, AppInput, B32, Charms, Data, Metadata, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
+    check, is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -93,6 +93,16 @@ pub struct NormalizedTransaction {
     /// Amounts of native coin in transaction outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coins: Option<Vec<NativeOutput>>,
+
+    /// Per-input metadata. Keyed by input index.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub in_meta: Option<BTreeMap<u32, Metadata>>,
+    /// Per-output metadata. Keyed by output index.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub out_meta: Option<BTreeMap<u32, Metadata>>,
+    /// Per-charm metadata in outputs. Indexed by output position, then keyed by app index.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub charm_meta: Option<Vec<BTreeMap<u32, Metadata>>>,
 }
 
 impl NormalizedTransaction {
@@ -121,6 +131,13 @@ pub struct NormalizedSpell {
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub mock: bool,
+
+    /// Spell-level metadata.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub meta: Option<Metadata>,
+    /// Per-public-input metadata. Keyed by app index.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub public_input_meta: Option<BTreeMap<u32, Metadata>>,
 }
 
 impl Default for NormalizedSpell {
@@ -130,6 +147,8 @@ impl Default for NormalizedSpell {
             tx: Default::default(),
             app_public_inputs: Default::default(),
             mock: false,
+            meta: None,
+            public_input_meta: None,
         }
     }
 }
@@ -277,6 +296,41 @@ pub fn to_tx(
 
     let prev_txs = prev_txs.iter().map(|tx| (tx.tx_id(), tx.into())).collect();
 
+    let apps_list = apps(spell);
+
+    // Convert per-input metadata: BTreeMap<u32, Metadata> -> Vec<Option<Metadata>>
+    let in_meta = spell.tx.in_meta.as_ref().map(|meta_map| {
+        (0..tx_ins.len() as u32)
+            .map(|i| meta_map.get(&i).cloned())
+            .collect()
+    });
+
+    // Convert per-output metadata: BTreeMap<u32, Metadata> -> Vec<Option<Metadata>>
+    let out_meta = spell.tx.out_meta.as_ref().map(|meta_map| {
+        (0..spell.tx.outs.len() as u32)
+            .map(|i| meta_map.get(&i).cloned())
+            .collect()
+    });
+
+    // Convert per-charm metadata: Vec<BTreeMap<u32, Metadata>> -> Vec<BTreeMap<App, Metadata>>
+    let charm_meta = spell.tx.charm_meta.as_ref().map(|cm| {
+        cm.iter()
+            .map(|per_out| {
+                per_out
+                    .iter()
+                    .map(|(&i, m)| (apps_list[i as usize].clone(), m.clone()))
+                    .collect()
+            })
+            .collect()
+    });
+
+    // Convert per-public-input metadata: BTreeMap<u32, Metadata> -> BTreeMap<App, Metadata>
+    let public_input_meta = spell.public_input_meta.as_ref().map(|pim| {
+        pim.iter()
+            .map(|(&i, m)| (apps_list[i as usize].clone(), m.clone()))
+            .collect()
+    });
+
     Transaction {
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
@@ -285,6 +339,11 @@ pub fn to_tx(
         coin_outs: spell.tx.coins.clone(),
         prev_txs,
         app_public_inputs: spell.app_public_inputs.clone(),
+        meta: spell.meta.clone(),
+        in_meta,
+        out_meta,
+        charm_meta,
+        public_input_meta,
     }
 }
 

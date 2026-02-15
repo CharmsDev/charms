@@ -16,6 +16,9 @@ use serde::{
 };
 pub mod util;
 
+/// Metadata is a JSON value that can be attached to various parts of a spell.
+pub type Metadata = serde_json::Value;
+
 /// Macro to check a condition and return false (early) if it does not hold.
 /// This is useful for checking pre-requisite conditions in predicate-type functions.
 /// Inspired by the `ensure!` macro from the `anyhow` crate.
@@ -63,6 +66,22 @@ pub struct Transaction {
     pub prev_txs: BTreeMap<TxId, Data>,
     /// All apps used in this transaction with their public inputs.
     pub app_public_inputs: BTreeMap<App, Data>,
+
+    /// Spell-level metadata.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub meta: Option<Metadata>,
+    /// Per-input metadata. Indexed by input position.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub in_meta: Option<Vec<Option<Metadata>>>,
+    /// Per-output metadata. Indexed by output position.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub out_meta: Option<Vec<Option<Metadata>>>,
+    /// Per-charm metadata in outputs. Indexed by output position, then keyed by app.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub charm_meta: Option<Vec<BTreeMap<App, Metadata>>>,
+    /// Per-public-input metadata. Keyed by app.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub public_input_meta: Option<BTreeMap<App, Metadata>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
