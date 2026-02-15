@@ -2,12 +2,13 @@ use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
 use anyhow::{anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, Metadata, NativeOutput, TOKEN, Transaction, TxId, UtxoId,
-    check, is_simple_transfer,
+    App, AppInput, B32, Charms, Data, Metadata, NFT, NativeOutput, TOKEN, Transaction, TxId,
+    UtxoId, check, is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
 pub mod ark;
 pub mod bitcoin_tx;
@@ -244,6 +245,29 @@ pub fn well_formed(
                 .is_some_and(|dest_utxo_hash| dest_utxo_hash == &utxo_id_hash(tx_in_utxo_id))
         });
     check!(beamed_source_utxos_point_to_placeholder_dest_utxos);
+
+    // Validate that all content-ref UTXOs reference transactions present in prev_spells
+    check!(content_ref_utxos_present(spell, prev_spells));
+
+    true
+}
+
+/// Check that all `content-ref` metadata values reference UTXOs whose transactions
+/// are present in `prev_spells`.
+fn content_ref_utxos_present(
+    spell: &NormalizedSpell,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+) -> bool {
+    let Some(charm_meta) = &spell.tx.charm_meta else {
+        return true;
+    };
+    for per_out in charm_meta {
+        for (_, meta) in per_out {
+            if let Some(ref_utxo) = parse_content_ref(meta) {
+                check!(prev_spells.contains_key(&ref_utxo.0));
+            }
+        }
+    }
     true
 }
 
@@ -270,21 +294,25 @@ pub fn to_tx(
 
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
-        let charms = charms_in_utxo(prev_spell, utxo_id)
+        let charms = charms_in_utxo(prev_spell, utxo_id, prev_spells)
             .or_else(|| {
                 tx_ins_beamed_source_utxos
                     .get(utxo_id)
                     .and_then(|beam_source_utxo_id| {
                         let prev_spell = &prev_spells[&beam_source_utxo_id.0].0;
-                        charms_in_utxo(&prev_spell, beam_source_utxo_id)
+                        charms_in_utxo(&prev_spell, beam_source_utxo_id, prev_spells)
                     })
             })
             .unwrap_or_default();
         (utxo_id.clone(), charms)
     };
 
-    let from_normalized_charms =
-        |n_charms: &NormalizedCharms| -> Charms { charms(spell, n_charms) };
+    let from_normalized_charms = |out_idx: usize, n_charms: &NormalizedCharms| -> Charms {
+        let mut resolved = charms(spell, n_charms);
+        let charm_meta = spell.tx.charm_meta.as_ref().and_then(|cm| cm.get(out_idx));
+        resolve_content_refs(&mut resolved, charm_meta, spell, prev_spells);
+        resolved
+    };
 
     let coin_from_input = |utxo_id: &UtxoId| -> NativeOutput {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
@@ -334,7 +362,13 @@ pub fn to_tx(
     Transaction {
         ins: tx_ins.iter().map(from_utxo_id).collect(),
         refs: spell.tx.refs.iter().flatten().map(from_utxo_id).collect(),
-        outs: spell.tx.outs.iter().map(from_normalized_charms).collect(),
+        outs: spell
+            .tx
+            .outs
+            .iter()
+            .enumerate()
+            .map(|(i, nc)| from_normalized_charms(i, nc))
+            .collect(),
         coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
         coin_outs: spell.tx.coins.clone(),
         prev_txs,
@@ -347,10 +381,95 @@ pub fn to_tx(
     }
 }
 
-fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
-    (prev_spell.tx.outs)
-        .get(utxo_id.1 as usize)
-        .map(|n_charms| charms(prev_spell, n_charms))
+/// Extract a `UtxoId` from a charm's metadata `content-ref` value.
+/// Expects metadata shaped like `{"content-ref": {"bitcoin": "txid:vout"}}`.
+fn parse_content_ref(meta: &Metadata) -> Option<UtxoId> {
+    let content_ref = meta.as_object()?.get("content-ref")?;
+    let ref_obj = content_ref.as_object()?;
+    let utxo_id_str = ref_obj.values().next()?.as_str()?;
+    UtxoId::from_str(utxo_id_str).ok()
+}
+
+const MAX_CONTENT_REF_DEPTH: usize = 8;
+
+/// Resolve `content-ref` references in charms: for each NFT charm with empty data,
+/// if there's a `content-ref` in `charm_meta`, replace the empty data with the
+/// referenced UTXO's charm value.
+fn resolve_content_refs(
+    charms: &mut Charms,
+    charm_meta: Option<&BTreeMap<u32, Metadata>>,
+    spell: &NormalizedSpell,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+) {
+    let Some(charm_meta) = charm_meta else {
+        return;
+    };
+    let apps_list = apps(spell);
+    for (&app_idx, meta) in charm_meta {
+        let Some(app) = apps_list.get(app_idx as usize) else {
+            continue;
+        };
+        if app.tag != NFT {
+            continue;
+        }
+        let Some(data) = charms.get(app) else {
+            continue;
+        };
+        if !data.is_empty() {
+            continue;
+        }
+        if let Some(resolved) = resolve_single_content_ref(meta, app, prev_spells, 0) {
+            charms.insert(app.clone(), resolved);
+        }
+    }
+}
+
+/// Recursively resolve a single content-ref to its actual data value.
+fn resolve_single_content_ref(
+    meta: &Metadata,
+    app: &App,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+    depth: usize,
+) -> Option<Data> {
+    if depth >= MAX_CONTENT_REF_DEPTH {
+        return None;
+    }
+    let ref_utxo = parse_content_ref(meta)?;
+    let (ref_spell, _) = prev_spells.get(&ref_utxo.0)?;
+    let ref_out_idx = ref_utxo.1 as usize;
+    let ref_n_charms = ref_spell.tx.outs.get(ref_out_idx)?;
+
+    // Find the app index in the referenced spell
+    let ref_apps = apps(ref_spell);
+    let ref_app_idx = ref_apps.iter().position(|a| a == app)? as u32;
+
+    let data = ref_n_charms.get(&ref_app_idx)?;
+    if data.is_empty() {
+        // The referenced UTXO itself has empty data — check if it has its own content-ref
+        let ref_charm_meta = ref_spell.tx.charm_meta.as_ref()?.get(ref_out_idx)?;
+        let ref_meta = ref_charm_meta.get(&ref_app_idx)?;
+        resolve_single_content_ref(ref_meta, app, prev_spells, depth + 1)
+    } else {
+        Some(data.clone())
+    }
+}
+
+fn charms_in_utxo(
+    prev_spell: &NormalizedSpell,
+    utxo_id: &UtxoId,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+) -> Option<Charms> {
+    let out_idx = utxo_id.1 as usize;
+    (prev_spell.tx.outs).get(out_idx).map(|n_charms| {
+        let mut resolved = charms(prev_spell, n_charms);
+        let charm_meta = prev_spell
+            .tx
+            .charm_meta
+            .as_ref()
+            .and_then(|cm| cm.get(out_idx));
+        resolve_content_refs(&mut resolved, charm_meta, prev_spell, prev_spells);
+        resolved
+    })
 }
 
 /// Return [`charms_data::Charms`] for the given [`NormalizedCharms`].
