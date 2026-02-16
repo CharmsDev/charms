@@ -621,6 +621,15 @@ pub const TOKEN: char = 't';
 /// Special `App.tag` value for non-fungible tokens (NFTs). See [`App`] for more details.
 pub const NFT: char = 'n';
 
+/// Metadata property name for beamed-from source UTXO.
+pub const BEAMED_FROM: &str = "beamed-from";
+/// Metadata property name for metadata reference.
+pub const METADATA_REF: &str = "metadata-ref";
+/// Metadata property name for content type.
+pub const CONTENT_TYPE: &str = "content-type";
+/// Metadata property name for content reference.
+pub const CONTENT_REF: &str = "content-ref";
+
 /// Check if the transaction is a simple transfer of assets specified by `app`.
 pub fn is_simple_transfer(app: &App, tx: &Transaction) -> bool {
     match app.tag {
@@ -687,11 +696,11 @@ pub fn charm_values<'a>(
 fn preserved_meta(meta: &Metadata) -> Option<Data> {
     let obj = meta.as_object()?;
     let mut preserved = serde_json::Map::new();
-    if let Some(v) = obj.get("metadata-ref") {
-        preserved.insert("metadata-ref".into(), v.clone());
+    if let Some(v) = obj.get(METADATA_REF) {
+        preserved.insert(METADATA_REF.into(), v.clone());
     }
-    if let Some(v) = obj.get("content-type") {
-        preserved.insert("content-type".into(), v.clone());
+    if let Some(v) = obj.get(CONTENT_TYPE) {
+        preserved.insert(CONTENT_TYPE.into(), v.clone());
     }
     if preserved.is_empty() {
         None

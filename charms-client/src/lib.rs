@@ -2,8 +2,8 @@ use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
 use anyhow::{anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, Metadata, NFT, NativeOutput, TOKEN, Transaction, TxId,
-    UtxoId, check, is_simple_transfer,
+    App, AppInput, B32, BEAMED_FROM, CONTENT_REF, Charms, Data, Metadata, NFT, NativeOutput, TOKEN,
+    Transaction, TxId, UtxoId, check, is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -283,19 +283,23 @@ fn content_ref_utxos_present(
 /// Validate that `beamed-from` in `in_meta` is consistent with `tx_ins_beamed_source_utxos`:
 /// - Every beamed input must have a matching `beamed-from` in `in_meta`
 /// - Every `beamed-from` in `in_meta` must correspond to a beamed input
+/// The `beamed-from` value is expected in chain-qualified format: `{"<chain>": "<utxo_id>"}`.
 fn beamed_from_meta_correct(
     spell: &NormalizedSpell,
     tx_ins: &[UtxoId],
     tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
 ) -> bool {
     for i in 0..tx_ins.len() {
+        // Parse beamed-from: expects chain-qualified format {"<chain>": "txid:vout"}
         let meta_beamed_from: Option<UtxoId> = spell
             .tx
             .in_meta
             .as_ref()
             .and_then(|m| m.get(&(i as u32)))
             .and_then(|m| m.as_object())
-            .and_then(|obj| obj.get("beamed-from"))
+            .and_then(|obj| obj.get(BEAMED_FROM))
+            .and_then(|v| v.as_object())
+            .and_then(|obj| obj.values().next())
             .and_then(|v| v.as_str())
             .and_then(|s| UtxoId::from_str(s).ok());
 
@@ -363,12 +367,11 @@ pub fn to_tx(
         prev_coins[utxo_id.1 as usize].clone()
     };
 
-    let prev_txs = prev_txs.iter().map(|tx| (tx.tx_id(), tx.into())).collect();
-
     let apps_list = apps(spell);
 
+    let prev_txs = prev_txs.iter().map(|tx| (tx.tx_id(), tx.into())).collect();
+
     // Build per-input metadata: merge the spent output's out_meta with the input's in_meta.
-    // beamed-from is already in in_meta (injected during normalization and validated above).
     let in_meta: Option<Vec<Option<Metadata>>> = {
         let entries: Vec<Option<Metadata>> = (0..tx_ins.len())
             .map(|i| {
@@ -458,8 +461,6 @@ pub fn to_tx(
         public_input_meta,
     }
 }
-
-const CONTENT_REF: &str = "content-ref";
 
 /// Merge two optional metadata values. Properties from `b` override properties from `a`.
 fn merge_metadata(a: Option<Metadata>, b: Option<Metadata>) -> Option<Metadata> {

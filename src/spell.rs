@@ -30,11 +30,11 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
-    tx::{Chain, Tx, by_txid},
+    tx::{Chain, EnchantedTx, Tx, by_txid},
 };
 use charms_data::{
-    App, AppInput, B32, Charms, Data, Metadata, NativeOutput, Transaction, TxId, UtxoId,
-    is_simple_transfer, util,
+    App, AppInput, B32, BEAMED_FROM, Charms, Data, Metadata, NativeOutput, Transaction, TxId,
+    UtxoId, is_simple_transfer, util,
 };
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
@@ -180,6 +180,7 @@ impl Spell {
     pub fn normalized(
         &self,
         mock: bool,
+        prev_txs: &[Tx],
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
@@ -252,15 +253,20 @@ impl Spell {
         let coins = get_coin_outs(&self.outs)?;
 
         // Collect per-input metadata, injecting beamed-from for beamed inputs
+        let prev_txs_by_txid: BTreeMap<TxId, &Tx> =
+            prev_txs.iter().map(|tx| (tx.tx_id(), tx)).collect();
         let in_meta: BTreeMap<u32, Metadata> = self
             .ins
             .iter()
             .enumerate()
             .filter_map(|(i, input)| {
-                let beamed_from_meta = input
-                    .beamed_from
-                    .as_ref()
-                    .map(|utxo_id| serde_json::json!({ "beamed-from": utxo_id.to_string() }));
+                let beamed_from_meta = input.beamed_from.as_ref().map(|utxo_id| {
+                    let chain: Chain = prev_txs_by_txid
+                        .get(&utxo_id.0)
+                        .map(|tx| (*tx).clone().into())
+                        .unwrap_or(Chain::Bitcoin);
+                    serde_json::json!({ BEAMED_FROM: { chain.as_ref(): utxo_id.to_string() } })
+                });
                 match (beamed_from_meta, &input.meta) {
                     (Some(mut base), Some(overlay)) => {
                         if let (Some(base_obj), Some(overlay_obj)) =
