@@ -251,12 +251,31 @@ impl Spell {
 
         let coins = get_coin_outs(&self.outs)?;
 
-        // Collect per-input metadata
+        // Collect per-input metadata, injecting beamed-from for beamed inputs
         let in_meta: BTreeMap<u32, Metadata> = self
             .ins
             .iter()
             .enumerate()
-            .filter_map(|(i, input)| input.meta.as_ref().map(|m| (i as u32, m.clone())))
+            .filter_map(|(i, input)| {
+                let beamed_from_meta = input
+                    .beamed_from
+                    .as_ref()
+                    .map(|utxo_id| serde_json::json!({ "beamed-from": utxo_id.to_string() }));
+                match (beamed_from_meta, &input.meta) {
+                    (Some(mut base), Some(overlay)) => {
+                        if let (Some(base_obj), Some(overlay_obj)) =
+                            (base.as_object_mut(), overlay.as_object())
+                        {
+                            base_obj
+                                .extend(overlay_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
+                        }
+                        Some((i as u32, base))
+                    }
+                    (Some(base), None) => Some((i as u32, base)),
+                    (None, Some(m)) => Some((i as u32, m.clone())),
+                    (None, None) => None,
+                }
+            })
             .collect();
         let in_meta = Some(in_meta).filter(|m| !m.is_empty());
 

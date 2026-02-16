@@ -251,6 +251,13 @@ pub fn well_formed(
     // Validate that all content-ref UTXOs reference transactions present in prev_spells
     check!(content_ref_utxos_present(spell, prev_spells));
 
+    // Validate beamed-from in in_meta matches tx_ins_beamed_source_utxos
+    check!(beamed_from_meta_correct(
+        spell,
+        tx_ins,
+        tx_ins_beamed_source_utxos
+    ));
+
     true
 }
 
@@ -268,6 +275,38 @@ fn content_ref_utxos_present(
             if let Some(ref_utxo) = parse_content_ref(meta) {
                 check!(prev_spells.contains_key(&ref_utxo.0));
             }
+        }
+    }
+    true
+}
+
+/// Validate that `beamed-from` in `in_meta` is consistent with `tx_ins_beamed_source_utxos`:
+/// - Every beamed input must have a matching `beamed-from` in `in_meta`
+/// - Every `beamed-from` in `in_meta` must correspond to a beamed input
+fn beamed_from_meta_correct(
+    spell: &NormalizedSpell,
+    tx_ins: &[UtxoId],
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+) -> bool {
+    for i in 0..tx_ins.len() {
+        let meta_beamed_from: Option<UtxoId> = spell
+            .tx
+            .in_meta
+            .as_ref()
+            .and_then(|m| m.get(&(i as u32)))
+            .and_then(|m| m.as_object())
+            .and_then(|obj| obj.get("beamed-from"))
+            .and_then(|v| v.as_str())
+            .and_then(|s| UtxoId::from_str(s).ok());
+
+        let actual_beamed_from = tx_ins_beamed_source_utxos.get(&i);
+
+        match (meta_beamed_from.as_ref(), actual_beamed_from) {
+            (Some(meta_utxo), Some(actual_utxo)) => {
+                check!(meta_utxo == actual_utxo);
+            }
+            (None, None) => {}
+            _ => return false, // mismatch: one has it, the other doesn't
         }
     }
     true
@@ -328,12 +367,38 @@ pub fn to_tx(
 
     let apps_list = apps(spell);
 
-    // Convert per-input metadata: BTreeMap<u32, Metadata> -> Vec<Option<Metadata>>
-    let in_meta = spell.tx.in_meta.as_ref().map(|meta_map| {
-        (0..tx_ins.len() as u32)
-            .map(|i| meta_map.get(&i).cloned())
-            .collect()
-    });
+    // Build per-input metadata: merge the spent output's out_meta with the input's in_meta.
+    // beamed-from is already in in_meta (injected during normalization and validated above).
+    let in_meta: Option<Vec<Option<Metadata>>> = {
+        let entries: Vec<Option<Metadata>> = (0..tx_ins.len())
+            .map(|i| {
+                let utxo_id = &tx_ins[i];
+                let effective_utxo = tx_ins_beamed_source_utxos.get(utxo_id).unwrap_or(utxo_id);
+
+                // Metadata from the spent output (previous spell's out_meta)
+                let spent_out_meta =
+                    prev_spells
+                        .get(&effective_utxo.0)
+                        .and_then(|(prev_spell, _)| {
+                            prev_spell
+                                .tx
+                                .out_meta
+                                .as_ref()
+                                .and_then(|m| m.get(&effective_utxo.1).cloned())
+                        });
+
+                // Metadata from the spending input (current spell's in_meta)
+                let input_meta = spell
+                    .tx
+                    .in_meta
+                    .as_ref()
+                    .and_then(|m| m.get(&(i as u32)).cloned());
+
+                merge_metadata(spent_out_meta, input_meta)
+            })
+            .collect();
+        Some(entries).filter(|v| v.iter().any(|m| m.is_some()))
+    };
 
     // Convert per-output metadata: BTreeMap<u32, Metadata> -> Vec<Option<Metadata>>
     let out_meta = spell.tx.out_meta.as_ref().map(|meta_map| {
@@ -395,6 +460,21 @@ pub fn to_tx(
 }
 
 const CONTENT_REF: &str = "content-ref";
+
+/// Merge two optional metadata values. Properties from `b` override properties from `a`.
+fn merge_metadata(a: Option<Metadata>, b: Option<Metadata>) -> Option<Metadata> {
+    match (a, b) {
+        (Some(mut base), Some(overlay)) => {
+            if let (Some(base_obj), Some(overlay_obj)) = (base.as_object_mut(), overlay.as_object())
+            {
+                base_obj.extend(overlay_obj.iter().map(|(k, v)| (k.clone(), v.clone())));
+            }
+            Some(base)
+        }
+        (Some(m), None) | (None, Some(m)) => Some(m),
+        (None, None) => None,
+    }
+}
 
 /// Extract a `UtxoId` from a charm's metadata `content-ref` value.
 /// Expects metadata shaped like `{"content-ref": {"bitcoin": "txid:vout"}}`.

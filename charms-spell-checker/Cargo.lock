@@ -548,6 +548,7 @@ dependencies = [
  "pallas-crypto 0.34.0",
  "pallas-primitives 0.34.0",
  "serde",
+ "serde_json",
  "serde_with",
  "sha2 0.10.9",
  "sp1-primitives",
