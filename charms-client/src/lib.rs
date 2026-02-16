@@ -379,10 +379,12 @@ pub fn to_tx(
     }
 }
 
+const CONTENT_REF: &str = "content-ref";
+
 /// Extract a `UtxoId` from a charm's metadata `content-ref` value.
 /// Expects metadata shaped like `{"content-ref": {"bitcoin": "txid:vout"}}`.
 fn parse_content_ref(meta: &Metadata) -> Option<UtxoId> {
-    let content_ref = meta.as_object()?.get("content-ref")?;
+    let content_ref = meta.as_object()?.get(CONTENT_REF)?;
     let ref_obj = content_ref.as_object()?;
     let utxo_id_str = ref_obj.values().next()?.as_str()?;
     UtxoId::from_str(utxo_id_str).ok()
