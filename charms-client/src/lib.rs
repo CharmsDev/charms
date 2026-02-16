@@ -105,7 +105,7 @@ pub struct NormalizedTransaction {
     pub out_meta: Option<BTreeMap<u32, Metadata>>,
     /// Per-charm metadata in outputs. Indexed by output position, then keyed by app index.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub charm_meta: Option<Vec<BTreeMap<u32, Metadata>>>,
+    pub out_charm_meta: Option<Vec<BTreeMap<u32, Metadata>>>,
 }
 
 impl NormalizedTransaction {
@@ -260,7 +260,7 @@ fn content_ref_utxos_present(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
 ) -> bool {
-    let Some(charm_meta) = &spell.tx.charm_meta else {
+    let Some(charm_meta) = &spell.tx.out_charm_meta else {
         return true;
     };
     for per_out in charm_meta {
@@ -308,7 +308,11 @@ pub fn to_tx(
     };
 
     let from_normalized_charms = |out_idx: usize, n_charms: &NormalizedCharms| -> Charms {
-        let charm_meta = spell.tx.charm_meta.as_ref().and_then(|cm| cm.get(out_idx));
+        let charm_meta = spell
+            .tx
+            .out_charm_meta
+            .as_ref()
+            .and_then(|cm| cm.get(out_idx));
         resolve_content_refs(charms(spell, n_charms), charm_meta, spell, prev_spells)
     };
 
@@ -339,7 +343,7 @@ pub fn to_tx(
     });
 
     // Convert per-charm metadata: Vec<BTreeMap<u32, Metadata>> -> Vec<BTreeMap<App, Metadata>>
-    let charm_meta = spell.tx.charm_meta.as_ref().map(|cm| {
+    let out_charm_meta = spell.tx.out_charm_meta.as_ref().map(|cm| {
         cm.iter()
             .map(|per_out| {
                 per_out
@@ -349,6 +353,16 @@ pub fn to_tx(
             })
             .collect()
     });
+
+    // Build in_charm_meta from previous spells' output charm_meta
+    let in_charm_meta: Vec<BTreeMap<App, Metadata>> = tx_ins
+        .iter()
+        .map(|utxo_id| {
+            let effective_utxo = tx_ins_beamed_source_utxos.get(utxo_id).unwrap_or(utxo_id);
+            charm_meta_in_utxo(effective_utxo, prev_spells)
+        })
+        .collect();
+    let in_charm_meta = Some(in_charm_meta).filter(|v| v.iter().any(|m| !m.is_empty()));
 
     // Convert per-public-input metadata: BTreeMap<u32, Metadata> -> BTreeMap<App, Metadata>
     let public_input_meta = spell.public_input_meta.as_ref().map(|pim| {
@@ -374,7 +388,8 @@ pub fn to_tx(
         meta: spell.meta.clone(),
         in_meta,
         out_meta,
-        charm_meta,
+        in_charm_meta,
+        out_charm_meta,
         public_input_meta,
     }
 }
@@ -447,12 +462,36 @@ fn resolve_single_content_ref(
     let data = ref_n_charms.get(&ref_app_idx)?;
     if data.is_empty() {
         // The referenced UTXO itself has empty data — check if it has its own content-ref
-        let ref_charm_meta = ref_spell.tx.charm_meta.as_ref()?.get(ref_out_idx)?;
+        let ref_charm_meta = ref_spell.tx.out_charm_meta.as_ref()?.get(ref_out_idx)?;
         let ref_meta = ref_charm_meta.get(&ref_app_idx)?;
         resolve_single_content_ref(ref_meta, app, prev_spells, depth + 1)
     } else {
         Some(data.clone())
     }
+}
+
+/// Extract per-charm metadata for a UTXO from its creating spell's output charm_meta.
+fn charm_meta_in_utxo(
+    utxo_id: &UtxoId,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+) -> BTreeMap<App, Metadata> {
+    let Some((prev_spell, _)) = prev_spells.get(&utxo_id.0) else {
+        return BTreeMap::new();
+    };
+    let out_idx = utxo_id.1 as usize;
+    prev_spell
+        .tx
+        .out_charm_meta
+        .as_ref()
+        .and_then(|cm| cm.get(out_idx))
+        .map(|per_out| {
+            let prev_apps = apps(prev_spell);
+            per_out
+                .iter()
+                .filter_map(|(&i, m)| Some((prev_apps.get(i as usize)?.clone(), m.clone())))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn charms_in_utxo(
@@ -464,7 +503,7 @@ fn charms_in_utxo(
     (prev_spell.tx.outs).get(out_idx).map(|n_charms| {
         let charm_meta = prev_spell
             .tx
-            .charm_meta
+            .out_charm_meta
             .as_ref()
             .and_then(|cm| cm.get(out_idx));
         resolve_content_refs(

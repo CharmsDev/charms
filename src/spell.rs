@@ -96,7 +96,7 @@ pub struct Output {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub meta: Option<Metadata>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub charm_meta: Option<BTreeMap<String, Metadata>>,
+    pub out_charm_meta: Option<BTreeMap<String, Metadata>>,
 }
 
 /// Defines how spells are represented in their source form and in CLI outputs,
@@ -270,12 +270,12 @@ impl Spell {
         let out_meta = Some(out_meta).filter(|m| !m.is_empty());
 
         // Collect per-charm metadata in outputs
-        let charm_meta: Vec<BTreeMap<u32, Metadata>> = self
+        let out_charm_meta: Vec<BTreeMap<u32, Metadata>> = self
             .outs
             .iter()
             .map(|output| {
                 output
-                    .charm_meta
+                    .out_charm_meta
                     .as_ref()
                     .map(|cm| {
                         cm.iter()
@@ -289,7 +289,7 @@ impl Spell {
                     .unwrap_or_default()
             })
             .collect();
-        let charm_meta = Some(charm_meta).filter(|v| v.iter().any(|m| !m.is_empty()));
+        let out_charm_meta = Some(out_charm_meta).filter(|v| v.iter().any(|m| !m.is_empty()));
 
         // Collect per-public-input metadata
         let public_input_meta: BTreeMap<u32, Metadata> = self
@@ -317,7 +317,7 @@ impl Spell {
                 coins: Some(coins),
                 in_meta,
                 out_meta,
-                charm_meta,
+                out_charm_meta,
             },
             app_public_inputs,
             mock,
@@ -424,9 +424,9 @@ impl Spell {
                     .out_meta
                     .as_ref()
                     .and_then(|m| m.get(&i).cloned()),
-                charm_meta: norm_spell
+                out_charm_meta: norm_spell
                     .tx
-                    .charm_meta
+                    .out_charm_meta
                     .as_ref()
                     .and_then(|cm| cm.get(i as usize))
                     .map(|per_out| {

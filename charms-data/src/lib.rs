@@ -76,9 +76,12 @@ pub struct Transaction {
     /// Per-output metadata. Indexed by output position.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub out_meta: Option<Vec<Option<Metadata>>>,
+    /// Per-charm metadata in inputs. Indexed by input position, then keyed by app.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub in_charm_meta: Option<Vec<BTreeMap<App, Metadata>>>,
     /// Per-charm metadata in outputs. Indexed by output position, then keyed by app.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub charm_meta: Option<Vec<BTreeMap<App, Metadata>>>,
+    pub out_charm_meta: Option<Vec<BTreeMap<App, Metadata>>>,
     /// Per-public-input metadata. Keyed by app.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub public_input_meta: Option<BTreeMap<App, Metadata>>,
@@ -627,26 +630,37 @@ pub fn is_simple_transfer(app: &App, tx: &Transaction) -> bool {
     }
 }
 
-/// Check if the provided app's token amounts are balanced in the transaction. This means that the
-/// sum of the token amounts in the `tx` inputs is equal to the sum of the token amounts in the `tx`
-/// outputs.
+/// Check if the provided app's token amounts are balanced in the transaction, grouping by
+/// preserved metadata (`metadata-ref`, `content-type`). Amounts must balance per distinct
+/// preserved-metadata group. When no preserved metadata is present, this is equivalent to
+/// checking that the total sum of inputs equals the total sum of outputs.
 pub fn token_amounts_balanced(app: &App, tx: &Transaction) -> bool {
-    match (
-        sum_token_amount(app, tx.ins.iter().map(|(_, v)| v)),
-        sum_token_amount(app, tx.outs.iter()),
-    ) {
-        (Ok(amount_in), Ok(amount_out)) => amount_in == amount_out,
-        (..) => false,
+    let in_amounts = token_amounts_by_preserved_meta(
+        app,
+        tx.ins.iter().map(|(_, v)| v),
+        tx.in_charm_meta.as_deref(),
+    );
+    let out_amounts =
+        token_amounts_by_preserved_meta(app, tx.outs.iter(), tx.out_charm_meta.as_deref());
+    match (in_amounts, out_amounts) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
     }
 }
 
-/// Check if the NFT states are preserved in the transaction. This means that the NFTs (created by
-/// the provided `app`) in the `tx` inputs are the same as the NFTs in the `tx` outputs.
+/// Check if the NFT states are preserved in the transaction, including preserved metadata
+/// (`metadata-ref`, `content-type`). Each NFT's data and its preserved metadata must match
+/// between inputs and outputs. When no preserved metadata is present, this is equivalent to
+/// checking that the multiset of NFT data values is identical.
 pub fn nft_state_preserved(app: &App, tx: &Transaction) -> bool {
-    let nft_states_in = app_state_multiset(app, tx.ins.iter().map(|(_, v)| v));
-    let nft_states_out = app_state_multiset(app, tx.outs.iter());
-
-    nft_states_in == nft_states_out
+    let in_set = nft_multiset_with_preserved_meta(
+        app,
+        tx.ins.iter().map(|(_, v)| v),
+        tx.in_charm_meta.as_deref(),
+    );
+    let out_set =
+        nft_multiset_with_preserved_meta(app, tx.outs.iter(), tx.out_charm_meta.as_deref());
+    in_set == out_set
 }
 
 /// Deprecated. Use [charm_values] instead.
@@ -667,20 +681,72 @@ pub fn charm_values<'a>(
     strings_of_charms.filter_map(|charms| charms.get(app))
 }
 
-fn app_state_multiset<'a>(
+/// Extract the preserved metadata properties (`metadata-ref`, `content-type`) from charm metadata.
+/// Returns `None` if neither property is present. The result is serialized to Data
+/// for use as a map/multiset key (since `serde_json::Value` does not implement `Ord`).
+fn preserved_meta(meta: &Metadata) -> Option<Data> {
+    let obj = meta.as_object()?;
+    let mut preserved = serde_json::Map::new();
+    if let Some(v) = obj.get("metadata-ref") {
+        preserved.insert("metadata-ref".into(), v.clone());
+    }
+    if let Some(v) = obj.get("content-type") {
+        preserved.insert("content-type".into(), v.clone());
+    }
+    if preserved.is_empty() {
+        None
+    } else {
+        Some((&serde_json::Value::Object(preserved)).into())
+    }
+}
+
+/// Look up the preserved metadata for a given app in a per-charm metadata map.
+fn get_preserved_meta(
+    app: &App,
+    charm_meta: Option<&[BTreeMap<App, Metadata>]>,
+    idx: usize,
+) -> Option<Data> {
+    charm_meta
+        .and_then(|cm| cm.get(idx))
+        .and_then(|per_out| per_out.get(app))
+        .and_then(preserved_meta)
+}
+
+/// Build a multiset of `(Data, Option<preserved_meta>)` pairs for an app's NFT charms.
+fn nft_multiset_with_preserved_meta<'a>(
     app: &App,
     strings_of_charms: impl Iterator<Item = &'a Charms>,
-) -> BTreeMap<&'a Data, usize> {
+    charm_meta: Option<&[BTreeMap<App, Metadata>]>,
+) -> BTreeMap<(&'a Data, Option<Data>), usize> {
     strings_of_charms
-        .filter_map(|charms| charms.get(app))
-        .fold(BTreeMap::new(), |mut r, s| {
-            match r.get_mut(s) {
-                Some(count) => *count += 1,
-                None => {
-                    r.insert(s, 1);
-                }
-            }
+        .enumerate()
+        .filter_map(|(idx, charms)| {
+            let data = charms.get(app)?;
+            let meta = get_preserved_meta(app, charm_meta, idx);
+            Some((data, meta))
+        })
+        .fold(BTreeMap::new(), |mut r, key| {
+            *r.entry(key).or_insert(0) += 1;
             r
+        })
+}
+
+/// Build a map from preserved metadata to summed token amounts.
+fn token_amounts_by_preserved_meta<'a>(
+    app: &App,
+    strings_of_charms: impl Iterator<Item = &'a Charms>,
+    charm_meta: Option<&[BTreeMap<App, Metadata>]>,
+) -> Result<BTreeMap<Option<Data>, u64>> {
+    ensure!(app.tag == TOKEN);
+    strings_of_charms
+        .enumerate()
+        .try_fold(BTreeMap::new(), |mut r, (idx, charms)| {
+            if let Some(state) = charms.get(app) {
+                let meta = get_preserved_meta(app, charm_meta, idx);
+                let amount: u64 = state.value()?;
+                *r.entry(meta).or_insert(0u64) += amount;
+            }
+            Ok(r)
         })
 }
 
