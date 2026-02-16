@@ -308,10 +308,8 @@ pub fn to_tx(
     };
 
     let from_normalized_charms = |out_idx: usize, n_charms: &NormalizedCharms| -> Charms {
-        let mut resolved = charms(spell, n_charms);
         let charm_meta = spell.tx.charm_meta.as_ref().and_then(|cm| cm.get(out_idx));
-        resolve_content_refs(&mut resolved, charm_meta, spell, prev_spells);
-        resolved
+        resolve_content_refs(charms(spell, n_charms), charm_meta, spell, prev_spells)
     };
 
     let coin_from_input = |utxo_id: &UtxoId| -> NativeOutput {
@@ -396,13 +394,13 @@ const MAX_CONTENT_REF_DEPTH: usize = 8;
 /// if there's a `content-ref` in `charm_meta`, replace the empty data with the
 /// referenced UTXO's charm value.
 fn resolve_content_refs(
-    charms: &mut Charms,
+    mut charms: Charms,
     charm_meta: Option<&BTreeMap<u32, Metadata>>,
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-) {
+) -> Charms {
     let Some(charm_meta) = charm_meta else {
-        return;
+        return charms;
     };
     let apps_list = apps(spell);
     for (&app_idx, meta) in charm_meta {
@@ -422,6 +420,7 @@ fn resolve_content_refs(
             charms.insert(app.clone(), resolved);
         }
     }
+    charms
 }
 
 /// Recursively resolve a single content-ref to its actual data value.
@@ -461,14 +460,17 @@ fn charms_in_utxo(
 ) -> Option<Charms> {
     let out_idx = utxo_id.1 as usize;
     (prev_spell.tx.outs).get(out_idx).map(|n_charms| {
-        let mut resolved = charms(prev_spell, n_charms);
         let charm_meta = prev_spell
             .tx
             .charm_meta
             .as_ref()
             .and_then(|cm| cm.get(out_idx));
-        resolve_content_refs(&mut resolved, charm_meta, prev_spell, prev_spells);
-        resolved
+        resolve_content_refs(
+            charms(prev_spell, n_charms),
+            charm_meta,
+            prev_spell,
+            prev_spells,
+        )
     })
 }
 
