@@ -7,8 +7,10 @@ use charms_data::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+};
 
 pub mod ark;
 pub mod bitcoin_tx;
@@ -293,14 +295,12 @@ pub fn to_tx(
         .collect();
 
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
-        let (prev_spell, _) = &prev_spells[&utxo_id.0];
-        let charms = charms_in_utxo(prev_spell, utxo_id, prev_spells)
+        let charms = charms_in_utxo(utxo_id, prev_spells)
             .or_else(|| {
                 tx_ins_beamed_source_utxos
                     .get(utxo_id)
                     .and_then(|beam_source_utxo_id| {
-                        let prev_spell = &prev_spells[&beam_source_utxo_id.0].0;
-                        charms_in_utxo(&prev_spell, beam_source_utxo_id, prev_spells)
+                        charms_in_utxo(beam_source_utxo_id, prev_spells)
                     })
             })
             .unwrap_or_default();
@@ -454,10 +454,10 @@ fn resolve_single_content_ref(
 }
 
 fn charms_in_utxo(
-    prev_spell: &NormalizedSpell,
     utxo_id: &UtxoId,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
 ) -> Option<Charms> {
+    let (prev_spell, _) = &prev_spells[&utxo_id.0];
     let out_idx = utxo_id.1 as usize;
     (prev_spell.tx.outs).get(out_idx).map(|n_charms| {
         let charm_meta = prev_spell
