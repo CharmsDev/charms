@@ -36,8 +36,8 @@ charms-client = { path = "./charms-client", version = "11.0.0-dev" }
 charms-data = { path = "./charms-data", version = "11.0.0-dev" }
 charms-lib = { path = "./charms-lib", version = "11.0.0-dev" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "11.0.0-dev" }
-clap = { version = "4.5.56", features = ["derive"] }
-clap_complete = { version = "4.5.65" }
+clap = { version = "4.5.58", features = ["derive"] }
+clap_complete = { version = "4.5.66" }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
 pallas-primitives = { workspace = true }
@@ -51,7 +51,7 @@ hex-literal = { version = "1.1.0" }
 redis = { version = "0.32.7", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
 reqwest = { version = "0.12.28", features = ["json"] }
-rslock = { version = "0.7.3", optional = true, features = ["tokio-comp"] }
+rslock = { version = "0.7.4", optional = true, features = ["tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_with = { version = "3.16.1", features = ["base64"] }
@@ -94,7 +94,7 @@ exclude = [
 resolver = "3"
 
 [workspace.dependencies]
-anyhow = { version = "1.0.100" }
+anyhow = { version = "1.0.101" }
 ark-bls12-381 = { version = "0.5.0" }
 ark-ec = { version = "0.5.0" }
 ark-ff = { version = "0.5.0" }
@@ -114,7 +114,7 @@ pallas-addresses = { version = "0.34.0" }
 pallas-codec = { version = "0.34.0" }
 pallas-crypto = { version = "0.34.0" }
 hex = { version = "0.4.3" }
-proptest = { version = "1.9.0" }
+proptest = { version = "1.10.0" }
 proptest-derive = { version = "0.5.1" }
 serde = { version = "1.0" }
 serde_json = { version = "1.0.149" }
@@ -127,7 +127,7 @@ sp1-prover = { version = "5.2.4" }
 sp1-sdk = { version = "5.2.4", default-features = false, features = ["network"] }
 sp1-verifier = { version = "5.2.4" }
 sp1-zkvm = { version = "5.2.4" }
-test-strategy = { version = "0.4.4" }
+test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }
 
 [profile.test]
