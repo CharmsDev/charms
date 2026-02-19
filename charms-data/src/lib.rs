@@ -80,7 +80,7 @@ pub type Charms = BTreeMap<App, Data>;
 
 /// ID of a UTXO (Unspent Transaction Output) in the underlying ledger system (e.g. Bitcoin).
 /// A UTXO ID is a pair of `(transaction ID, index of the output)`.
-#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[cfg_attr(any(test, feature = "test"), derive(test_strategy::Arbitrary))]
 #[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct UtxoId(pub TxId, pub u32);
 
@@ -215,7 +215,7 @@ impl<'de> Deserialize<'de> for UtxoId {
 ///
 /// The `identity` is a 32-byte byte string (hash) that uniquely identifies the app among other apps
 /// implemented using the same code.
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(any(test, feature = "test"), derive(proptest_derive::Arbitrary))]
 #[derive(Clone, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct App {
     pub tag: char,
@@ -328,7 +328,7 @@ impl<'de> Deserialize<'de> for App {
 }
 
 /// ID (hash) of a transaction in the underlying ledger (Bitcoin).
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(any(test, feature = "test"), derive(proptest_derive::Arbitrary))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct TxId(pub [u8; 32]);
 
@@ -429,7 +429,7 @@ impl<'de> Deserialize<'de> for TxId {
 }
 
 /// 32-byte byte string (e.g. a hash, like SHA256).
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
+#[cfg_attr(any(test, feature = "test"), derive(proptest_derive::Arbitrary))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct B32(pub [u8; 32]);
 
