@@ -5,6 +5,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+# Empty `[workspace]` section to make this a "top-level" project
+[workspace]
+
 [dependencies]
 charms-sdk = { path = "../../charms-sdk", version = "11.0.0-dev" }
 serde = { version = "1.0", features = ["derive"] }
@@ -16,6 +19,3 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 overflow-checks = true
-
-# Empty `[workspace]` section to make this a "top-level" project
-[workspace]

@@ -7,9 +7,11 @@ edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
 
+[workspace]
+
 [dependencies]
-charms-data = { path = "../charms-data", version = "11.0.0-dev" }
 charms-client = { path = "../charms-client", version = "11.0.0-dev" }
+charms-data = { path = "../charms-data", version = "11.0.0-dev" }
 sp1-zkvm = { version = "5.2.4", features = ["verify"] }
 
 [profile.release]
@@ -22,5 +24,3 @@ overflow-checks = true
 [patch.crates-io]
 secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.29.1-sp1-5.0.0" }
 sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-4.0.0" }
-
-[workspace]

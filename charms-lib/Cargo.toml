@@ -10,14 +10,14 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+wasm = ["wasm-bindgen", "serde-wasm-bindgen"]
+
 [dependencies]
 charms-client = { path = "../charms-client", version = "11.0.0-dev" }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.108", optional = true }
-
-[features]
-default = []
-wasm = ["wasm-bindgen", "serde-wasm-bindgen"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
