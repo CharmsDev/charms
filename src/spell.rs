@@ -25,7 +25,7 @@ use ark_std::{
 use bitcoin::{Amount, Network, hashes::Hash};
 use charms_app_runner::AppRunner;
 pub use charms_client::{
-    CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, Proof,
+    BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, Proof,
     SpellProverInput, to_tx,
 };
 use charms_client::{
@@ -71,7 +71,7 @@ pub struct Input {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub charms: Option<KeyedCharms>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub beamed_from: Option<UtxoId>,
+    pub beamed_from: Option<BeamSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -168,7 +168,7 @@ impl Spell {
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
-        BTreeMap<usize, UtxoId>,
+        BTreeMap<usize, BeamSource>,
     )> {
         ensure!(self.version == CURRENT_VERSION);
 
@@ -436,7 +436,7 @@ pub trait Prove: Send + Sync {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)>;
 }
 
@@ -447,7 +447,7 @@ impl Prove for Prover {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         ensure!(
             !norm_spell.mock,
@@ -518,7 +518,7 @@ impl Prove for MockProver {
         app_binaries: BTreeMap<B32, Vec<u8>>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<Tx>,
-        tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
+        tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         let norm_spell = make_mock(norm_spell);
 
@@ -718,8 +718,8 @@ pub struct ProveRequest {
     pub spell: NormalizedSpell,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DataHex>>")]
     pub app_private_inputs: BTreeMap<App, Data>,
-    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DisplayFromStr>>")]
-    pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, _>>")]
+    pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
     pub prev_txs: Vec<Tx>,
@@ -1044,7 +1044,7 @@ pub fn ensure_exact_app_binaries(
 
 pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
-    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
 ) -> anyhow::Result<()> {
     let spell_ins = spell
@@ -1069,10 +1069,10 @@ pub fn ensure_all_prev_txs_are_present(
     ensure!(
         tx_ins_beamed_source_utxos
             .iter()
-            .all(|(&i, beaming_source_utxo_id)| {
+            .all(|(&i, beaming_source)| {
                 spell_ins.get(i).is_some_and(|utxo_id| {
                     prev_txs_by_id.contains_key(&utxo_id.0)
-                        && prev_txs_by_id.contains_key(&beaming_source_utxo_id.0)
+                        && prev_txs_by_id.contains_key(&(beaming_source.0).0)
                 })
             }),
         "prev_txs MUST contain transactions creating beaming source and destination UTXOs"
@@ -1090,11 +1090,7 @@ pub fn ensure_all_prev_txs_are_present(
     }
 
     // Add transaction IDs from beaming source UTXOs
-    required_txids.extend(
-        tx_ins_beamed_source_utxos
-            .values()
-            .map(|utxo_id| &utxo_id.0),
-    );
+    required_txids.extend(tx_ins_beamed_source_utxos.values().map(|bs| &(bs.0).0));
 
     // Check that prev_txs contains exactly the required transactions
     let provided_txids: BTreeSet<_> = prev_txs_by_id.keys().collect();

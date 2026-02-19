@@ -6,13 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Build the main CLI (without prover)
-cargo build --release
+cargo build --profile=test
 
 # Build with prover feature (requires GPU/CUDA support)
-cargo build --release --features prover
+cargo build --profile=test --features prover
 
 # Install CLI locally
-cargo install --path . --locked
+cargo install --profile=test --path . --locked
+
+# Install CLI locally with prover feature
+cargo install --profile=test --path . --locked --features prover
 
 # Run tests
 cargo test
@@ -21,7 +24,7 @@ cargo test
 cargo test <test_name>
 
 # Build an app to WASM
-cargo build --target wasm32-wasip1 --release
+charms app build
 ```
 
 ## Project Overview

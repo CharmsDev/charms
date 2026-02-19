@@ -6,6 +6,7 @@ use charms_data::{
     is_simple_transfer,
 };
 use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, IfIsHumanReadable, serde_as};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +63,18 @@ pub const V10: u32 = 10;
 
 /// Current version of the protocol.
 pub const CURRENT_VERSION: u32 = V10;
+
+/// Source of a beamed input: the UTXO that beamed the charms, with an optional nonce.
+///
+/// When the nonce is `Some`, its LE bytes are appended to the destination UTXO ID bytes
+/// before hashing for comparison with the hash in the beaming transaction's `beamed_outs`.
+#[serde_as]
+#[cfg_attr(test, derive(test_strategy::Arbitrary))]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BeamSource(
+    #[serde_as(as = "IfIsHumanReadable<DisplayFromStr>")] pub UtxoId,
+    #[serde(skip_serializing_if = "Option::is_none", default)] pub Option<u64>,
+);
 
 /// Maps the index of the charm's app (in [`NormalizedSpell`].`app_public_inputs`) to the charm's
 /// data.
@@ -139,6 +152,15 @@ pub fn utxo_id_hash(utxo_id: &UtxoId) -> B32 {
     B32(hash.into())
 }
 
+pub fn utxo_id_hash_with_nonce(utxo_id: &UtxoId, nonce: Option<u64>) -> B32 {
+    let mut hash = Sha256::default();
+    hash.update(utxo_id.to_bytes());
+    if let Some(nonce) = nonce {
+        hash.update(&nonce.to_le_bytes());
+    }
+    B32(hash.finalize().into())
+}
+
 /// Extract spells from previous transactions.
 #[tracing::instrument(level = "debug", skip(prev_txs, spell_vk))]
 pub fn prev_spells(
@@ -165,7 +187,7 @@ pub fn prev_spells(
 pub fn well_formed(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
 ) -> bool {
     check!(spell.version == CURRENT_VERSION);
     check!(ensure_no_zero_amounts(spell).is_ok());
@@ -200,7 +222,7 @@ pub fn well_formed(
     );
     let beamed_source_utxos_point_to_placeholder_dest_utxos = tx_ins_beamed_source_utxos
         .iter()
-        .all(|(&i, beaming_source_utxo_id)| {
+        .all(|(&i, beaming_source)| {
             let tx_in_utxo_id = &tx_ins[i];
             let prev_txid = tx_in_utxo_id.0;
             let prev_tx = prev_spells.get(&prev_txid);
@@ -216,13 +238,16 @@ pub fn well_formed(
                         || beamed_out_to_hash(prev_spell, tx_in_utxo_id.1).is_some())
             );
 
+            let beaming_source_utxo_id = &beaming_source.0;
             let beaming_txid = beaming_source_utxo_id.0;
             let beaming_utxo_index = beaming_source_utxo_id.1;
 
             prev_spells
                 .get(&beaming_txid)
                 .and_then(|(n_spell, _tx_outs)| beamed_out_to_hash(n_spell, beaming_utxo_index))
-                .is_some_and(|dest_utxo_hash| dest_utxo_hash == &utxo_id_hash(tx_in_utxo_id))
+                .is_some_and(|dest_utxo_hash| {
+                    dest_utxo_hash == &utxo_id_hash_with_nonce(tx_in_utxo_id, beaming_source.1)
+                })
         });
     check!(beamed_source_utxos_point_to_placeholder_dest_utxos);
     true
@@ -237,7 +262,7 @@ pub fn apps(spell: &NormalizedSpell) -> Vec<App> {
 pub fn to_tx(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
-    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     prev_txs: &[Tx],
 ) -> Transaction {
     let Some(tx_ins) = &spell.tx.ins else {
@@ -246,7 +271,7 @@ pub fn to_tx(
 
     let tx_ins_beamed_source_utxos: BTreeMap<UtxoId, UtxoId> = tx_ins_beamed_source_utxos
         .iter()
-        .map(|(&i, utxo_id)| (tx_ins[i].clone(), utxo_id.clone()))
+        .map(|(&i, bs)| (tx_ins[i].clone(), bs.0.clone()))
         .collect();
 
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
@@ -308,7 +333,7 @@ pub struct SpellProverInput {
     pub self_spell_vk: String,
     pub prev_txs: Vec<Tx>,
     pub spell: NormalizedSpell,
-    pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
+    pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     pub app_input: Option<AppInput>,
 }
 
@@ -318,7 +343,7 @@ pub fn is_correct(
     prev_txs: &Vec<Tx>,
     app_input: Option<AppInput>,
     spell_vk: &str,
-    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
 ) -> bool {
     check!(beaming_txs_have_finality_proofs(
         prev_txs,
@@ -334,7 +359,7 @@ pub fn is_correct(
     };
     let all_prev_txids: BTreeSet<_> = tx_ins_beamed_source_utxos
         .values()
-        .map(|u| &u.0)
+        .map(|bs| &(bs.0).0)
         .chain(prev_txids)
         .collect();
     check!(all_prev_txids == prev_spells.keys().collect());
@@ -354,12 +379,12 @@ pub fn is_correct(
 
 fn beaming_txs_have_finality_proofs(
     prev_txs: &Vec<Tx>,
-    tx_ins_beamed_source_utxos: &BTreeMap<usize, UtxoId>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
 ) -> bool {
     let prev_txs_by_txid: BTreeMap<TxId, Tx> = by_txid(prev_txs);
     let beaming_source_txids: BTreeSet<&TxId> = tx_ins_beamed_source_utxos
         .values()
-        .map(|u| &u.0)
+        .map(|bs| &(bs.0).0)
         .collect::<BTreeSet<_>>();
     beaming_source_txids.iter().all(|&txid| {
         prev_txs_by_txid
@@ -412,6 +437,33 @@ pub fn beamed_out_to_hash(spell: &NormalizedSpell, i: u32) -> Option<&B32> {
 
 #[cfg(test)]
 mod test {
+    use crate::BeamSource;
+    use charms_data::UtxoId;
+    use test_strategy::proptest;
+
     #[test]
     fn dummy() {}
+
+    #[proptest]
+    fn beaming_source_json_parse_with_nonce(utxo_id: UtxoId, nonce: u64) {
+        let s0 = format!(r#"["{}",{}]"#, utxo_id, nonce);
+        let bs: BeamSource = serde_json::from_str(&s0).unwrap();
+        let s1 = serde_json::to_string(&bs).unwrap();
+        assert_eq!(s1, s0);
+    }
+
+    #[proptest]
+    fn beaming_source_json_parse_no_nonce(utxo_id: UtxoId) {
+        let s0 = format!(r#"["{}"]"#, utxo_id);
+        let bs: BeamSource = serde_json::from_str(&s0).unwrap();
+        let s1 = serde_json::to_string(&bs).unwrap();
+        assert_eq!(s1, s0);
+    }
+
+    #[proptest]
+    fn beaming_source_json_print(bs0: BeamSource) {
+        let s = serde_json::to_string(&bs0).unwrap();
+        let bs1: BeamSource = serde_json::from_str(&s).unwrap();
+        assert_eq!(bs1, bs0);
+    }
 }

@@ -36,5 +36,10 @@ tracing = { workspace = true }
 uplc = { version = "1.1.21" }
 
 [dev-dependencies]
+charms-data = { path = "../charms-data", version = "11.0.0-dev", features = ["test"] }
 ciborium = { workspace = true }
+proptest = { workspace = true }
+proptest-derive = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+test-strategy = { workspace = true }

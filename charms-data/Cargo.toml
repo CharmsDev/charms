@@ -7,13 +7,19 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+test = ["dep:proptest", "dep:proptest-derive", "dep:test-strategy"]
+
 [dependencies]
 anyhow = { workspace = true }
 ark-std = { version = "0.5.0" }
 ciborium = { workspace = true }
 ciborium-io = { workspace = true }
 hex = { workspace = true }
+proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
+test-strategy = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
