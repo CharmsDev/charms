@@ -81,8 +81,7 @@ impl Prove for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell_input.into_parts();
+        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell_input.into_parts();
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -140,8 +139,7 @@ impl Check for SpellCli {
 
         let prev_txs = from_strings(&prev_txs)?;
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell_input.into_parts();
+        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell_input.into_parts();
 
         ensure_all_prev_txs_are_present(
             &norm_spell,

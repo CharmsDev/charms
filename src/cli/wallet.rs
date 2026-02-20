@@ -1,9 +1,7 @@
 use crate::{cli, cli::WalletListParams, tx, utils::str_index};
 use anyhow::{Result, ensure};
 use bitcoin::{Transaction, hashes::Hash};
-use charms_client::{
-    NormalizedCharms, NormalizedSpell, bitcoin_tx::BitcoinTx, tx::Tx,
-};
+use charms_client::{NormalizedCharms, NormalizedSpell, bitcoin_tx::BitcoinTx, tx::Tx};
 use charms_data::{App, Data, TxId, UtxoId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -123,10 +121,7 @@ fn utxos_with_charms(
                 .filter(|n_charms| !n_charms.is_empty())
                 .map(|n_charms| {
                     let apps: Vec<App> = spells[&txid].app_public_inputs.keys().cloned().collect();
-                    (
-                        UtxoId(txid, i),
-                        (b_utxo, parsed_charms(n_charms, &apps)),
-                    )
+                    (UtxoId(txid, i), (b_utxo, parsed_charms(n_charms, &apps)))
                 })
         })
         .collect()
