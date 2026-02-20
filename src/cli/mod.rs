@@ -143,6 +143,10 @@ pub struct SpellCheckParams {
     #[arg(long)]
     prev_txs: Option<Vec<String>>,
 
+    /// Target chain, defaults to `bitcoin`.
+    #[arg(long, default_value = "bitcoin")]
+    chain: Chain,
+
     /// Is mock mode enabled?
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,

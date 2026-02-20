@@ -30,6 +30,7 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
+    cardano_tx::OutputContent,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::{
@@ -90,7 +91,7 @@ pub struct Output {
     #[serde(alias = "beamed_to", skip_serializing_if = "Option::is_none")]
     pub beam_to: Option<B32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<Data>,
+    pub content: Option<serde_json::Value>,
 }
 
 /// Defines how spells are represented in their source form and in CLI outputs,
@@ -165,6 +166,7 @@ impl Spell {
     pub fn normalized(
         &self,
         mock: bool,
+        chain: Chain,
     ) -> anyhow::Result<(
         NormalizedSpell,
         BTreeMap<App, Data>,
@@ -234,7 +236,7 @@ impl Spell {
             .collect();
         let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
 
-        let coins = get_coin_outs(&self.outs)?;
+        let coins = get_coin_outs(&self.outs, chain)?;
 
         let norm_spell = NormalizedSpell {
             version: self.version,
@@ -316,28 +318,32 @@ impl Spell {
             .outs
             .iter()
             .zip(0u32..)
-            .map(|(n_charms, i)| Output {
-                address: None,
-                amount: None,
-                charms: match n_charms
-                    .iter()
-                    .map(|(i, data)| (utils::str_index(i), data.clone()))
-                    .collect::<KeyedCharms>()
-                {
-                    charms if charms.is_empty() => None,
-                    charms => Some(charms),
-                },
-                beam_to: norm_spell
-                    .tx
-                    .beamed_outs
-                    .as_ref()
-                    .and_then(|beamed_to| beamed_to.get(&i).cloned()),
-                content: (norm_spell.tx.coins)
-                    .as_ref()
-                    .and_then(|coins| coins.get(i as usize))
-                    .and_then(|native_output| native_output.content.clone()),
+            .map(|(n_charms, i)| -> anyhow::Result<_> {
+                Ok(Output {
+                    address: None,
+                    amount: None,
+                    charms: match n_charms
+                        .iter()
+                        .map(|(i, data)| (utils::str_index(i), data.clone()))
+                        .collect::<KeyedCharms>()
+                    {
+                        charms if charms.is_empty() => None,
+                        charms => Some(charms),
+                    },
+                    beam_to: norm_spell
+                        .tx
+                        .beamed_outs
+                        .as_ref()
+                        .and_then(|beamed_to| beamed_to.get(&i).cloned()),
+                    content: (norm_spell.tx.coins)
+                        .as_ref()
+                        .and_then(|coins| coins.get(i as usize))
+                        .and_then(|native_output| native_output.content.as_ref())
+                        .map(|t| t.value())
+                        .transpose()?,
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<_>>()?;
 
         Ok(Self {
             version: norm_spell.version,
@@ -351,13 +357,24 @@ impl Spell {
     }
 }
 
-fn get_coin_outs(outs: &[Output]) -> anyhow::Result<Vec<NativeOutput>> {
+fn get_coin_outs(outs: &[Output], chain: Chain) -> anyhow::Result<Vec<NativeOutput>> {
     outs.iter()
         .map(|output| {
+            let content = match chain {
+                Chain::Bitcoin => None,
+                Chain::Cardano => output
+                    .content
+                    .clone()
+                    .map(|content_json| -> anyhow::Result<_> {
+                        let output_content: OutputContent = serde_json::from_value(content_json)?;
+                        Ok((&output_content).into())
+                    })
+                    .transpose()?,
+            };
             Ok(NativeOutput {
                 amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
                 dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
-                content: output.content.clone(),
+                content,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()
