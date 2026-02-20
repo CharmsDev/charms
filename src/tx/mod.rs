@@ -1,4 +1,4 @@
-use crate::spell::Spell;
+use crate::spell::SpellInput;
 use charms_client::{NormalizedSpell, tx::Tx};
 use charms_lib::SPELL_VK;
 
@@ -16,9 +16,6 @@ pub fn norm_spell(tx: &Tx, mock: bool) -> Option<NormalizedSpell> {
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub fn spell(tx: &Tx, mock: bool) -> anyhow::Result<Option<Spell>> {
-    match norm_spell(tx, mock) {
-        Some(norm_spell) => Ok(Some(Spell::denormalized(&norm_spell)?)),
-        None => Ok(None),
-    }
+pub fn spell(tx: &Tx, mock: bool) -> Option<SpellInput> {
+    norm_spell(tx, mock).map(|ns| SpellInput::from_normalized_spell(&ns))
 }

@@ -4,7 +4,6 @@ use crate::{
     PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK, app,
     cli::{charms_fee_settings, prove_impl},
     tx::{bitcoin_tx, bitcoin_tx::from_spell, cardano_tx},
-    utils,
     utils::{BoxedSP1Prover, Shared, TRANSIENT_PROVER_FAILURE},
 };
 use anyhow::{Context, anyhow, bail, ensure};
@@ -30,13 +29,9 @@ pub use charms_client::{
 };
 use charms_client::{
     MOCK_SPELL_VK,
-    cardano_tx::OutputContent,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, Transaction, TxId, UtxoId, is_simple_transfer,
-    util,
-};
+use charms_data::{App, AppInput, B32, Data, Transaction, TxId, UtxoId, is_simple_transfer, util};
 use charms_lib::SPELL_VK;
 use const_format::formatcp;
 #[cfg(feature = "prover")]
@@ -60,351 +55,67 @@ use std::{
 #[cfg(not(feature = "prover"))]
 use utils::retry;
 
-/// Charm as represented in a spell.
-/// Map of `$KEY: data`.
-pub type KeyedCharms = BTreeMap<String, Data>;
-
-/// UTXO as represented in a spell.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Input {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub utxo_id: Option<UtxoId>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub charms: Option<KeyedCharms>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub beamed_from: Option<BeamSource>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Output {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub address: Option<String>,
-    #[serde(
-        alias = "sats",
-        alias = "coin",
-        alias = "coins",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub amount: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub charms: Option<KeyedCharms>,
-    #[serde(alias = "beamed_to", skip_serializing_if = "Option::is_none")]
-    pub beam_to: Option<B32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<serde_json::Value>,
-}
-
-/// Defines how spells are represented in their source form and in CLI outputs,
-/// in both human-friendly (JSON/YAML) and machine-friendly (CBOR) formats.
+/// CLI input format that wraps `NormalizedSpell` fields with additional private inputs
+/// and beaming source data. Trivially decomposes into `NormalizedSpell` + extras.
+#[serde_as]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Spell {
-    /// Version of the protocol.
+pub struct SpellInput {
+    /// Protocol version.
     pub version: u32,
+    /// Transaction data.
+    pub tx: NormalizedTransaction,
+    /// Maps all `App`s in the transaction to (potentially empty) public input data.
+    #[serde_as(as = "BTreeMap<DisplayFromStr, _>")]
+    pub app_public_inputs: BTreeMap<App, Data>,
+    /// Is this a mock spell?
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub mock: bool,
 
-    /// Apps used in the spell. Map of `$KEY: App`.
-    /// Keys are arbitrary strings. They just need to be unique (inside the spell).
-    pub apps: BTreeMap<String, App>,
+    /// Private inputs to the apps for this spell.
+    #[serde(
+        alias = "private_inputs",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    #[serde_as(as = "Option<BTreeMap<DisplayFromStr, _>>")]
+    pub app_private_inputs: Option<BTreeMap<App, Data>>,
 
-    /// Public inputs to the apps for this spell. Map of `$KEY: Data`.
-    #[serde(alias = "public_inputs", skip_serializing_if = "Option::is_none")]
-    pub public_args: Option<BTreeMap<String, Data>>,
-
-    /// Private inputs to the apps for this spell. Map of `$KEY: Data`.
-    #[serde(alias = "private_inputs", skip_serializing_if = "Option::is_none")]
-    pub private_args: Option<BTreeMap<String, Data>>,
-
-    /// Transaction inputs.
-    pub ins: Vec<Input>,
-    /// Reference inputs.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub refs: Option<Vec<Input>>,
-    /// Transaction outputs.
-    pub outs: Vec<Output>,
+    /// Beaming source UTXOs, indexed by input position.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub beamed_from: Option<BTreeMap<usize, BeamSource>>,
 }
 
-impl Spell {
-    /// New empty spell.
-    pub fn new() -> Self {
-        Self {
-            version: CURRENT_VERSION,
-            apps: BTreeMap::new(),
-            public_args: None,
-            private_args: None,
-            ins: vec![],
-            refs: None,
-            outs: vec![],
-        }
-    }
-
-    pub fn strings_of_charms(&self, inputs: &Vec<Input>) -> anyhow::Result<Vec<(UtxoId, Charms)>> {
-        inputs
-            .iter()
-            .map(|input| {
-                let utxo_id = input
-                    .utxo_id
-                    .as_ref()
-                    .ok_or(anyhow!("missing input utxo_id"))?;
-                let charms = self.charms(&input.charms)?;
-                Ok((utxo_id.clone(), charms))
-            })
-            .collect::<Result<_, _>>()
-    }
-
-    pub fn charms(&self, charms_opt: &Option<KeyedCharms>) -> anyhow::Result<Charms> {
-        charms_opt
-            .as_ref()
-            .ok_or(anyhow!("missing charms field"))?
-            .iter()
-            .map(|(k, v)| {
-                let app = self.apps.get(k).ok_or(anyhow!("missing app {}", k))?;
-                Ok((app.clone(), Data::from(v)))
-            })
-            .collect::<Result<Charms, _>>()
-    }
-
-    /// Get a [`NormalizedSpell`] and apps' private inputs for the spell.
-    pub fn normalized(
-        &self,
-        mock: bool,
-        chain: Chain,
-    ) -> anyhow::Result<(
+impl SpellInput {
+    /// Decompose into `NormalizedSpell`, private inputs, and beaming sources.
+    pub fn into_parts(
+        self,
+    ) -> (
         NormalizedSpell,
         BTreeMap<App, Data>,
         BTreeMap<usize, BeamSource>,
-    )> {
-        ensure!(self.version == CURRENT_VERSION);
-
-        let empty_map = BTreeMap::new();
-        let keyed_public_inputs = self.public_args.as_ref().unwrap_or(&empty_map);
-
-        let keyed_apps = &self.apps;
-        let apps: BTreeSet<App> = keyed_apps.values().cloned().collect();
-        let app_to_index: BTreeMap<App, u32> = apps.iter().cloned().zip(0..).collect();
-        ensure!(apps.len() == keyed_apps.len(), "duplicate apps");
-
-        let app_public_inputs: BTreeMap<App, Data> = app_inputs(keyed_apps, keyed_public_inputs);
-
-        let ins: Vec<UtxoId> = self
-            .ins
-            .iter()
-            .map(|utxo| utxo.utxo_id.clone().ok_or(anyhow!("missing input utxo_id")))
-            .collect::<Result<_, _>>()?;
-        ensure!(
-            ins.iter().collect::<BTreeSet<_>>().len() == ins.len(),
-            "duplicate inputs"
-        );
-        let ins = Some(ins);
-
-        let refs = self
-            .refs
-            .as_ref()
-            .map(|refs| {
-                refs.iter()
-                    .map(|utxo| utxo.utxo_id.clone().ok_or(anyhow!("missing input utxo_id")))
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?;
-
-        let empty_charm = KeyedCharms::new();
-
-        let outs: Vec<NormalizedCharms> = self
-            .outs
-            .iter()
-            .map(|utxo| {
-                let n_charms = utxo
-                    .charms
-                    .as_ref()
-                    .unwrap_or(&empty_charm)
-                    .iter()
-                    .map(|(k, v)| {
-                        let app = keyed_apps.get(k).ok_or(anyhow!("missing app key"))?;
-                        let i = *app_to_index
-                            .get(app)
-                            .ok_or(anyhow!("app is expected to be in app_to_index"))?;
-                        Ok((i, v.clone()))
-                    })
-                    .collect::<anyhow::Result<NormalizedCharms>>()?;
-                Ok(n_charms)
-            })
-            .collect::<anyhow::Result<_>>()?;
-
-        let beamed_outs: BTreeMap<_, _> = self
-            .outs
-            .iter()
-            .zip(0u32..)
-            .filter_map(|(o, i)| o.beam_to.as_ref().map(|b32| (i, b32.clone())))
-            .collect();
-        let beamed_outs = Some(beamed_outs).filter(|m| !m.is_empty());
-
-        let coins = get_coin_outs(&self.outs, chain)?;
-
-        let norm_spell = NormalizedSpell {
+    ) {
+        let spell = NormalizedSpell {
             version: self.version,
-            tx: NormalizedTransaction {
-                ins,
-                refs,
-                outs,
-                beamed_outs,
-                coins: Some(coins),
-            },
-            app_public_inputs,
-            mock,
+            tx: self.tx,
+            app_public_inputs: self.app_public_inputs,
+            mock: self.mock,
         };
-
-        let keyed_private_inputs = self.private_args.as_ref().unwrap_or(&empty_map);
-        let app_private_inputs = app_inputs(keyed_apps, keyed_private_inputs);
-
-        let tx_ins_beamed_source_utxos = self
-            .ins
-            .iter()
-            .enumerate()
-            .filter_map(|(i, input)| {
-                input
-                    .beamed_from
-                    .as_ref()
-                    .map(|beam_source_utxo_id| (i, beam_source_utxo_id.clone()))
-            })
-            .collect();
-
-        Ok((norm_spell, app_private_inputs, tx_ins_beamed_source_utxos))
+        let private_inputs = self.app_private_inputs.unwrap_or_default();
+        let beamed_from = self.beamed_from.unwrap_or_default();
+        (spell, private_inputs, beamed_from)
     }
 
-    /// De-normalize a normalized spell.
-    #[tracing::instrument(level = "debug", skip_all)]
-    pub fn denormalized(norm_spell: &NormalizedSpell) -> anyhow::Result<Self> {
-        let apps = (0..)
-            .zip(norm_spell.app_public_inputs.keys())
-            .map(|(i, app)| (utils::str_index(&i), app.clone()))
-            .collect();
-
-        let public_inputs = match norm_spell
-            .app_public_inputs
-            .values()
-            .enumerate()
-            .filter_map(|(i, data)| match data {
-                data if data.is_empty() => None,
-                data => Some((utils::str_index(&(i as u32)), data.clone())),
-            })
-            .collect::<BTreeMap<_, _>>()
-        {
-            map if map.is_empty() => None,
-            map => Some(map),
-        };
-
-        let Some(norm_spell_ins) = &norm_spell.tx.ins else {
-            bail!("spell must have inputs");
-        };
-        let ins = norm_spell_ins
-            .iter()
-            .map(|utxo_id| Input {
-                utxo_id: Some(utxo_id.clone()),
-                charms: None,
-                beamed_from: None,
-            })
-            .collect();
-
-        let refs = norm_spell.tx.refs.as_ref().map(|refs| {
-            refs.iter()
-                .map(|utxo_id| Input {
-                    utxo_id: Some(utxo_id.clone()),
-                    charms: None,
-                    beamed_from: None,
-                })
-                .collect::<Vec<_>>()
-        });
-
-        let outs = norm_spell
-            .tx
-            .outs
-            .iter()
-            .zip(0u32..)
-            .map(|(n_charms, i)| -> anyhow::Result<_> {
-                Ok(Output {
-                    address: None,
-                    amount: None,
-                    charms: match n_charms
-                        .iter()
-                        .map(|(i, data)| (utils::str_index(i), data.clone()))
-                        .collect::<KeyedCharms>()
-                    {
-                        charms if charms.is_empty() => None,
-                        charms => Some(charms),
-                    },
-                    beam_to: norm_spell
-                        .tx
-                        .beamed_outs
-                        .as_ref()
-                        .and_then(|beamed_to| beamed_to.get(&i).cloned()),
-                    content: (norm_spell.tx.coins)
-                        .as_ref()
-                        .and_then(|coins| coins.get(i as usize))
-                        .and_then(|native_output| native_output.content.as_ref())
-                        .map(|t| t.value())
-                        .transpose()?,
-                })
-            })
-            .collect::<anyhow::Result<_>>()?;
-
-        Ok(Self {
-            version: norm_spell.version,
-            apps,
-            public_args: public_inputs,
-            private_args: None,
-            ins,
-            refs,
-            outs,
-        })
+    /// Create a `SpellInput` from a `NormalizedSpell` (for display, e.g. `tx show-spell`).
+    pub fn from_normalized_spell(ns: &NormalizedSpell) -> Self {
+        SpellInput {
+            version: ns.version,
+            tx: ns.tx.clone(),
+            app_public_inputs: ns.app_public_inputs.clone(),
+            mock: ns.mock,
+            app_private_inputs: None,
+            beamed_from: None,
+        }
     }
-}
-
-fn get_coin_outs(outs: &[Output], chain: Chain) -> anyhow::Result<Vec<NativeOutput>> {
-    outs.iter()
-        .map(|output| {
-            let content = match chain {
-                Chain::Bitcoin => None,
-                Chain::Cardano => output
-                    .content
-                    .clone()
-                    .map(|content_json| -> anyhow::Result<_> {
-                        let output_content: OutputContent = serde_json::from_value(content_json)?;
-                        Ok((&output_content).into())
-                    })
-                    .transpose()?,
-            };
-            Ok(NativeOutput {
-                amount: output.amount.unwrap_or(DEFAULT_COIN_AMOUNT),
-                dest: from_bech32(&output.address.as_ref().expect("address is expected"))?,
-                content,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
-}
-
-fn from_bech32(address: &str) -> anyhow::Result<Vec<u8>> {
-    // Bitcoin
-    if let Ok(addr) = bitcoin::Address::from_str(address) {
-        return Ok(addr.assume_checked().script_pubkey().to_bytes());
-    }
-    // Cardano
-    if let Ok(addr) = cml_chain::address::Address::from_bech32(address) {
-        return Ok(addr.to_raw_bytes());
-    }
-    bail!("invalid address: {}", address);
-}
-
-fn app_inputs(
-    keyed_apps: &BTreeMap<String, App>,
-    keyed_inputs: &BTreeMap<String, Data>,
-) -> BTreeMap<App, Data> {
-    keyed_apps
-        .iter()
-        .map(|(k, app)| {
-            (
-                app.clone(),
-                keyed_inputs.get(k).cloned().unwrap_or_default(),
-            )
-        })
-        .collect()
 }
 
 pub trait Prove: Send + Sync {
@@ -623,27 +334,6 @@ where
 mod test {
     use super::*;
     use charms_client::tx::EnchantedTx;
-
-    #[test]
-    fn deserialize_keyed_charm() {
-        let y = r#"
-$TOAD_SUB: 10
-$TOAD: 9
-"#;
-
-        let charms: KeyedCharms = serde_yaml::from_str(y).unwrap();
-        dbg!(&charms);
-
-        let utxo_id_0 =
-            UtxoId::from_str("f72700ac56bd4dd61f2ccb4acdf21d0b11bb294fc3efa9012b77903932197d2f:2")
-                .unwrap();
-        let buf = util::write(&utxo_id_0).unwrap();
-
-        let utxo_id_data: Data = util::read(buf.as_slice()).unwrap();
-
-        let utxo_id: UtxoId = utxo_id_data.value().unwrap();
-        assert_eq!(utxo_id_0, dbg!(utxo_id));
-    }
 
     #[test]
     fn txs_from_strings() {
@@ -1123,8 +813,6 @@ pub fn ensure_all_prev_txs_are_present(
 
     Ok(())
 }
-
-const DEFAULT_COIN_AMOUNT: u64 = 547;
 
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(

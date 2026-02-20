@@ -2,7 +2,7 @@ use crate::{
     cli,
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
-        ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
+        ProveRequest, ProveSpellTx, ProveSpellTxImpl, SpellInput, ensure_all_prev_txs_are_present,
         ensure_exact_app_binaries, from_strings,
     },
 };
@@ -75,14 +75,14 @@ impl Prove for SpellCli {
 
         ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
-        let spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+        let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell.normalized(mock, chain)?;
+            spell_input.into_parts();
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -134,23 +134,14 @@ impl Check for SpellCli {
             mock,
         }: SpellCheckParams,
     ) -> Result<()> {
-        let mut spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
-        for u in spell.outs.iter_mut() {
-            u.amount.get_or_insert(crate::cli::wallet::MIN_SATS);
-        }
-
-        // make sure spell inputs all have utxo_id
-        ensure!(
-            spell.ins.iter().all(|u| u.utxo_id.is_some()),
-            "all spell inputs must have utxo_id"
-        );
+        let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
         let prev_txs = from_strings(&prev_txs)?;
 
         let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell.normalized(mock, chain)?;
+            spell_input.into_parts();
 
         ensure_all_prev_txs_are_present(
             &norm_spell,
