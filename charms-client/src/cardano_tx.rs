@@ -8,7 +8,7 @@ use cml_chain::{
     certs::Credential,
     crypto::{Ed25519Signature, ScriptHash, TransactionHash, Vkey},
     plutus::{PlutusData, PlutusV3Script, RedeemerTag},
-    transaction::{ConwayFormatTxOut, DatumOption, Transaction, TransactionOutput},
+    transaction::{ConwayFormatTxOut, DatumOption, ScriptRef, Transaction, TransactionOutput},
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
@@ -171,10 +171,17 @@ impl EnchantedTx for CardanoTx {
             .body
             .outputs
             .iter()
-            .map(|tx_out| NativeOutput {
-                amount: tx_out.amount().coin.into(),
-                dest: tx_out.address().to_raw_bytes(),
-                content: Some(tx_out.into()),
+            .map(|tx_out| {
+                let output_content = OutputContent {
+                    multiasset: tx_out.amount().multiasset.clone(),
+                    datum: tx_out.datum(),
+                    script_ref: tx_out.script_ref().cloned(),
+                };
+                NativeOutput {
+                    amount: tx_out.amount().coin.into(),
+                    dest: tx_out.address().to_raw_bytes(),
+                    content: Some((&output_content).into()),
+                }
             })
             .collect()
     }
@@ -187,6 +194,13 @@ impl EnchantedTx for CardanoTx {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct OutputContent {
+    pub multiasset: MultiAsset,
+    pub datum: Option<DatumOption>,
+    pub script_ref: Option<ScriptRef>,
 }
 
 fn verify_finality_signature(tx: &Transaction, signature: &Ed25519Signature) -> anyhow::Result<()> {
