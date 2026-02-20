@@ -1,5 +1,9 @@
+mod sorted_app_map;
+
 #[cfg(feature = "prover")]
 use crate::utils::block_on;
+#[cfg(not(feature = "prover"))]
+use crate::utils::retry;
 use crate::{
     PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK, app,
     cli::{charms_fee_settings, prove_impl},
@@ -52,8 +56,6 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-#[cfg(not(feature = "prover"))]
-use utils::retry;
 
 /// CLI input format that wraps `NormalizedSpell` fields with additional private inputs
 /// and beaming source data. Trivially decomposes into `NormalizedSpell` + extras.
@@ -65,7 +67,11 @@ pub struct SpellInput {
     /// Transaction data.
     pub tx: NormalizedTransaction,
     /// Maps all `App`s in the transaction to (potentially empty) public input data.
-    #[serde_as(as = "BTreeMap<DisplayFromStr, _>")]
+    /// Keys must be in sorted order in the input (human-readable formats).
+    #[serde(
+        serialize_with = "sorted_app_map::serialize",
+        deserialize_with = "sorted_app_map::deserialize"
+    )]
     pub app_public_inputs: BTreeMap<App, Data>,
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
