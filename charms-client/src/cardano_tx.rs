@@ -196,10 +196,12 @@ impl EnchantedTx for CardanoTx {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct OutputContent {
     pub multiasset: MultiAsset,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub datum: Option<DatumOption>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub script_ref: Option<ScriptRef>,
 }
 

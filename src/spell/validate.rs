@@ -9,8 +9,10 @@ use charms_client::{
 };
 use charms_data::{App, AppInput, B32, Data, TxId, util};
 use charms_lib::SPELL_VK;
-use std::collections::{BTreeMap, BTreeSet};
-use std::str::FromStr;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    str::FromStr,
+};
 
 use super::get_charms_fee;
 
@@ -262,12 +264,13 @@ impl ProveSpellTxImpl {
                     total_sats_in > total_sats_out + charms_fee + estimated_bitcoin_fee,
                     "spell inputs must have sufficient value to cover outputs and fees"
                 );
+                Ok((norm_spell.clone(), total_cycles))
             }
             Chain::Cardano => {
                 // TODO
                 tracing::warn!("spell validation for cardano is not yet implemented");
+                Ok((norm_spell.clone(), total_cycles))
             }
         }
-        Ok((norm_spell.clone(), total_cycles))
     }
 }

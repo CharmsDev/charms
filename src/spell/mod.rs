@@ -18,7 +18,10 @@ pub use charms_client::{
 
 use anyhow::{Context, anyhow, ensure};
 use bitcoin::{Amount, hashes::Hash};
-use charms_client::tx::Tx;
+use charms_client::{
+    cardano_tx::OutputContent,
+    tx::{Chain, Tx},
+};
 use charms_data::{App, Data, TxId, UtxoId};
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
@@ -89,6 +92,46 @@ impl SpellInput {
             beamed_from: None,
         }
     }
+}
+
+/// Adjust `NativeOutput.content` fields in `spell_input.tx.coins` according to the target chain.
+///
+/// - **Cardano**: each non-`None` `content` is serialized to JSON, deserialized as
+///   [`OutputContent`], and converted back to [`Data`] so that the CBOR representation matches the
+///   canonical form produced by `charms_client::cardano_tx`.
+/// - **Bitcoin**: every `content` field **must** be `None`; otherwise an error is returned.
+pub fn adjust_coin_contents(
+    mut spell_input: SpellInput,
+    chain: Chain,
+) -> anyhow::Result<SpellInput> {
+    let Some(coins) = spell_input.tx.coins.as_mut() else {
+        return Ok(spell_input);
+    };
+
+    for (i, coin) in coins.iter_mut().enumerate() {
+        match chain {
+            Chain::Bitcoin => {
+                ensure!(
+                    coin.content.is_none(),
+                    "coins[{i}].content must be None for Bitcoin"
+                );
+            }
+            Chain::Cardano => {
+                if let Some(content) = coin.content.take() {
+                    let json = serde_json::to_value(&content).with_context(|| {
+                        format!("coins[{i}].content: failed to serialize to JSON")
+                    })?;
+                    let output_content: OutputContent =
+                        serde_json::from_value(json).with_context(|| {
+                            format!("coins[{i}].content: failed to parse as OutputContent")
+                        })?;
+                    coin.content = Some((&output_content).into());
+                }
+            }
+        }
+    }
+
+    Ok(spell_input)
 }
 
 pub fn from_strings(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
