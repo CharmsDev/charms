@@ -120,13 +120,16 @@ pub fn ensure_all_prev_txs_are_present(
 /// - **Cardano**: each `content` is canonicalized through JSON→[`OutputContent`]→[`Data`]
 ///   round-trip.  If `content` is `None`, the default (empty) [`OutputContent`] is used.
 /// - **Bitcoin**: every `content` field **must** be `None`; otherwise an error is returned.
-pub fn adjust_coin_contents(
-    norm_spell: &mut NormalizedSpell,
-    chain: Chain,
-) -> anyhow::Result<()> {
+pub fn adjust_coin_contents(norm_spell: &mut NormalizedSpell, chain: Chain) -> anyhow::Result<()> {
     let Some(coins) = norm_spell.tx.coins.as_mut() else {
-        return Ok(());
+        bail!("coins must be present");
     };
+    ensure!(
+        coins.len() == norm_spell.tx.outs.len(),
+        "coins length ({}) must match outs length ({})",
+        coins.len(),
+        norm_spell.tx.outs.len()
+    );
 
     for (i, coin) in coins.iter_mut().enumerate() {
         match chain {
