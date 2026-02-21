@@ -76,7 +76,6 @@ impl Prove for SpellCli {
         ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
         let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
-        let spell_input = adjust_coin_contents(spell_input, chain)?;
 
         let prev_txs = from_strings(&prev_txs)?;
 
@@ -135,13 +134,14 @@ impl Check for SpellCli {
         }: SpellCheckParams,
     ) -> Result<()> {
         let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
-        let spell_input = adjust_coin_contents(spell_input, chain)?;
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
         let prev_txs = from_strings(&prev_txs)?;
 
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell_input.into_parts();
+        let (mut norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
+            spell_input.into_parts();
+        adjust_coin_contents(&mut norm_spell, chain)?;
 
         ensure_all_prev_txs_are_present(
             &norm_spell,

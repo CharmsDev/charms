@@ -1,10 +1,11 @@
 use super::prove_spell_tx::ProveSpellTxImpl;
 use crate::tx::bitcoin_tx::from_spell;
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::Network;
 use charms_app_runner::AppRunner;
 use charms_client::{
     BeamSource, NormalizedSpell,
+    cardano_tx::OutputContent,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::{App, AppInput, B32, Data, TxId, util};
@@ -114,6 +115,47 @@ pub fn ensure_all_prev_txs_are_present(
     Ok(())
 }
 
+/// Adjust `NativeOutput.content` fields in `norm_spell.tx.coins` according to the target chain.
+///
+/// - **Cardano**: each `content` is canonicalized through JSON→[`OutputContent`]→[`Data`]
+///   round-trip.  If `content` is `None`, the default (empty) [`OutputContent`] is used.
+/// - **Bitcoin**: every `content` field **must** be `None`; otherwise an error is returned.
+pub fn adjust_coin_contents(
+    norm_spell: &mut NormalizedSpell,
+    chain: Chain,
+) -> anyhow::Result<()> {
+    let Some(coins) = norm_spell.tx.coins.as_mut() else {
+        return Ok(());
+    };
+
+    for (i, coin) in coins.iter_mut().enumerate() {
+        match chain {
+            Chain::Bitcoin => {
+                ensure!(
+                    coin.content.is_none(),
+                    "coins[{i}].content must be None for Bitcoin"
+                );
+            }
+            Chain::Cardano => {
+                let output_content: OutputContent = match coin.content.take() {
+                    Some(content) => {
+                        let json = serde_json::to_value(&content).with_context(|| {
+                            format!("coins[{i}].content: failed to serialize to JSON")
+                        })?;
+                        serde_json::from_value(json).with_context(|| {
+                            format!("coins[{i}].content: failed to parse as OutputContent")
+                        })?
+                    }
+                    None => OutputContent::default(),
+                };
+                coin.content = Some((&output_content).into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(
         &self,
@@ -129,7 +171,9 @@ impl ProveSpellTxImpl {
         let prev_txs = &prove_request.prev_txs;
         let prev_txs_by_id = by_txid(prev_txs);
 
-        let norm_spell = &prove_request.spell;
+        let mut norm_spell = prove_request.spell.clone();
+        adjust_coin_contents(&mut norm_spell, prove_request.chain)?;
+        let norm_spell = &norm_spell;
         let app_private_inputs = &prove_request.app_private_inputs;
         let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
 
