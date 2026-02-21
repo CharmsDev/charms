@@ -1,5 +1,3 @@
-mod sorted_app_map;
-
 pub mod prove;
 pub mod prove_spell_tx;
 pub mod request;
@@ -9,11 +7,13 @@ mod validate;
 pub use prove::{MockProver, Prove, Prover};
 pub use prove_spell_tx::{ProveSpellTx, ProveSpellTxImpl, committed_data_hash};
 pub use request::{CharmsFee, FeeAddressForNetwork, ProveRequest};
-pub use validate::{adjust_coin_contents, ensure_all_prev_txs_are_present, ensure_exact_app_binaries};
+pub use validate::{
+    adjust_coin_contents, ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
+};
 
 pub use charms_client::{
     BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, Proof,
-    SpellProverInput, to_tx,
+    SpellProverInput, sorted_app_map, to_tx,
 };
 
 use anyhow::{Context, anyhow, ensure};
@@ -34,11 +34,8 @@ pub struct SpellInput {
     /// Transaction data.
     pub tx: NormalizedTransaction,
     /// Maps all `App`s in the transaction to (potentially empty) public input data.
-    /// Keys must be in sorted order in the input (human-readable formats).
-    #[serde(
-        serialize_with = "sorted_app_map::serialize",
-        deserialize_with = "sorted_app_map::deserialize"
-    )]
+    /// Keys must be in sorted order in the input.
+    #[serde(deserialize_with = "sorted_app_map::deserialize")]
     pub app_public_inputs: BTreeMap<App, Data>,
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]

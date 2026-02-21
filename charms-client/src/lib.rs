@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod ark;
 pub mod bitcoin_tx;
 pub mod cardano_tx;
+pub mod sorted_app_map;
 pub mod tx;
 
 pub const MOCK_SPELL_VK: &str = "7c38e8639a2eac0074cee920982b92376513e8940f4a7ca6859f17a728af5b0e";
@@ -130,6 +131,7 @@ pub struct NormalizedSpell {
     /// Transaction data.
     pub tx: NormalizedTransaction,
     /// Maps all `App`s in the transaction to (potentially empty) public input data.
+    #[serde(deserialize_with = "sorted_app_map::deserialize")]
     pub app_public_inputs: BTreeMap<App, Data>,
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
