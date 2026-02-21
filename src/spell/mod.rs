@@ -161,7 +161,7 @@ pub fn align_spell_to_tx(
 #[cfg(test)]
 mod test {
     use super::*;
-    use charms_client::tx::EnchantedTx;
+    use charms_client::{cardano_tx::CardanoTx, tx::EnchantedTx};
 
     #[test]
     fn txs_from_strings() {
@@ -183,5 +183,11 @@ mod test {
             unreachable!()
         };
         assert!(tx.proven_final());
+
+        let CardanoTx::WithFinalityProof { tx, .. } = tx else {
+            unreachable!()
+        };
+        let str = serde_yaml::to_string(&tx.body.outputs[0].amount()).unwrap();
+        eprintln!("{}", str)
     }
 }
