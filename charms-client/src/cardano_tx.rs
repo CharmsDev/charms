@@ -126,7 +126,7 @@ impl EnchantedTx for CardanoTx {
         );
 
         let permutation = extract_input_permutation(tx)?;
-        let spell = spell_with_committed_ins_and_coins(spell, self, &permutation);
+        let spell = spell_with_committed_ins_and_coins(spell, self, &permutation)?;
 
         native_outs_comply(&spell, self)?;
 
@@ -166,22 +166,27 @@ impl EnchantedTx for CardanoTx {
             .collect()
     }
 
-    fn all_coin_outs(&self) -> Vec<NativeOutput> {
+    fn all_coin_outs(&self, spell: &NormalizedSpell) -> anyhow::Result<Vec<NativeOutput>> {
         self.inner()
             .body
             .outputs
             .iter()
-            .map(|tx_out| {
+            .zip(spell.tx.outs.iter())
+            .enumerate()
+            .map(|(i, (tx_out, spell_out))| -> anyhow::Result<NativeOutput> {
+                let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
+                let ma_all = tx_out.amount().multiasset.clone();
+                let (ma_charms, _) = multi_asset(&charms(spell, spell_out), beamed_out);
                 let output_content = OutputContent {
-                    multiasset: tx_out.amount().multiasset.clone(),
+                    multiasset: ma_all.checked_sub(&ma_charms)?,
                     datum: tx_out.datum(),
                     script_ref: tx_out.script_ref().cloned(),
                 };
-                NativeOutput {
+                Ok(NativeOutput {
                     amount: tx_out.amount().coin.into(),
                     dest: tx_out.address().to_raw_bytes(),
                     content: Some((&output_content).into()),
-                }
+                })
             })
             .collect()
     }
@@ -264,7 +269,7 @@ fn script_hash(script: &PlutusV3Script) -> ScriptHash {
     ScriptHash::from_raw_bytes(hash.as_ref()).expect("hash should be valid")
 }
 
-pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
+pub fn asset_name(app: &App) -> AssetName {
     const FT_LABEL: &[u8] = &[0x00, 0x14, 0xdf, 0x10];
     const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
     let label = match app.tag {
@@ -272,14 +277,14 @@ pub fn asset_name(app: &App) -> anyhow::Result<AssetName> {
         NFT => NFT_LABEL,
         _ => unreachable!("unsupported tag: {}", app.tag),
     };
-    Ok(AssetName::new([label, &app.identity.0[4..]].concat())
-        .map_err(|e| anyhow!("error converting to Cardano AssetName: {}", e))?)
+    AssetName::new([label, &app.identity.0[4..]].concat())
+        .expect(format!("error converting app to Cardano AssetName: {}", app).as_str())
 }
 
-pub fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
+pub fn get_value(app: &App, data: &Data) -> u64 {
     match app.tag {
-        TOKEN => Ok(data.value()?),
-        NFT => Ok(1),
+        TOKEN => data.value().expect("numeric value expected"),
+        NFT => 1,
         _ => unreachable!("unsupported tag: {}", app.tag),
     }
 }
@@ -287,23 +292,23 @@ pub fn get_value(app: &App, data: &Data) -> anyhow::Result<u64> {
 pub fn multi_asset(
     charms: &Charms,
     beamed_out: bool,
-) -> anyhow::Result<(MultiAsset, BTreeMap<PolicyId, PlutusV3Script>)> {
+) -> (MultiAsset, BTreeMap<PolicyId, PlutusV3Script>) {
     let mut multi_asset = MultiAsset::new();
     let mut scripts = BTreeMap::new();
     if beamed_out {
-        return Ok((multi_asset, scripts));
+        return (multi_asset, scripts);
     }
     for (app, data) in charms {
         if app.tag != TOKEN && app.tag != NFT {
             continue; // skip non-token charms
         }
         let (policy_id, script) = policy_id(app);
-        let asset_name = asset_name(app)?;
-        let value = get_value(app, data)?;
+        let asset_name = asset_name(app);
+        let value = get_value(app, data);
         scripts.insert(policy_id, script);
         multi_asset.set(policy_id, asset_name, value);
     }
-    Ok((multi_asset, scripts))
+    (multi_asset, scripts)
 }
 
 /// Native outputs contain CNTs representing Charms.
@@ -323,7 +328,7 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
 
         native_out_address_complies(&charms, native_out.address())?;
 
-        let (expected_charms, _) = multi_asset(&charms, is_beamed_out)?;
+        let (expected_charms, _) = multi_asset(&charms, is_beamed_out);
 
         let missing_charms = expected_charms.clamped_sub(&present_all);
         ensure!(
@@ -393,7 +398,7 @@ fn spell_with_committed_ins_and_coins(
     spell: NormalizedSpell,
     tx: &CardanoTx,
     permutation: &[u32],
-) -> NormalizedSpell {
+) -> anyhow::Result<NormalizedSpell> {
     let tx_ins: Vec<UtxoId> = tx.spell_ins();
 
     // Restore the original order using permutation
@@ -406,7 +411,7 @@ fn spell_with_committed_ins_and_coins(
     spell.tx.ins = Some(original_ins);
 
     // this code is coming online with V10, so `spell.version > V7` holds
-    let mut coins = tx.all_coin_outs();
+    let mut coins = tx.all_coin_outs(&spell)?;
     coins.truncate(spell.tx.outs.len());
     // `native_output.content` is available since V11
     if spell.version <= V10 {
@@ -416,7 +421,7 @@ fn spell_with_committed_ins_and_coins(
     }
     spell.tx.coins = Some(coins);
 
-    spell
+    Ok(spell)
 }
 
 /// Extracts the input permutation from the withdraw-0 redeemer data.

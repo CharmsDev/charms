@@ -234,7 +234,7 @@ fn pallas_multi_asset(
     PallasMultiasset,
     BTreeMap<PallasPolicyId, PallasPlutusV3Script>,
 )> {
-    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms, beamed_out)?;
+    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms, beamed_out);
 
     let pallas_ma = cml_to_pallas_multiasset(&cml_ma);
 

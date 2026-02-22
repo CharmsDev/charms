@@ -15,10 +15,10 @@ pub use charms_client::{
     BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, Proof, SpellProverInput, to_tx,
 };
 
-use anyhow::{Context, anyhow, ensure};
-use bitcoin::{Amount, hashes::Hash};
+use anyhow::Context;
+use bitcoin::Amount;
 use charms_client::tx::Tx;
-use charms_data::{App, Data, TxId, UtxoId};
+use charms_data::{App, Data};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 use std::collections::BTreeMap;

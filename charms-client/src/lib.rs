@@ -169,17 +169,17 @@ pub fn prev_spells(
     prev_txs: &[Tx],
     spell_vk: &str,
     mock: bool,
-) -> BTreeMap<TxId, (NormalizedSpell, usize)> {
+) -> anyhow::Result<BTreeMap<TxId, (NormalizedSpell, usize)>> {
     prev_txs
         .iter()
         .map(|tx| {
-            (
+            Ok((
                 tx.tx_id(),
                 (
-                    extended_normalized_spell(spell_vk, tx, mock),
+                    extended_normalized_spell(spell_vk, tx, mock)?,
                     tx.tx_outs_len(),
                 ),
-            )
+            ))
         })
         .collect()
 }
@@ -346,15 +346,15 @@ pub fn is_correct(
     app_input: Option<AppInput>,
     spell_vk: &str,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
-) -> bool {
-    check!(beaming_txs_have_finality_proofs(
+) -> anyhow::Result<bool> {
+    ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
         tx_ins_beamed_source_utxos
     ));
 
-    let prev_spells = prev_spells(&prev_txs, spell_vk, spell.mock);
+    let prev_spells = prev_spells(&prev_txs, spell_vk, spell.mock)?;
 
-    check!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
+    ensure!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 
     let Some(prev_txids) = spell.tx.prev_txids() else {
         unreachable!("the spell is well formed: tx.ins MUST be Some");
@@ -364,7 +364,7 @@ pub fn is_correct(
         .map(|bs| &(bs.0).0)
         .chain(prev_txids)
         .collect();
-    check!(all_prev_txids == prev_spells.keys().collect());
+    ensure!(all_prev_txids == prev_spells.keys().collect());
 
     let apps = apps(spell);
 
@@ -374,9 +374,9 @@ pub fn is_correct(
             || app_input.is_some_and(|app_input| {
                 apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
             });
-    check!(tx_is_simple_transfer_or_app_contracts_satisfied);
+    ensure!(tx_is_simple_transfer_or_app_contracts_satisfied);
 
-    true
+    Ok(true)
 }
 
 fn beaming_txs_have_finality_proofs(

@@ -23,13 +23,16 @@ pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
     } = input;
 
     // Check the spell that we're proving is correct.
-    assert!(is_correct(
-        &spell,
-        &prev_txs,
-        app_input,
-        &self_spell_vk,
-        &tx_ins_beamed_source_utxos,
-    ));
+    assert!(
+        is_correct(
+            &spell,
+            &prev_txs,
+            app_input,
+            &self_spell_vk,
+            &tx_ins_beamed_source_utxos,
+        )
+        .unwrap()
+    );
 
     eprintln!("Spell is correct!");
 

@@ -3,8 +3,8 @@ use crate::{
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
-        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
-        read_beamed_from, read_private_inputs,
+        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings, read_beamed_from,
+        read_private_inputs,
     },
 };
 use anyhow::{Result, ensure};
@@ -171,7 +171,7 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock);
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock)?;
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,
@@ -197,7 +197,7 @@ impl Check for SpellCli {
                 app_input,
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
-            ),
+            )?,
             "spell verification failed"
         );
 
