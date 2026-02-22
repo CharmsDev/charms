@@ -12,80 +12,31 @@ pub use validate::{
 };
 
 pub use charms_client::{
-    BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, Proof,
-    SpellProverInput, sorted_app_map, to_tx,
+    BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, Proof, SpellProverInput, to_tx,
 };
 
 use anyhow::{Context, anyhow, ensure};
 use bitcoin::{Amount, hashes::Hash};
 use charms_client::tx::Tx;
 use charms_data::{App, Data, TxId, UtxoId};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
 use std::collections::BTreeMap;
 
-/// CLI input format that wraps `NormalizedSpell` fields with additional private inputs
-/// and beaming source data. Trivially decomposes into `NormalizedSpell` + extras.
+/// Private inputs to apps, deserializable from a standalone YAML/JSON file.
 #[serde_as]
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SpellInput {
-    /// Protocol version.
-    pub version: u32,
-    /// Transaction data.
-    pub tx: NormalizedTransaction,
-    /// Maps all `App`s in the transaction to (potentially empty) public input data.
-    /// Keys must be in sorted order in the input.
-    #[serde(deserialize_with = "sorted_app_map::deserialize")]
-    pub app_public_inputs: BTreeMap<App, Data>,
-    /// Is this a mock spell?
-    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
-    pub mock: bool,
+#[derive(Clone, Debug, Deserialize)]
+struct AppPrivateInputs(#[serde_as(as = "BTreeMap<DisplayFromStr, _>")] BTreeMap<App, Data>);
 
-    /// Private inputs to the apps for this spell.
-    #[serde(
-        alias = "private_inputs",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    #[serde_as(as = "Option<BTreeMap<DisplayFromStr, _>>")]
-    pub app_private_inputs: Option<BTreeMap<App, Data>>,
-
-    /// Beaming source UTXOs, indexed by input position.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub beamed_from: Option<BTreeMap<usize, BeamSource>>,
+pub fn read_private_inputs(path: &std::path::Path) -> anyhow::Result<BTreeMap<App, Data>> {
+    let data = std::fs::read(path)?;
+    let inputs: AppPrivateInputs = serde_yaml::from_slice(&data)?;
+    Ok(inputs.0)
 }
 
-impl SpellInput {
-    /// Decompose into `NormalizedSpell`, private inputs, and beaming sources.
-    pub fn into_parts(
-        self,
-    ) -> (
-        NormalizedSpell,
-        BTreeMap<App, Data>,
-        BTreeMap<usize, BeamSource>,
-    ) {
-        let spell = NormalizedSpell {
-            version: self.version,
-            tx: self.tx,
-            app_public_inputs: self.app_public_inputs,
-            mock: self.mock,
-        };
-        let private_inputs = self.app_private_inputs.unwrap_or_default();
-        let beamed_from = self.beamed_from.unwrap_or_default();
-        (spell, private_inputs, beamed_from)
-    }
-
-    /// Create a `SpellInput` from a `NormalizedSpell` (for display, e.g. `tx show-spell`).
-    pub fn from_normalized_spell(ns: &NormalizedSpell) -> Self {
-        SpellInput {
-            version: ns.version,
-            tx: ns.tx.clone(),
-            app_public_inputs: ns.app_public_inputs.clone(),
-            mock: ns.mock,
-            app_private_inputs: None,
-            beamed_from: None,
-        }
-    }
+pub fn read_beamed_from(path: &std::path::Path) -> anyhow::Result<BTreeMap<usize, BeamSource>> {
+    let data = std::fs::read(path)?;
+    Ok(serde_yaml::from_slice(&data)?)
 }
 
 pub fn from_strings(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
@@ -109,50 +60,6 @@ pub fn get_charms_fee(charms_fee: &Option<CharmsFee>, total_cycles: u64) -> Amou
             Amount::from_sat(total_cycles * charms_fee.fee_rate / 1000000 + charms_fee.fee_base)
         })
         .unwrap_or_default()
-}
-
-pub fn align_spell_to_tx(
-    norm_spell: NormalizedSpell,
-    tx: &bitcoin::Transaction,
-) -> anyhow::Result<NormalizedSpell> {
-    let mut norm_spell = norm_spell;
-    let spell_ins = norm_spell.tx.ins.as_ref().ok_or(anyhow!("no inputs"))?;
-
-    ensure!(
-        spell_ins.len() <= tx.input.len(),
-        "spell inputs exceed transaction inputs"
-    );
-    ensure!(
-        norm_spell.tx.outs.len() <= tx.output.len(),
-        "spell outputs exceed transaction outputs"
-    );
-
-    for i in 0..spell_ins.len() {
-        let utxo_id = &spell_ins[i];
-        let out_point = tx.input[i].previous_output;
-        ensure!(
-            utxo_id.0 == TxId(out_point.txid.to_byte_array()),
-            "input {} txid mismatch: {} != {}",
-            i,
-            utxo_id.0,
-            out_point.txid
-        );
-        ensure!(
-            utxo_id.1 == out_point.vout,
-            "input {} vout mismatch: {} != {}",
-            i,
-            utxo_id.1,
-            out_point.vout
-        );
-    }
-
-    for i in spell_ins.len()..tx.input.len() {
-        let out_point = tx.input[i].previous_output;
-        let utxo_id = UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout);
-        norm_spell.tx.ins.get_or_insert_with(Vec::new).push(utxo_id);
-    }
-
-    Ok(norm_spell)
 }
 
 #[cfg(test)]

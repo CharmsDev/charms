@@ -2,8 +2,9 @@ use crate::{
     cli,
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
-        ProveRequest, ProveSpellTx, ProveSpellTxImpl, SpellInput, adjust_coin_contents,
+        NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
         ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
+        read_beamed_from, read_private_inputs,
     },
 };
 use anyhow::{Result, ensure};
@@ -58,6 +59,8 @@ impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         let SpellProveParams {
             spell,
+            private_inputs,
+            beamed_from,
             prev_txs,
             app_bins,
             change_address,
@@ -75,13 +78,21 @@ impl Prove for SpellCli {
 
         ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
-        let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+        let norm_spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+
+        let app_private_inputs = private_inputs
+            .map(|p| read_private_inputs(&p))
+            .transpose()?
+            .unwrap_or_default();
+
+        let tx_ins_beamed_source_utxos = beamed_from
+            .map(|p| read_beamed_from(&p))
+            .transpose()?
+            .unwrap_or_default();
 
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
-
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) = spell_input.into_parts();
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -127,20 +138,29 @@ impl Check for SpellCli {
         &self,
         SpellCheckParams {
             spell,
+            private_inputs,
+            beamed_from,
             app_bins,
             prev_txs,
             chain,
             mock,
         }: SpellCheckParams,
     ) -> Result<()> {
-        let spell_input: SpellInput = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+        let mut norm_spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+
+        let app_private_inputs = private_inputs
+            .map(|p| read_private_inputs(&p))
+            .transpose()?
+            .unwrap_or_default();
+
+        let tx_ins_beamed_source_utxos = beamed_from
+            .map(|p| read_beamed_from(&p))
+            .transpose()?
+            .unwrap_or_default();
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
         let prev_txs = from_strings(&prev_txs)?;
-
-        let (mut norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell_input.into_parts();
         adjust_coin_contents(&mut norm_spell, chain)?;
 
         ensure_all_prev_txs_are_present(
