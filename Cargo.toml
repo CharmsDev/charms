@@ -50,7 +50,7 @@ pallas-crypto = { version = "0.34.0" }
 pallas-primitives = { version = "0.34.0" }
 pallas-txbuilder = { version = "0.34.0" }
 proptest = { version = "1.9.0" }
-proptest-derive = { version = "0.5.1" }
+proptest-derive = { version = "0.7.0" }
 serde = { version = "1.0" }
 serde_json = { version = "1.0.149" }
 serde_yaml = { version = "0.9.34" }
