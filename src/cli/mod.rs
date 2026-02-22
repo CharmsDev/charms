@@ -16,10 +16,7 @@ use crate::{
     utils::BoxedSP1Prover,
 };
 #[cfg(feature = "prover")]
-use crate::{
-    spell::Prover,
-    utils::{Shared, sp1::cuda::SP1CudaProver},
-};
+use crate::{spell::Prover, utils::Shared};
 use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
 use charms_client::tx::Chain;
@@ -28,6 +25,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{CompleteEnv, Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
+use crate::utils::block_on;
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 #[derive(Parser)]
@@ -515,26 +513,20 @@ fn spell_sp1_client(app_sp1_client: &Arc<Shared<BoxedSP1Prover>>) -> Arc<Shared<
 
 #[tracing::instrument(level = "info")]
 #[cfg(feature = "prover")]
-fn charms_sp1_cuda_prover() -> utils::sp1::CudaProver {
-    utils::sp1::CudaProver::new(
-        sp1_prover::SP1Prover::new(),
-        SP1CudaProver::new(gpu_service_url()).unwrap(),
-    )
-}
-
-#[cfg(feature = "prover")]
-fn gpu_service_url() -> String {
-    std::env::var("SP1_GPU_SERVICE_URL").unwrap_or("http://localhost:3000/twirp/".to_string())
+fn charms_sp1_cuda_prover() -> utils::sp1::CharmsCudaProver {
+    let cuda_prover = block_on(ProverClient::builder().cuda().build());
+    let light_prover = block_on(sp1_sdk::LightProver::new());
+    utils::sp1::CharmsCudaProver::new(cuda_prover, light_prover)
 }
 
 #[tracing::instrument(level = "info")]
 pub fn sp1_cpu_prover() -> CpuProver {
-    ProverClient::builder().cpu().build()
+    block_on(ProverClient::builder().cpu().build())
 }
 
 #[tracing::instrument(level = "info")]
 pub fn sp1_network_prover() -> NetworkProver {
-    ProverClient::builder().network().build()
+    block_on(ProverClient::builder().network().build())
 }
 
 #[tracing::instrument(level = "info")]

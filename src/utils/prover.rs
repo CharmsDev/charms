@@ -1,9 +1,11 @@
-use sp1_core_machine::io::SP1Stdin;
-use sp1_prover::{SP1ProvingKey, SP1VerifyingKey, components::CpuProverComponents};
 use sp1_sdk::{
-    CpuProver, ExecutionReport, NetworkProver, Prover, SP1ProofMode, SP1ProofWithPublicValues,
+    CpuProver, Elf, ExecutionReport, NetworkProver, ProveRequest, Prover, ProvingKey, SP1ProofMode,
+    SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin, SP1VerifyingKey,
     network::FulfillmentStrategy,
 };
+use std::future::IntoFuture;
+
+use super::block_on;
 
 pub trait CharmsSP1Prover: Send + Sync {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey);
@@ -22,7 +24,9 @@ pub trait CharmsSP1Prover: Send + Sync {
 
 impl CharmsSP1Prover for CpuProver {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
-        let (pk, _, _, vk) = <Self as Prover<CpuProverComponents>>::inner(self).setup(elf);
+        let pk: SP1ProvingKey =
+            block_on(Prover::setup(self, Elf::from(elf))).expect("setup failed");
+        let vk = pk.verifying_key().clone();
         (pk, vk)
     }
 
@@ -32,7 +36,8 @@ impl CharmsSP1Prover for CpuProver {
         stdin: &SP1Stdin,
         kind: SP1ProofMode,
     ) -> anyhow::Result<(SP1ProofWithPublicValues, u64)> {
-        let proof = self.prove(pk, stdin).mode(kind).run()?;
+        let proof =
+            block_on(Prover::prove(self, pk, stdin.clone()).mode(kind).into_future())?;
         Ok((proof, 0))
     }
 
@@ -41,13 +46,17 @@ impl CharmsSP1Prover for CpuProver {
         elf: &[u8],
         stdin: &SP1Stdin,
     ) -> anyhow::Result<(sp1_sdk::SP1PublicValues, ExecutionReport)> {
-        Ok(sp1_sdk::Prover::execute(self, elf, stdin)?)
+        Ok(block_on(
+            Prover::execute(self, Elf::from(elf), stdin.clone()).into_future(),
+        )?)
     }
 }
 
 impl CharmsSP1Prover for NetworkProver {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
-        let (pk, _, _, vk) = <Self as Prover<CpuProverComponents>>::inner(self).setup(elf);
+        let pk: SP1ProvingKey =
+            block_on(Prover::setup(self, Elf::from(elf))).expect("setup failed");
+        let vk = pk.verifying_key().clone();
         (pk, vk)
     }
 
@@ -57,15 +66,13 @@ impl CharmsSP1Prover for NetworkProver {
         stdin: &SP1Stdin,
         kind: SP1ProofMode,
     ) -> anyhow::Result<(SP1ProofWithPublicValues, u64)> {
-        let proof = self
-            .prove(pk, stdin)
-            .mode(kind)
-            .gas_limit(16_000_000_000)
-            .cycle_limit(16_000_000_000)
-            .max_price_per_pgu(500_000_000)
-            .skip_simulation(true)
-            .strategy(FulfillmentStrategy::Auction)
-            .run()?;
+        let proof = block_on(
+            Prover::prove(self, pk, stdin.clone())
+                .mode(kind)
+                .skip_simulation(true)
+                .strategy(FulfillmentStrategy::Auction)
+                .into_future(),
+        )?;
         Ok((proof, 0))
     }
 
@@ -74,6 +81,8 @@ impl CharmsSP1Prover for NetworkProver {
         elf: &[u8],
         stdin: &SP1Stdin,
     ) -> anyhow::Result<(sp1_sdk::SP1PublicValues, ExecutionReport)> {
-        Ok(sp1_sdk::Prover::execute(self, elf, stdin)?)
+        Ok(block_on(
+            Prover::execute(self, Elf::from(elf), stdin.clone()).into_future(),
+        )?)
     }
 }

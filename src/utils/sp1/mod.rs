@@ -1,126 +1,59 @@
 //! # SP1 CUDA Prover
 //!
-//! A prover that uses the CUDA to execute and prove programs.
+//! A prover that uses CUDA to execute and prove programs.
 
-use anyhow::{Result, anyhow};
-use sp1_core_machine::io::SP1Stdin;
-use sp1_prover::{SP1Prover, components::CpuProverComponents};
-
-use crate::utils::{TRANSIENT_PROVER_FAILURE, prover::CharmsSP1Prover, sp1::cuda::SP1CudaProver};
+use anyhow::anyhow;
+use sp1_cuda::CudaProvingKey;
 use sp1_sdk::{
-    ExecutionReport, Prover, SP1Proof, SP1ProofMode, SP1ProofWithPublicValues, SP1ProvingKey,
-    SP1VerifyingKey, install::try_install_circuit_artifacts,
+    CudaProver, Elf, ExecutionReport, LightProver, ProveRequest, Prover, ProvingKey, SP1ProofMode,
+    SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin, SP1VerifyingKey,
 };
+use std::collections::HashMap;
+use std::future::IntoFuture;
+use std::sync::Mutex;
 
-pub mod cuda;
+use crate::utils::{TRANSIENT_PROVER_FAILURE, block_on, prover::CharmsSP1Prover};
 
-/// A prover that uses the CPU for execution and the CUDA for proving.
-pub struct CudaProver {
-    pub cpu_prover: SP1Prover<CpuProverComponents>,
-    pub cuda_prover: SP1CudaProver,
+/// Wrapper around sp1_sdk::CudaProver that implements CharmsSP1Prover.
+///
+/// The sp1_sdk::CudaProver uses CudaProvingKey (a reference to a key held by the CUDA server),
+/// while CharmsSP1Prover uses SP1ProvingKey. This wrapper uses a LightProver to produce
+/// SP1ProvingKeys and caches CudaProvingKeys for use in prove calls.
+pub struct CharmsCudaProver {
+    cuda_prover: CudaProver,
+    light_prover: LightProver,
+    /// Cache of CudaProvingKey, keyed by ELF bytes.
+    cuda_pks: Mutex<HashMap<Vec<u8>, CudaProvingKey>>,
 }
 
-impl CudaProver {
-    /// Creates a new [`CudaProver`].
-    pub fn new(cpu_prover: SP1Prover, cuda_prover: SP1CudaProver) -> Self {
-        // let cuda_prover = Mutex::new(cuda_prover);
+impl CharmsCudaProver {
+    pub fn new(cuda_prover: CudaProver, light_prover: LightProver) -> Self {
         Self {
-            cpu_prover,
             cuda_prover,
-        }
-    }
-
-    /// Proves the given program on the given input in the given proof mode.
-    ///
-    /// Returns the cycle count in addition to the proof.
-    pub fn prove_with_cycles(
-        &self,
-        pk: &SP1ProvingKey,
-        stdin: &SP1Stdin,
-        kind: SP1ProofMode,
-    ) -> Result<(SP1ProofWithPublicValues, u64)> {
-        self.cuda_prover.ready()?;
-
-        // Generate the core proof.
-        let proof = self.cuda_prover.prove_core_stateless(pk, stdin)?;
-        let cycles = proof.cycles;
-        if kind == SP1ProofMode::Core {
-            unreachable!()
-        }
-
-        // Generate the compressed proof.
-        let deferred_proofs = stdin
-            .proofs
-            .iter()
-            .map(|(reduce_proof, _)| reduce_proof.clone())
-            .collect();
-        let public_values = proof.public_values.clone();
-        let reduce_proof = self.cuda_prover.compress(&pk.vk, proof, deferred_proofs)?;
-        if kind == SP1ProofMode::Compressed {
-            let proof_with_pv = SP1ProofWithPublicValues {
-                proof: SP1Proof::Compressed(Box::new(reduce_proof)),
-                public_values,
-                sp1_version: self.version().to_string(),
-                tee_proof: None,
-            };
-            return Ok((proof_with_pv, cycles));
-        }
-
-        // Generate the shrink proof.
-        let compress_proof = self.cuda_prover.shrink(reduce_proof)?;
-
-        // Generate the wrap proof.
-        let outer_proof = self.cuda_prover.wrap_bn254(compress_proof)?;
-
-        // Generate the gnark proof.
-        match kind {
-            SP1ProofMode::Groth16 => {
-                let groth16_bn254_artifacts = try_install_circuit_artifacts("groth16");
-
-                let proof = self
-                    .cpu_prover
-                    .wrap_groth16_bn254(outer_proof, &groth16_bn254_artifacts);
-                Ok((
-                    SP1ProofWithPublicValues {
-                        proof: SP1Proof::Groth16(proof),
-                        public_values,
-                        sp1_version: self.version().to_string(),
-                        tee_proof: None,
-                    },
-                    0,
-                ))
-            }
-            _ => unreachable!(),
+            light_prover,
+            cuda_pks: Mutex::new(HashMap::new()),
         }
     }
 }
 
-impl Prover<CpuProverComponents> for CudaProver {
-    fn inner(&self) -> &SP1Prover<CpuProverComponents> {
-        &self.cpu_prover
-    }
-
-    #[tracing::instrument(level = "info", skip_all)]
+impl CharmsSP1Prover for CharmsCudaProver {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
-        let (pk, _, _, vk) = self.cpu_prover.setup(elf);
-        (pk, vk)
-    }
+        // Get SP1ProvingKey from the light prover (cheap, only does verification setup)
+        let sp1_pk: SP1ProvingKey = block_on(Prover::setup(&self.light_prover, Elf::from(elf)))
+            .expect("light setup failed");
+        let vk = sp1_pk.verifying_key().clone();
 
-    #[tracing::instrument(level = "info", skip_all)]
-    fn prove(
-        &self,
-        pk: &SP1ProvingKey,
-        stdin: &SP1Stdin,
-        kind: SP1ProofMode,
-    ) -> Result<SP1ProofWithPublicValues> {
-        self.prove_with_cycles(pk, stdin, kind).map(|(p, _)| p)
-    }
-}
+        // Get CudaProvingKey from the CUDA prover (sends ELF to GPU server)
+        let cuda_pk: CudaProvingKey = block_on(Prover::setup(&self.cuda_prover, Elf::from(elf)))
+            .expect("CUDA setup failed");
 
-impl CharmsSP1Prover for CudaProver {
-    fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
-        let (pk, _, _, vk) = self.cpu_prover.setup(elf);
-        (pk, vk)
+        // Cache the CudaProvingKey for later prove calls
+        self.cuda_pks
+            .lock()
+            .unwrap()
+            .insert(elf.to_vec(), cuda_pk);
+
+        (sp1_pk, vk)
     }
 
     fn prove(
@@ -129,8 +62,22 @@ impl CharmsSP1Prover for CudaProver {
         stdin: &SP1Stdin,
         kind: SP1ProofMode,
     ) -> anyhow::Result<(SP1ProofWithPublicValues, u64)> {
-        self.prove_with_cycles(pk, stdin, kind)
-            .map_err(|e| anyhow!("{}: CUDA: {}", TRANSIENT_PROVER_FAILURE, e))
+        let elf_bytes: &[u8] = pk.elf();
+        let cuda_pk = {
+            let cache = self.cuda_pks.lock().unwrap();
+            cache
+                .get(elf_bytes)
+                .cloned()
+                .ok_or_else(|| anyhow!("CudaProvingKey not found; call setup first"))?
+        };
+
+        let proof = block_on(
+            Prover::prove(&self.cuda_prover, &cuda_pk, stdin.clone())
+                .mode(kind)
+                .into_future(),
+        )
+        .map_err(|e| anyhow!("{}: CUDA: {}", TRANSIENT_PROVER_FAILURE, e))?;
+        Ok((proof, 0))
     }
 
     fn execute(
@@ -138,11 +85,9 @@ impl CharmsSP1Prover for CudaProver {
         elf: &[u8],
         stdin: &SP1Stdin,
     ) -> anyhow::Result<(sp1_sdk::SP1PublicValues, ExecutionReport)> {
-        // Use the sp1_sdk::Prover trait method, not the SP1Prover method
-        Ok(sp1_sdk::Prover::execute(
-            self as &dyn sp1_sdk::Prover<CpuProverComponents>,
-            elf,
-            stdin,
+        // Execute on the CUDA prover (which delegates to its internal light node)
+        Ok(block_on(
+            Prover::execute(&self.cuda_prover, Elf::from(elf), stdin.clone()).into_future(),
         )?)
     }
 }
