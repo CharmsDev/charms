@@ -95,7 +95,7 @@ impl EnchantedTx for BitcoinTx {
             spell.tx.outs.len() <= tx.output.len(),
             "spell tx outs mismatch"
         );
-        let spell = spell_with_committed_ins_and_coins(self, spell);
+        let spell = spell_with_committed_ins_and_coins(self, spell)?;
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
@@ -130,16 +130,18 @@ impl EnchantedTx for BitcoinTx {
             .collect()
     }
 
-    fn all_coin_outs(&self) -> Vec<NativeOutput> {
-        self.inner()
+    fn all_coin_outs(&self, _spell: &NormalizedSpell) -> anyhow::Result<Vec<NativeOutput>> {
+        let r = self
+            .inner()
             .output
             .iter()
             .map(|tx_out| NativeOutput {
                 amount: tx_out.value.to_sat(),
                 dest: tx_out.script_pubkey.to_bytes(),
-                content: Some(tx_out.into()),
+                content: None, // there is only script_pubkey and value
             })
-            .collect()
+            .collect();
+        Ok(r)
     }
 
     fn proven_final(&self) -> bool {
@@ -194,7 +196,7 @@ fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> 
 pub(crate) fn spell_with_committed_ins_and_coins(
     tx: &BitcoinTx,
     mut spell: NormalizedSpell,
-) -> NormalizedSpell {
+) -> anyhow::Result<NormalizedSpell> {
     let mut tx_ins = tx.spell_ins();
 
     // For V9 and earlier, exclude the last input (funding UTXO)
@@ -204,18 +206,12 @@ pub(crate) fn spell_with_committed_ins_and_coins(
 
     spell.tx.ins = Some(tx_ins);
     if spell.version > V7 {
-        let mut coins = tx.all_coin_outs();
+        let mut coins = tx.all_coin_outs(&spell)?;
         coins.truncate(spell.tx.outs.len());
-        // `native_output.content` is available since V11
-        if spell.version <= V10 {
-            for native_output in &mut coins {
-                native_output.content = None;
-            }
-        }
         spell.tx.coins = Some(coins);
     }
 
-    spell
+    Ok(spell)
 }
 
 pub const SPELL_MARKER: &[u8] = b"spell";

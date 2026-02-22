@@ -97,6 +97,14 @@ pub struct SpellProveParams {
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
 
+    /// Private inputs file (YAML/JSON).
+    #[arg(long)]
+    private_inputs: Option<PathBuf>,
+
+    /// Beamed-from file (YAML/JSON).
+    #[arg(long)]
+    beamed_from: Option<PathBuf>,
+
     /// Pre-requisite transactions (hex-encoded).
     /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
     /// If the spell has any reference UTXOs, the transactions creating them must also be included.
@@ -133,6 +141,14 @@ pub struct SpellCheckParams {
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
 
+    /// Private inputs file (YAML/JSON).
+    #[arg(long)]
+    private_inputs: Option<PathBuf>,
+
+    /// Beamed-from file (YAML/JSON).
+    #[arg(long)]
+    beamed_from: Option<PathBuf>,
+
     /// Paths to the apps' Wasm binaries.
     #[arg(long)]
     app_bins: Vec<PathBuf>,
@@ -142,6 +158,10 @@ pub struct SpellCheckParams {
     /// If the spell has any reference UTXOs, the transactions creating them must also be included.
     #[arg(long)]
     prev_txs: Option<Vec<String>>,
+
+    /// Target chain, defaults to `bitcoin`.
+    #[arg(long, default_value = "bitcoin")]
+    chain: Chain,
 
     /// Is mock mode enabled?
     #[arg(long, default_value = "false", hide_env = true)]

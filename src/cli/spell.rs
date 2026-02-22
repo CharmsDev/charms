@@ -2,8 +2,9 @@ use crate::{
     cli,
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
-        ProveRequest, ProveSpellTx, ProveSpellTxImpl, Spell, ensure_all_prev_txs_are_present,
-        ensure_exact_app_binaries, from_strings,
+        NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
+        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings, read_beamed_from,
+        read_private_inputs,
     },
 };
 use anyhow::{Result, ensure};
@@ -58,6 +59,8 @@ impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         let SpellProveParams {
             spell,
+            private_inputs,
+            beamed_from,
             prev_txs,
             app_bins,
             change_address,
@@ -75,14 +78,21 @@ impl Prove for SpellCli {
 
         ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
-        let spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+        let norm_spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
+
+        let app_private_inputs = private_inputs
+            .map(|p| read_private_inputs(&p))
+            .transpose()?
+            .unwrap_or_default();
+
+        let tx_ins_beamed_source_utxos = beamed_from
+            .map(|p| read_beamed_from(&p))
+            .transpose()?
+            .unwrap_or_default();
 
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
-
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell.normalized(mock)?;
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -128,28 +138,30 @@ impl Check for SpellCli {
         &self,
         SpellCheckParams {
             spell,
+            private_inputs,
+            beamed_from,
             app_bins,
             prev_txs,
+            chain,
             mock,
         }: SpellCheckParams,
     ) -> Result<()> {
-        let mut spell: Spell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
-        for u in spell.outs.iter_mut() {
-            u.amount.get_or_insert(crate::cli::wallet::MIN_SATS);
-        }
+        let mut norm_spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
-        // make sure spell inputs all have utxo_id
-        ensure!(
-            spell.ins.iter().all(|u| u.utxo_id.is_some()),
-            "all spell inputs must have utxo_id"
-        );
+        let app_private_inputs = private_inputs
+            .map(|p| read_private_inputs(&p))
+            .transpose()?
+            .unwrap_or_default();
+
+        let tx_ins_beamed_source_utxos = beamed_from
+            .map(|p| read_beamed_from(&p))
+            .transpose()?
+            .unwrap_or_default();
 
         let prev_txs = prev_txs.unwrap_or_else(|| vec![]);
 
         let prev_txs = from_strings(&prev_txs)?;
-
-        let (norm_spell, app_private_inputs, tx_ins_beamed_source_utxos) =
-            spell.normalized(mock)?;
+        adjust_coin_contents(&mut norm_spell, chain)?;
 
         ensure_all_prev_txs_are_present(
             &norm_spell,
@@ -159,7 +171,7 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock);
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock)?;
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,
@@ -185,7 +197,7 @@ impl Check for SpellCli {
                 app_input,
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
-            ),
+            )?,
             "spell verification failed"
         );
 

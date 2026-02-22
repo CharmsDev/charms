@@ -14,6 +14,7 @@ use serde::{
     de::{DeserializeOwned, SeqAccess, Visitor},
     ser::SerializeTuple,
 };
+use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
 pub mod util;
 
 /// Macro to check a condition and return false (early) if it does not hold.
@@ -65,11 +66,13 @@ pub struct Transaction {
     pub app_public_inputs: BTreeMap<App, Data>,
 }
 
+#[serde_as]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NativeOutput {
     pub amount: u64,
+    #[serde_as(as = "IfIsHumanReadable<Hex>")]
     pub dest: Vec<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub content: Option<Data>,
 }
 

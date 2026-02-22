@@ -1,13 +1,7 @@
-use crate::{
-    cli,
-    cli::WalletListParams,
-    spell::{KeyedCharms, Spell},
-    tx,
-    utils::str_index,
-};
+use crate::{cli, cli::WalletListParams, tx, utils::str_index};
 use anyhow::{Result, ensure};
 use bitcoin::{Transaction, hashes::Hash};
-use charms_client::{bitcoin_tx::BitcoinTx, tx::Tx};
+use charms_client::{NormalizedCharms, NormalizedSpell, bitcoin_tx::BitcoinTx, tx::Tx};
 use charms_data::{App, Data, TxId, UtxoId};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -76,7 +70,7 @@ fn outputs_with_charms(
         .collect::<BTreeSet<_>>();
     let spells = txs_with_spells(txid_set.into_iter(), mock)?;
     let utxos_with_charms: BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)> =
-        utxos_with_charms(spells, b_list_unspent);
+        utxos_with_charms(&spells, b_list_unspent);
     let apps = collect_apps(&utxos_with_charms);
 
     Ok(AppsAndCharmsOutputs {
@@ -88,7 +82,7 @@ fn outputs_with_charms(
 fn txs_with_spells(
     txid_iter: impl Iterator<Item = String>,
     mock: bool,
-) -> Result<BTreeMap<TxId, Spell>> {
+) -> Result<BTreeMap<TxId, NormalizedSpell>> {
     let txs_with_spells = txid_iter
         .map(|txid| {
             let tx: Transaction = get_tx(&txid)?;
@@ -97,8 +91,8 @@ fn txs_with_spells(
         .map(|tx_result: Result<Transaction>| {
             let tx = tx_result?;
             let txid = tx.compute_txid();
-            let spell_opt = tx::spell(&Tx::Bitcoin(BitcoinTx::Simple(tx)), mock)?;
-            Ok(spell_opt.map(|spell| (TxId(txid.to_byte_array()), spell)))
+            let norm_spell_opt = tx::spell(&Tx::Bitcoin(BitcoinTx::Simple(tx)), mock);
+            Ok(norm_spell_opt.map(|ns| (TxId(txid.to_byte_array()), ns)))
         })
         .filter_map(|tx_result| match tx_result {
             Ok(Some(v)) => Some(Ok(v)),
@@ -111,7 +105,7 @@ fn txs_with_spells(
 }
 
 fn utxos_with_charms(
-    spells: BTreeMap<TxId, Spell>,
+    spells: &BTreeMap<TxId, NormalizedSpell>,
     b_list_unspent: Vec<BListUnspentItem>,
 ) -> BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)> {
     b_list_unspent
@@ -123,19 +117,22 @@ fn utxos_with_charms(
             let i = b_utxo.vout;
             spells
                 .get(&txid)
-                .and_then(|spell| spell.outs.get(i as usize).map(|u| (u, &spell.apps)))
-                .and_then(|(u, apps)| u.charms.as_ref().map(|keyed_charms| (keyed_charms, apps)))
-                .map(|(keyed_charms, apps)| {
-                    (UtxoId(txid, i), (b_utxo, parsed_charms(keyed_charms, apps)))
+                .and_then(|ns| ns.tx.outs.get(i as usize))
+                .filter(|n_charms| !n_charms.is_empty())
+                .map(|n_charms| {
+                    let apps: Vec<App> = spells[&txid].app_public_inputs.keys().cloned().collect();
+                    (UtxoId(txid, i), (b_utxo, parsed_charms(n_charms, &apps)))
                 })
         })
         .collect()
 }
 
-fn parsed_charms(keyed_charms: &KeyedCharms, apps: &BTreeMap<String, App>) -> ParsedCharms {
-    keyed_charms
+/// Convert NormalizedCharms (u32-indexed) to ParsedCharms (App-keyed)
+/// by looking up each app index in the sorted app list.
+fn parsed_charms(n_charms: &NormalizedCharms, apps: &[App]) -> ParsedCharms {
+    n_charms
         .iter()
-        .filter_map(|(k, v)| apps.get(k).map(|app| (app.clone(), v.clone())))
+        .filter_map(|(&idx, v)| apps.get(idx as usize).map(|app| (app.clone(), v.clone())))
         .collect()
 }
 

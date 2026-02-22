@@ -2,11 +2,12 @@ use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
 use charms_client::{NormalizedSpell, beamed_out_to_hash, cardano_tx::CardanoTx, charms, tx::Tx};
-use charms_data::{TxId, util};
+use charms_data::{NativeOutput, TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
-    assets::MultiAsset, plutus::PlutusV3Script as CmlPlutusV3Script,
-    transaction::Transaction as CmlTransaction,
+    assets::MultiAsset,
+    plutus::PlutusV3Script as CmlPlutusV3Script,
+    transaction::{Transaction as CmlTransaction, TransactionOutput},
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
@@ -147,11 +148,20 @@ fn get_prev_output(
 }
 
 fn txbuilder_output(
-    address: &[u8],
-    lovelace: u64,
+    coin: &NativeOutput,
     assets: Option<&PallasMultiasset>,
 ) -> anyhow::Result<Output> {
+    let (address, lovelace) = (&coin.dest, coin.amount.into());
     let mut output = Output::new(pallas_addresses::Address::from_bytes(address)?, lovelace);
+    if let Some(native_tx_out_data) = &coin.content {
+        let tx_out: TransactionOutput = native_tx_out_data.value()?;
+        for (policy_id, asset_names) in tx_out.amount().multiasset.iter() {
+            let policy_id = cml_to_pallas_policy_id(policy_id);
+            for (asset_name, amount) in asset_names.iter() {
+                output = output.add_asset(policy_id, asset_name.inner.clone(), *amount)?;
+            }
+        }
+    };
     if let Some(ma) = assets {
         for (policy_id, asset_names) in ma.iter() {
             for (asset_name, amount) in asset_names.iter() {
@@ -224,7 +234,7 @@ fn pallas_multi_asset(
     PallasMultiasset,
     BTreeMap<PallasPolicyId, PallasPlutusV3Script>,
 )> {
-    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms, beamed_out)?;
+    let (cml_ma, cml_scripts) = charms_client::cardano_tx::multi_asset(charms, beamed_out);
 
     let pallas_ma = cml_to_pallas_multiasset(&cml_ma);
 
@@ -330,7 +340,7 @@ pub fn from_spell(
         let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, _) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
-        let output = txbuilder_output(&coin.dest, coin.amount.into(), Some(&multiasset))?;
+        let output = txbuilder_output(coin, Some(&multiasset))?;
         staging_tx = staging_tx.output(output);
     }
 
