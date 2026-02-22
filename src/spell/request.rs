@@ -50,14 +50,20 @@ pub struct ProveRequest {
     #[serde_as(as = "IfIsHumanReadable<NormalizedSpellHex>")]
     pub spell: NormalizedSpell,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DataHex>>")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub app_private_inputs: BTreeMap<App, Data>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, _>>")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub binaries: BTreeMap<B32, Vec<u8>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub prev_txs: Vec<Tx>,
     pub change_address: String,
+    #[serde(default)]
     pub fee_rate: f64,
     pub chain: Chain,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub collateral_utxo: Option<UtxoId>,
 }
