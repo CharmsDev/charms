@@ -38,6 +38,8 @@ pub const V7_SPELL_VK: &str = "0x0041d9843ec25ba04797a0ce29af364389f7eda9f7126ef
 pub const V8_SPELL_VK: &str = "0x00e440d40e331c16bc4c78d2dbc6bb35876e6ea944e943de359a075e07385abc";
 /// Verification key for version `9` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V9_SPELL_VK: &str = "0x00713f077ec2bd68157512835dc678053565a889935ecd5789ce2fa097c93ee9";
+/// Verification key for version `10` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V10_SPELL_VK: &str = "0x00ccf030317cae019a4cd3c8557b2c5b522050e7e562e3adf287cd5ad596511f";
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -61,9 +63,11 @@ pub const V8: u32 = 8;
 pub const V9: u32 = 9;
 /// Version `10` of the protocol.
 pub const V10: u32 = 10;
+/// Version `11` of the protocol.
+pub const V11: u32 = 11;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V10;
+pub const CURRENT_VERSION: u32 = V11;
 
 /// Source of a beamed input: the UTXO that beamed the charms, with an optional nonce.
 ///
