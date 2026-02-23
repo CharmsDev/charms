@@ -15,28 +15,25 @@ ark-groth16 = { workspace = true }
 ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
-charms-app-runner = { path = "../charms-app-runner", version = "11.0.0-dev" }
-charms-data = { path = "../charms-data", version = "11.0.0-dev" }
+charms-app-runner = { path = "../charms-app-runner", version = "11.0.0" }
+charms-data = { path = "../charms-data", version = "11.0.0" }
 cml-chain = { workspace = true, default-features = false }
 cml-core = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
-pallas-addresses = { workspace = true }
-pallas-codec = { workspace = true }
 pallas-crypto = { workspace = true }
-pallas-primitives = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_with = { version = "3.16.1", features = ["hex"] }
 sha2 = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true }
-strum = { version = "0.27.2", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 tracing = { workspace = true }
 uplc = { version = "1.1.21" }
 
 [dev-dependencies]
-charms-data = { path = "../charms-data", version = "11.0.0-dev", features = ["test"] }
+charms-data = { path = "../charms-data", version = "11.0.0", features = ["test"] }
 ciborium = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }

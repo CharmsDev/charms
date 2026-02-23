@@ -23,7 +23,7 @@ exclude = ["charms-spell-checker"]
 resolver = "3"
 
 [workspace.package]
-version = "11.0.0-dev"
+version = "11.0.0"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
@@ -44,13 +44,13 @@ ciborium-io = { version = "0.2.2" }
 cml-chain = { version = "6.2.0", default-features = false }
 cml-core = { version = "6.2.0", default-features = false }
 hex = { version = "0.4.3" }
-pallas-addresses = { version = "0.34.0" }
-pallas-codec = { version = "0.34.0" }
-pallas-crypto = { version = "0.34.0" }
-pallas-primitives = { version = "0.34.0" }
-pallas-txbuilder = { version = "0.34.0" }
+pallas-addresses = { version = "0.35.0" }
+pallas-codec = { version = "0.35.0" }
+pallas-crypto = { version = "0.35.0" }
+pallas-primitives = { version = "0.35.0" }
+pallas-txbuilder = { version = "0.35.0" }
 proptest = { version = "1.10.0" }
-proptest-derive = { version = "0.5.1" }
+proptest-derive = { version = "0.8.0" }
 serde = { version = "1.0" }
 serde_json = { version = "1.0.149" }
 serde_yaml = { version = "0.9.34" }
@@ -85,11 +85,11 @@ bech32 = { version = "0.11.1" }
 bincode = { version = "1.3.3" }
 bitcoin = { workspace = true, features = ["rand", "rand-std"] }
 candid = { version = "0.10" }
-charms-app-runner = { path = "./charms-app-runner", version = "11.0.0-dev" }
-charms-client = { path = "./charms-client", version = "11.0.0-dev" }
-charms-data = { path = "./charms-data", version = "11.0.0-dev" }
-charms-lib = { path = "./charms-lib", version = "11.0.0-dev" }
-charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "11.0.0-dev" }
+charms-app-runner = { path = "./charms-app-runner", version = "11.0.0" }
+charms-client = { path = "./charms-client", version = "11.0.0" }
+charms-data = { path = "./charms-data", version = "11.0.0" }
+charms-lib = { path = "./charms-lib", version = "11.0.0" }
+charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "11.0.0" }
 clap = { version = "4.5.60", features = ["derive"] }
 clap_complete = { version = "4.5.66" }
 cml-chain = { workspace = true }
@@ -97,7 +97,7 @@ cml-core = { workspace = true }
 const_format = { version = "0.2.35" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
-ic-agent = { version = "0.38" }
+ic-agent = { version = "0.45" }
 pallas-addresses = { workspace = true }
 pallas-codec = { workspace = true }
 pallas-crypto = { workspace = true }
@@ -105,7 +105,7 @@ pallas-primitives = { workspace = true }
 pallas-txbuilder = { workspace = true }
 redis = { version = "0.32.7", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
-reqwest = { version = "0.12.28", features = ["json"] }
+reqwest = { version = "0.13.2", features = ["json"] }
 rslock = { version = "0.7.4", optional = true, features = ["tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -117,10 +117,10 @@ sp1-cuda = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
 tokio = { version = "1.49", features = ["full"] }
-toml = { version = "0.8.23" }
+toml = { version = "1.0.3" }
 tower-http = { version = "0.6.8", features = ["cors"] }
 tracing = { workspace = true }
-tracing-forest = { version = "0.1.6" }
+tracing-forest = { version = "0.3.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 twirp = { package = "twirp-rs", version = "0.13.0-succinct" }
 
