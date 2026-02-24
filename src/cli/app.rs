@@ -36,7 +36,6 @@ pub fn new(name: &str) -> Result<()> {
 
 fn do_build() -> Result<String> {
     let mut child = Command::new("cargo")
-        .env("RUSTFLAGS", "-C target-cpu=generic")
         .args(&["build", "--locked", "--release", "--target=wasm32-wasip1"])
         .stdout(Stdio::piped())
         .spawn()?;
@@ -48,8 +47,8 @@ fn do_build() -> Result<String> {
 }
 
 fn wasm_path() -> Result<String> {
-    let cargo_toml_contents = fs::read_to_string("./Cargo.toml")?;
-    let toml_value: toml::Value = cargo_toml_contents.parse()?;
+    let cargo_toml_contents = fs::read("./Cargo.toml")?;
+    let toml_value: toml::Value = toml::from_slice(&cargo_toml_contents)?;
     toml_value
         .get("package")
         .and_then(|package| package.get("name"))
