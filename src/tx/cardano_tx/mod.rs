@@ -1,13 +1,20 @@
 use crate::spell::CharmsFee;
 use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
-use charms_client::{NormalizedSpell, beamed_out_to_hash, cardano_tx::CardanoTx, charms, tx::Tx};
+use charms_client::{
+    NormalizedSpell, beamed_out_to_hash,
+    cardano_tx::{CardanoTx, OutputContent},
+    charms,
+    tx::Tx,
+};
 use charms_data::{NativeOutput, TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
     assets::MultiAsset,
     plutus::PlutusV3Script as CmlPlutusV3Script,
-    transaction::{Transaction as CmlTransaction, TransactionOutput},
+    transaction::{
+        ConwayFormatTxOut, DatumOption, Transaction as CmlTransaction, TransactionOutput,
+    },
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
@@ -153,9 +160,25 @@ fn txbuilder_output(
 ) -> anyhow::Result<Output> {
     let (address, lovelace) = (&coin.dest, coin.amount.into());
     let mut output = Output::new(pallas_addresses::Address::from_bytes(address)?, lovelace);
-    if let Some(native_tx_out_data) = &coin.content {
-        let tx_out: TransactionOutput = native_tx_out_data.value()?;
-        for (policy_id, asset_names) in tx_out.amount().multiasset.iter() {
+    if let Some(tx_out_data) = &coin.content {
+        let tx_out_content: OutputContent = tx_out_data.value()?;
+        if let Some(datum_opt) = tx_out_content.datum {
+            match datum_opt {
+                DatumOption::Hash { datum_hash, .. } => {
+                    let datum_hash_bytes: [u8; 32] = datum_hash
+                        .to_raw_bytes()
+                        .try_into()
+                        .expect("datum hash must be 32 bytes");
+                    output =
+                        output.set_datum_hash(pallas_crypto::hash::Hash::new(datum_hash_bytes));
+                }
+                DatumOption::Datum { datum, .. } => {
+                    let datum_bytes = datum.to_cbor_bytes();
+                    output = output.set_inline_datum(datum_bytes);
+                }
+            };
+        };
+        for (policy_id, asset_names) in tx_out_content.multiasset.iter() {
             let policy_id = cml_to_pallas_policy_id(policy_id);
             for (asset_name, amount) in asset_names.iter() {
                 output = output.add_asset(policy_id, asset_name.inner.clone(), *amount)?;
