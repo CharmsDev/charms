@@ -12,9 +12,7 @@ use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
     assets::MultiAsset,
     plutus::PlutusV3Script as CmlPlutusV3Script,
-    transaction::{
-        ConwayFormatTxOut, DatumOption, Transaction as CmlTransaction, TransactionOutput,
-    },
+    transaction::{DatumOption, Transaction as CmlTransaction},
 };
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
@@ -183,6 +181,25 @@ fn txbuilder_output(
             for (asset_name, amount) in asset_names.iter() {
                 output = output.add_asset(policy_id, asset_name.inner.clone(), *amount)?;
             }
+        }
+        if let Some(script_ref) = tx_out_content.script_ref {
+            // Native scripts need to be CBOR encoded (it's an enum).
+            // Plutus scripts are already CBOR encoded.
+            let (kind, bytes) = match script_ref {
+                cml_chain::Script::Native { script, .. } => {
+                    (ScriptKind::Native, script.to_cbor_bytes())
+                }
+                cml_chain::Script::PlutusV1 { script, .. } => {
+                    (ScriptKind::PlutusV1, script.to_raw_bytes().to_vec())
+                }
+                cml_chain::Script::PlutusV2 { script, .. } => {
+                    (ScriptKind::PlutusV2, script.to_raw_bytes().to_vec())
+                }
+                cml_chain::Script::PlutusV3 { script, .. } => {
+                    (ScriptKind::PlutusV3, script.to_raw_bytes().to_vec())
+                }
+            };
+            output = output.set_inline_script(kind, bytes);
         }
     };
     if let Some(ma) = assets {
