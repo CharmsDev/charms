@@ -83,11 +83,10 @@ pub enum Commands {
         shell: Shell,
     },
 
-    /// Utils
-    #[clap(hide = true)]
-    Utils {
+    /// Utility commands
+    Util {
         #[command(subcommand)]
-        command: UtilsCommands,
+        command: UtilCommands,
     },
 }
 
@@ -246,8 +245,9 @@ pub struct WalletListParams {
 }
 
 #[derive(Subcommand)]
-pub enum UtilsCommands {
+pub enum UtilCommands {
     /// Install circuit files.
+    #[clap(hide = true)]
     InstallCircuitFiles,
 }
 
@@ -284,8 +284,8 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Completions { shell } => generate_completions(shell),
-        Commands::Utils { command } => match command {
-            UtilsCommands::InstallCircuitFiles => {
+        Commands::Util { command } => match command {
+            UtilCommands::InstallCircuitFiles => {
                 let _ = try_install_circuit_artifacts("groth16");
                 Ok(())
             }
