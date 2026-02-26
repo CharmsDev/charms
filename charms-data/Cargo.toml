@@ -19,7 +19,7 @@ hex = { workspace = true }
 proptest = { workspace = true, optional = true }
 proptest-derive = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
-serde_with = { version = "3.16.1", features = ["hex"] }
+serde_with = { version = "3.17.0", features = ["hex"] }
 test-strategy = { workspace = true, optional = true }
 
 [dev-dependencies]
