@@ -2,6 +2,7 @@ pub mod app;
 pub mod server;
 pub mod spell;
 pub mod tx;
+pub mod util;
 pub mod wallet;
 
 use crate::{
@@ -22,7 +23,7 @@ use crate::{
 use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
 use charms_client::tx::Chain;
-use charms_data::check;
+use charms_data::{App, check};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use serde::Serialize;
@@ -83,11 +84,10 @@ pub enum Commands {
         shell: Shell,
     },
 
-    /// Utils
-    #[clap(hide = true)]
-    Utils {
+    /// Utility commands
+    Util {
         #[command(subcommand)]
-        command: UtilsCommands,
+        command: UtilCommands,
     },
 }
 
@@ -245,10 +245,29 @@ pub struct WalletListParams {
     mock: bool,
 }
 
+#[derive(Args)]
+pub struct DestParams {
+    /// Bitcoin or Cardano address to convert.
+    #[arg(long)]
+    addr: Option<String>,
+
+    /// Charms apps for proxy script address (format: tag/identity_hex/vk_hex).
+    #[arg(long)]
+    apps: Vec<App>,
+
+    /// Target chain (auto-detected from address if omitted).
+    #[arg(long)]
+    chain: Option<Chain>,
+}
+
 #[derive(Subcommand)]
-pub enum UtilsCommands {
+pub enum UtilCommands {
     /// Install circuit files.
+    #[clap(hide = true)]
     InstallCircuitFiles,
+
+    /// Print hex-encoded dest value for use in spell YAML.
+    Dest(#[command(flatten)] DestParams),
 }
 
 pub async fn run() -> anyhow::Result<()> {
@@ -284,11 +303,12 @@ pub async fn run() -> anyhow::Result<()> {
             }
         }
         Commands::Completions { shell } => generate_completions(shell),
-        Commands::Utils { command } => match command {
-            UtilsCommands::InstallCircuitFiles => {
+        Commands::Util { command } => match command {
+            UtilCommands::InstallCircuitFiles => {
                 let _ = try_install_circuit_artifacts("groth16");
                 Ok(())
             }
+            UtilCommands::Dest(params) => util::dest(params),
         },
     }
 }
