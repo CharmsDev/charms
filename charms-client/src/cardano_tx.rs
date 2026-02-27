@@ -167,13 +167,14 @@ impl EnchantedTx for CardanoTx {
     }
 
     fn all_coin_outs(&self, spell: &NormalizedSpell) -> anyhow::Result<Vec<NativeOutput>> {
+        let default_charms = Default::default();
         self.inner()
             .body
             .outputs
             .iter()
-            .zip(spell.tx.outs.iter())
             .enumerate()
-            .map(|(i, (tx_out, spell_out))| -> anyhow::Result<NativeOutput> {
+            .map(|(i, tx_out)| -> anyhow::Result<NativeOutput> {
+                let spell_out = spell.tx.outs.get(i).unwrap_or(&default_charms);
                 let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
                 let ma_all = tx_out.amount().multiasset.clone();
                 let (ma_charms, _) = multi_asset(&charms(spell, spell_out), beamed_out);
