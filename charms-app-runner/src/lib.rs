@@ -1,5 +1,6 @@
 use anyhow::{Result, bail, ensure};
 use charms_data::{App, B32, Data, Transaction, is_simple_transfer, util};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -18,43 +19,7 @@ pub struct AppRunner {
 struct HostState {
     stdin: Arc<Mutex<Vec<u8>>>,    // Stdin buffer
     stderr: Arc<Mutex<dyn Write>>, // Stderr buffer
-    prng: Arc<Mutex<DeterministicPrng>>,
-}
-
-/// Deterministic PRNG using SHA-256 in counter mode.
-/// Seeded from stdin content so the same inputs always produce the same random bytes.
-#[derive(Clone)]
-struct DeterministicPrng {
-    seed: [u8; 32],
-    counter: u64,
-    buffer: Vec<u8>,
-}
-
-impl DeterministicPrng {
-    fn new(seed: [u8; 32]) -> Self {
-        Self {
-            seed,
-            counter: 0,
-            buffer: Vec::new(),
-        }
-    }
-
-    fn fill(&mut self, dest: &mut [u8]) {
-        let mut offset = 0;
-        while offset < dest.len() {
-            if self.buffer.is_empty() {
-                let mut hasher = Sha256::new();
-                hasher.update(self.seed);
-                hasher.update(self.counter.to_le_bytes());
-                self.counter += 1;
-                self.buffer = hasher.finalize().to_vec();
-            }
-            let to_copy = (dest.len() - offset).min(self.buffer.len());
-            dest[offset..offset + to_copy].copy_from_slice(&self.buffer[..to_copy]);
-            self.buffer.drain(..to_copy);
-            offset += to_copy;
-        }
-    }
+    prng: Arc<Mutex<StdRng>>,
 }
 
 // Helper functions for memory access
@@ -315,7 +280,7 @@ impl AppRunner {
         let state = HostState {
             stdin: Arc::new(Mutex::new(stdin_content)),
             stderr: Arc::new(Mutex::new(std::io::stderr())),
-            prng: Arc::new(Mutex::new(DeterministicPrng::new(prng_seed))),
+            prng: Arc::new(Mutex::new(StdRng::from_seed(prng_seed))),
         };
 
         let mut store = Store::new(&self.engine, state.clone());
