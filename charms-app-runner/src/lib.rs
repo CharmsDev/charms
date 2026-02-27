@@ -1,5 +1,6 @@
 use anyhow::{Result, bail, ensure};
 use charms_data::{App, B32, Data, Transaction, is_simple_transfer, util};
+use rand::{RngExt, SeedableRng, rngs::StdRng};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -18,6 +19,7 @@ pub struct AppRunner {
 struct HostState {
     stdin: Arc<Mutex<Vec<u8>>>,    // Stdin buffer
     stderr: Arc<Mutex<dyn Write>>, // Stderr buffer
+    prng: Arc<Mutex<StdRng>>,
 }
 
 // Helper functions for memory access
@@ -227,6 +229,20 @@ fn environ_get(caller: Caller<'_, HostState>, environ_ptr: i32, environ_buf_ptr:
         -1
     })
 }
+
+fn random_get(mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> i32 {
+    let memory = caller
+        .get_export("memory")
+        .and_then(Extern::into_memory)
+        .expect("No memory export");
+    let mut bytes = vec![0u8; buf_len as usize];
+    caller.data().prng.lock().unwrap().fill(&mut bytes);
+    memory
+        .write(&mut caller, buf as usize, &bytes)
+        .expect("failed to write random bytes");
+    0
+}
+
 const MAX_FUEL_PER_RUN: u64 = 1000000000;
 
 impl AppRunner {
@@ -260,9 +276,11 @@ impl AppRunner {
 
         let stdin_content = util::write(&(app, tx, x, w))?;
 
+        let prng_seed: [u8; 32] = Sha256::digest(&stdin_content).into();
         let state = HostState {
             stdin: Arc::new(Mutex::new(stdin_content)),
             stderr: Arc::new(Mutex::new(std::io::stderr())),
+            prng: Arc::new(Mutex::new(StdRng::from_seed(prng_seed))),
         };
 
         let mut store = Store::new(&self.engine, state.clone());
@@ -284,6 +302,7 @@ impl AppRunner {
             "proc_exit",
             |_: Caller<'_, HostState>, _: i32| {},
         )?;
+        linker.func_wrap("wasi_snapshot_preview1", "random_get", random_get)?;
 
         let module = Module::new(&self.engine, app_binary)?;
 
