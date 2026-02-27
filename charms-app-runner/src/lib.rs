@@ -18,6 +18,43 @@ pub struct AppRunner {
 struct HostState {
     stdin: Arc<Mutex<Vec<u8>>>,    // Stdin buffer
     stderr: Arc<Mutex<dyn Write>>, // Stderr buffer
+    prng: Arc<Mutex<DeterministicPrng>>,
+}
+
+/// Deterministic PRNG using SHA-256 in counter mode.
+/// Seeded from stdin content so the same inputs always produce the same random bytes.
+#[derive(Clone)]
+struct DeterministicPrng {
+    seed: [u8; 32],
+    counter: u64,
+    buffer: Vec<u8>,
+}
+
+impl DeterministicPrng {
+    fn new(seed: [u8; 32]) -> Self {
+        Self {
+            seed,
+            counter: 0,
+            buffer: Vec::new(),
+        }
+    }
+
+    fn fill(&mut self, dest: &mut [u8]) {
+        let mut offset = 0;
+        while offset < dest.len() {
+            if self.buffer.is_empty() {
+                let mut hasher = Sha256::new();
+                hasher.update(self.seed);
+                hasher.update(self.counter.to_le_bytes());
+                self.counter += 1;
+                self.buffer = hasher.finalize().to_vec();
+            }
+            let to_copy = (dest.len() - offset).min(self.buffer.len());
+            dest[offset..offset + to_copy].copy_from_slice(&self.buffer[..to_copy]);
+            self.buffer.drain(..to_copy);
+            offset += to_copy;
+        }
+    }
 }
 
 // Helper functions for memory access
@@ -260,9 +297,11 @@ impl AppRunner {
 
         let stdin_content = util::write(&(app, tx, x, w))?;
 
+        let prng_seed: [u8; 32] = Sha256::digest(&stdin_content).into();
         let state = HostState {
             stdin: Arc::new(Mutex::new(stdin_content)),
             stderr: Arc::new(Mutex::new(std::io::stderr())),
+            prng: Arc::new(Mutex::new(DeterministicPrng::new(prng_seed))),
         };
 
         let mut store = Store::new(&self.engine, state.clone());
@@ -283,6 +322,22 @@ impl AppRunner {
             "wasi_snapshot_preview1",
             "proc_exit",
             |_: Caller<'_, HostState>, _: i32| {},
+        )?;
+        linker.func_wrap(
+            "wasi_snapshot_preview1",
+            "random_get",
+            |mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32| -> i32 {
+                let memory = caller
+                    .get_export("memory")
+                    .and_then(Extern::into_memory)
+                    .expect("No memory export");
+                let mut bytes = vec![0u8; buf_len as usize];
+                caller.data().prng.lock().unwrap().fill(&mut bytes);
+                memory
+                    .write(&mut caller, buf as usize, &bytes)
+                    .expect("failed to write random bytes");
+                0
+            },
         )?;
 
         let module = Module::new(&self.engine, app_binary)?;
