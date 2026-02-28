@@ -34,11 +34,6 @@ pub fn read_private_inputs(path: &std::path::Path) -> anyhow::Result<BTreeMap<Ap
     Ok(inputs.0)
 }
 
-pub fn read_beamed_from(path: &std::path::Path) -> anyhow::Result<BTreeMap<usize, BeamSource>> {
-    let data = std::fs::read(path)?;
-    Ok(serde_yaml::from_slice(&data)?)
-}
-
 pub fn from_strings(prev_txs: &[String]) -> anyhow::Result<Vec<Tx>> {
     prev_txs
         .iter()

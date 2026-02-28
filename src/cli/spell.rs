@@ -3,7 +3,7 @@ use crate::{
     cli::{SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
-        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings, read_beamed_from,
+        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
         read_private_inputs,
     },
 };
@@ -86,7 +86,7 @@ impl Prove for SpellCli {
             .unwrap_or_default();
 
         let tx_ins_beamed_source_utxos = beamed_from
-            .map(|p| read_beamed_from(&p))
+            .map(|s| serde_yaml::from_str(&s))
             .transpose()?
             .unwrap_or_default();
 
@@ -154,7 +154,7 @@ impl Check for SpellCli {
             .unwrap_or_default();
 
         let tx_ins_beamed_source_utxos = beamed_from
-            .map(|p| read_beamed_from(&p))
+            .map(|s| serde_yaml::from_str(&s))
             .transpose()?
             .unwrap_or_default();
 

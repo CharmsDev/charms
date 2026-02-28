@@ -101,9 +101,9 @@ pub struct SpellProveParams {
     #[arg(long)]
     private_inputs: Option<PathBuf>,
 
-    /// Beamed-from file (YAML/JSON).
+    /// Beamed-from value (YAML/JSON string).
     #[arg(long)]
-    beamed_from: Option<PathBuf>,
+    beamed_from: Option<String>,
 
     /// Pre-requisite transactions (hex-encoded).
     /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
@@ -145,9 +145,9 @@ pub struct SpellCheckParams {
     #[arg(long)]
     private_inputs: Option<PathBuf>,
 
-    /// Beamed-from file (YAML/JSON).
+    /// Beamed-from value (YAML/JSON string).
     #[arg(long)]
-    beamed_from: Option<PathBuf>,
+    beamed_from: Option<String>,
 
     /// Paths to the apps' Wasm binaries.
     #[arg(long)]
