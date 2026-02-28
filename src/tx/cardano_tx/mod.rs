@@ -416,44 +416,7 @@ pub fn from_spell(
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
-    // Calculate mint (output - input for each asset)
-    let mut mint_map: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, i64>> = BTreeMap::new();
-
-    // Add positive amounts (minted)
-    for (policy, assets) in &output_assets {
-        for (name, out_amount) in assets {
-            let in_amount = input_assets
-                .get(policy)
-                .and_then(|a| a.get(name))
-                .copied()
-                .unwrap_or(0);
-            let diff = *out_amount as i64 - in_amount as i64;
-            if diff != 0 {
-                *mint_map
-                    .entry(*policy)
-                    .or_default()
-                    .entry(name.clone())
-                    .or_default() = diff;
-            }
-        }
-    }
-
-    // Add negative amounts (burned)
-    for (policy, assets) in &input_assets {
-        for (name, in_amount) in assets {
-            if !output_assets
-                .get(policy)
-                .map_or(false, |a| a.contains_key(name))
-            {
-                let diff = -(*in_amount as i64);
-                *mint_map
-                    .entry(*policy)
-                    .or_default()
-                    .entry(name.clone())
-                    .or_default() = diff;
-            }
-        }
-    }
+    let mint_map = compute_mint_map(&mut input_assets, &mut output_assets);
 
     // Add mint assets
     for (policy, assets) in &mint_map {
@@ -634,6 +597,51 @@ pub fn from_spell(
     }
 
     Ok(tx)
+}
+
+fn compute_mint_map(
+    input_assets: &BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>,
+    output_assets: &BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>,
+) -> BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, i64>> {
+    // Calculate mint (output - input for each asset)
+    let mut mint_map: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, i64>> = BTreeMap::new();
+
+    // Add positive amounts (minted)
+    for (policy, assets) in output_assets {
+        for (name, out_amount) in assets {
+            let in_amount = input_assets
+                .get(policy)
+                .and_then(|a| a.get(name))
+                .copied()
+                .unwrap_or(0);
+            let diff = *out_amount as i64 - in_amount as i64;
+            if diff != 0 {
+                *mint_map
+                    .entry(*policy)
+                    .or_default()
+                    .entry(name.clone())
+                    .or_default() = diff;
+            }
+        }
+    }
+
+    // Add negative amounts (burned)
+    for (policy, assets) in input_assets {
+        for (name, in_amount) in assets {
+            if !output_assets
+                .get(policy)
+                .map_or(false, |a| a.contains_key(name))
+            {
+                let diff = -(*in_amount as i64);
+                *mint_map
+                    .entry(*policy)
+                    .or_default()
+                    .entry(name.clone())
+                    .or_default() = diff;
+            }
+        }
+    }
+    mint_map
 }
 
 fn get_output_coin(output: &conway::TransactionOutput) -> u64 {
