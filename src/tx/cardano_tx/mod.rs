@@ -351,7 +351,7 @@ pub fn from_spell(
     }
 
     // Collect output assets and scripts
-    for (i, (spell_out, _coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
+    for (i, (spell_out, coin)) in spell_outs.iter().zip(coin_outs.iter()).enumerate() {
         let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
@@ -363,6 +363,22 @@ pub fn from_spell(
                     .or_default()
                     .entry(name.clone())
                     .or_default() += *amount;
+            }
+        }
+
+        // Also count non-charms native tokens passed through via NativeOutput.content
+        if let Some(content_data) = &coin.content {
+            let tx_out_content: OutputContent = content_data.value()?;
+            for (policy_id, asset_names) in tx_out_content.multiasset.iter() {
+                let pallas_policy = cml_to_pallas_policy_id(policy_id);
+                for (asset_name, amount) in asset_names.iter() {
+                    let pallas_name = PallasAssetName::from(asset_name.inner.clone());
+                    *output_assets
+                        .entry(pallas_policy)
+                        .or_default()
+                        .entry(pallas_name)
+                        .or_default() += *amount;
+                }
             }
         }
     }
