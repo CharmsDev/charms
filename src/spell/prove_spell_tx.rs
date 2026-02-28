@@ -1,5 +1,7 @@
-use super::prove::Prove;
-use super::request::{CharmsFee, ProveRequest};
+use super::{
+    prove::Prove,
+    request::{CharmsFee, ProveRequest},
+};
 #[cfg(feature = "prover")]
 use crate::utils::block_on;
 #[cfg(not(feature = "prover"))]
@@ -24,9 +26,9 @@ use reqwest::Client;
 #[cfg(feature = "prover")]
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::future::Future;
 #[cfg(feature = "prover")]
 use std::time::Duration;
-use std::future::Future;
 
 pub trait ProveSpellTx: Send + Sync {
     fn new(mock: bool) -> Self;
@@ -208,11 +210,12 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 
     #[cfg(feature = "prover")]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let (norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
+    async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
+        let app_cycles = self.validate_prove_request(&mut prove_request)?;
+        let norm_spell = &prove_request.spell;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
-            let committed_data_hash = committed_data_hash(&norm_spell)?;
+            let committed_data_hash = committed_data_hash(norm_spell)?;
             let request_key = hex::encode(committed_data_hash);
             let lock_key = format!("LOCK_{}", request_key.as_str());
 
@@ -273,8 +276,8 @@ impl ProveSpellTx for ProveSpellTxImpl {
 
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
-    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let (_norm_spell, app_cycles) = self.validate_prove_request(&prove_request)?;
+    async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
+        let app_cycles = self.validate_prove_request(&mut prove_request)?;
         if self.mock {
             return Self::do_prove_spell_tx(self, prove_request, app_cycles).await;
         }

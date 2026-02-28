@@ -162,8 +162,8 @@ pub fn adjust_coin_contents(norm_spell: &mut NormalizedSpell, chain: Chain) -> a
 impl ProveSpellTxImpl {
     pub fn validate_prove_request(
         &self,
-        prove_request: &super::request::ProveRequest,
-    ) -> anyhow::Result<(NormalizedSpell, u64)> {
+        prove_request: &mut super::request::ProveRequest,
+    ) -> anyhow::Result<u64> {
         ensure!(
             prove_request.spell.mock == self.mock,
             "cannot prove a mock=={} spell on a mock=={} prover",
@@ -174,13 +174,13 @@ impl ProveSpellTxImpl {
         let prev_txs = &prove_request.prev_txs;
         let prev_txs_by_id = by_txid(prev_txs);
 
-        let mut norm_spell = prove_request.spell.clone();
-        adjust_coin_contents(&mut norm_spell, prove_request.chain)?;
-        let norm_spell = &norm_spell;
+        let norm_spell = &mut prove_request.spell;
+        adjust_coin_contents(norm_spell, prove_request.chain)?;
+        dbg!(&norm_spell);
         let app_private_inputs = &prove_request.app_private_inputs;
         let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
 
-        ensure_all_prev_txs_are_present(norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
+        ensure_all_prev_txs_are_present(&norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
         let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, norm_spell.mock)?;
 
@@ -311,12 +311,12 @@ impl ProveSpellTxImpl {
                     total_sats_in > total_sats_out + charms_fee + estimated_bitcoin_fee,
                     "spell inputs must have sufficient value to cover outputs and fees"
                 );
-                Ok((norm_spell.clone(), total_cycles))
+                Ok(total_cycles)
             }
             Chain::Cardano => {
                 // TODO
                 tracing::warn!("spell validation for cardano is not yet implemented");
-                Ok((norm_spell.clone(), total_cycles))
+                Ok(total_cycles)
             }
         }
     }
