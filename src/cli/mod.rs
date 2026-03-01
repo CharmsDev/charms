@@ -77,7 +77,27 @@ pub enum Commands {
         command: WalletCommands,
     },
 
-    /// Generate shell completion scripts
+    /// Generate shell completion scripts.
+    #[command(after_long_help = "\
+SETUP INSTRUCTIONS:
+
+  Bash (add to ~/.bashrc):
+    source <(charms completions bash)
+
+  Zsh (add to ~/.zshrc):
+    source <(charms completions zsh)
+
+  Fish (run once):
+    charms completions fish > ~/.config/fish/completions/charms.fish
+
+  PowerShell (add to $PROFILE):
+    charms completions powershell | Out-String | Invoke-Expression
+
+  Elvish (add to ~/.elvish/rc.elv):
+    eval (charms completions elvish | slurp)
+
+After setup, restart your shell or source the config file.
+Then type `charms <TAB>` to see available commands and options.")]
     Completions {
         /// Shell to generate completions for
         #[arg(value_enum)]
