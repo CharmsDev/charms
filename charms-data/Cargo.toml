@@ -6,6 +6,8 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 test = ["dep:proptest", "dep:proptest-derive", "dep:test-strategy"]

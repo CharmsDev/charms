@@ -1,12 +1,13 @@
 [package]
 name = "charms"
 description = "Programmable assets on Bitcoin and beyond"
-repository = "https://github.com/CharmsDev/charms"
 
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [workspace]
 members = [
@@ -27,6 +28,8 @@ version = "11.0.0"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
+repository = "https://github.com/CharmsDev/charms"
+homepage = "https://charms.dev"
 
 [workspace.dependencies]
 anyhow = { version = "1.0.102" }
