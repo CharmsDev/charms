@@ -14,10 +14,11 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-wasm = ["wasm-bindgen", "serde-wasm-bindgen"]
+wasm = ["wasm-bindgen", "serde-wasm-bindgen", "getrandom"]
 
 [dependencies]
 charms-client = { path = "../charms-client", version = "11.0.0" }
+getrandom = { version = "0.4.1", optional = true, features = ["wasm_js"] }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.114", optional = true }
 
