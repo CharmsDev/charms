@@ -91,7 +91,7 @@ charms-data = { path = "./charms-data", version = "11.0.0" }
 charms-lib = { path = "./charms-lib", version = "11.0.0" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "11.0.0" }
 clap = { version = "4.5.60", features = ["derive"] }
-clap_complete = { version = "4.5.66" }
+clap_complete = { version = "4.5.66", features = ["unstable-dynamic"] }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
 const_format = { version = "0.2.35" }

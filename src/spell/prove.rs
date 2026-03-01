@@ -1,4 +1,7 @@
-use crate::{PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY, utils::BoxedSP1Prover, utils::Shared};
+use crate::{
+    PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY,
+    utils::{BoxedSP1Prover, Shared},
+};
 use anyhow::{anyhow, ensure};
 use ark_bls12_381::Bls12_381;
 use ark_ec::pairing::Pairing;

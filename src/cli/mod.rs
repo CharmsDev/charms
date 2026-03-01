@@ -25,13 +25,18 @@ use charms_app_runner::AppRunner;
 use charms_client::tx::Chain;
 use charms_data::{App, check};
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::{Shell, generate};
+use clap_complete::{CompleteEnv, Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = "Charms CLI: create, prove, and manage programmable assets (charms) on Bitcoin and Cardano using zero-knowledge proofs.")]
+#[command(
+    author,
+    version,
+    about,
+    long_about = "Charms CLI: create, prove, and manage programmable assets (charms) on Bitcoin and Cardano using zero-knowledge proofs."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -77,9 +82,30 @@ pub enum Commands {
         command: WalletCommands,
     },
 
-    /// Generate shell completion scripts.
+    /// Generate shell completion scripts (static).
+    ///
+    /// For dynamic completions (recommended), run `charms completions --help`.
     #[command(after_long_help = "\
-SETUP INSTRUCTIONS:
+DYNAMIC COMPLETIONS (RECOMMENDED):
+
+  Dynamic completions stay up-to-date automatically when charms is upgraded.
+
+  Bash (add to ~/.bashrc):
+    source <(COMPLETE=bash charms)
+
+  Zsh (add to ~/.zshrc):
+    source <(COMPLETE=zsh charms)
+
+  Fish (add to ~/.config/fish/completions/charms.fish):
+    COMPLETE=fish charms | source
+
+  Elvish (add to ~/.elvish/rc.elv):
+    eval (E:COMPLETE=elvish charms | slurp)
+
+STATIC COMPLETIONS:
+
+  Use this if you prefer pre-generated scripts or if dynamic completions
+  don't work in your environment.
 
   Bash (add to ~/.bashrc):
     source <(charms completions bash)
@@ -352,6 +378,7 @@ pub enum UtilCommands {
 pub async fn run() -> anyhow::Result<()> {
     utils::logger::setup_logger();
 
+    CompleteEnv::with_factory(Cli::command).complete();
     let cli = Cli::parse();
 
     match cli.command {
