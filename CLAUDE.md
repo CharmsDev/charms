@@ -14,7 +14,7 @@ cargo build --profile=test --features prover
 # Install CLI locally
 cargo install --profile=test --path . --locked
 
-# Install CLI locally with prover feature
+# Install CLI locally with prover feature. Do this and run `charms` rather than `cargo run`.
 cargo install --profile=test --path . --locked --features prover
 
 # Run tests
