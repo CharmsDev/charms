@@ -93,33 +93,33 @@ pub enum Commands {
 
 #[derive(Args)]
 pub struct SpellProveParams {
-    /// Spell source file (YAML/JSON).
+    /// Path to the spell file (YAML or JSON).
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
 
-    /// Private inputs file (YAML/JSON).
+    /// Path to the private inputs file (YAML or JSON).
     #[arg(long)]
     private_inputs: Option<PathBuf>,
 
-    /// Beamed-from value (YAML/JSON string).
+    /// Beamed-from mapping as a YAML/JSON string (e.g. '{0: "txid:vout"}').
     #[arg(long)]
     beamed_from: Option<String>,
 
-    /// Pre-requisite transactions (hex-encoded).
-    /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
-    /// If the spell has any reference UTXOs, the transactions creating them must also be included.
+    /// Hex-encoded pre-requisite transactions.
+    /// Must include the transactions that create the UTXOs spent by the spell.
+    /// If the spell has reference UTXOs, transactions creating them must also be included.
     #[arg(long)]
     prev_txs: Vec<String>,
 
-    /// Paths to the apps' Wasm binaries.
+    /// Paths to app Wasm binaries (.wasm files).
     #[arg(long)]
     app_bins: Vec<PathBuf>,
 
-    /// Address to send the change to.
+    /// Bitcoin or Cardano address to send the change to.
     #[arg(long)]
     change_address: String,
 
-    /// Fee rate: in sats/vB for Bitcoin.
+    /// Fee rate in sats/vB (Bitcoin only).
     #[arg(long, default_value = "2.0")]
     fee_rate: f64,
 
@@ -131,32 +131,32 @@ pub struct SpellProveParams {
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 
-    /// Collateral UTXO for Cardano transactions (required for --chain cardano).
+    /// Collateral UTXO for Cardano transactions, as txid:vout (required for --chain cardano).
     #[arg(long, alias = "collateral")]
     collateral_utxo: Option<String>,
 }
 
 #[derive(Args)]
 pub struct SpellCheckParams {
-    /// Path to spell source file (YAML/JSON).
+    /// Path to the spell file (YAML or JSON).
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
 
-    /// Private inputs file (YAML/JSON).
+    /// Path to the private inputs file (YAML or JSON).
     #[arg(long)]
     private_inputs: Option<PathBuf>,
 
-    /// Beamed-from value (YAML/JSON string).
+    /// Beamed-from mapping as a YAML/JSON string (e.g. '{0: "txid:vout"}').
     #[arg(long)]
     beamed_from: Option<String>,
 
-    /// Paths to the apps' Wasm binaries.
+    /// Paths to app Wasm binaries (.wasm files).
     #[arg(long)]
     app_bins: Vec<PathBuf>,
 
-    /// Pre-requisite transactions (hex-encoded).
-    /// These are the transactions that create the UTXOs that the `tx` (and the spell) spends.
-    /// If the spell has any reference UTXOs, the transactions creating them must also be included.
+    /// Hex-encoded pre-requisite transactions.
+    /// Must include the transactions that create the UTXOs spent by the spell.
+    /// If the spell has reference UTXOs, transactions creating them must also be included.
     #[arg(long)]
     prev_txs: Option<Vec<String>>,
 
@@ -176,13 +176,60 @@ pub struct SpellVkParams {
     mock: bool,
 }
 
+const SPELL_DATA_HELP: &str = "\
+DATA STRUCTURES:
+
+  Spell file (--spell):
+    version: 11                     # protocol version
+    tx:
+      ins:                          # input UTXOs (txid:vout)
+        - deadbeef...:0
+      outs:                         # output charms (app_index: value)
+        - 0: ~                      # output 0: app 0 has no data
+        - 1: 4000000                # output 1: app 1 = 4000000
+          2: 10000000               #            app 2 = 10000000
+      beamed_outs:                  # (optional) beamed output index -> dest hash
+        1: 009fb489...
+      coins:                        # native coin outputs
+        - amount: 4000000           #   amount in lovelace (Cardano) or sats (Bitcoin)
+          dest: 716fc738...         #   hex-encoded destination (use `charms util dest`)
+          content:                  #   (optional, Cardano) native tokens
+            multiasset:
+              <policy_id_hex>:
+                <asset_name_hex>: <quantity>
+    app_public_inputs:              # map of app -> public input data
+      t/<identity_hex>/<vk_hex>:    #   token app (t), NFT (n), or contract (c)
+      c/0000...0000/<vk_hex>:       #   value can be null or app-specific data
+
+  Private inputs file (--private-inputs):
+    t/<identity_hex>/<vk_hex>: <app-specific data>
+    c/0000...0000/<vk_hex>: <app-specific data>
+
+  Previous transactions (--prev-txs):
+    Each value is one of:
+      - raw hex (auto-detected as Bitcoin or Cardano)
+      - YAML-tagged: '!bitcoin <hex>' or '!cardano <hex>'
+      - YAML-tagged with finality proof:
+          '!cardano {tx: <hex>, signature: <hex>}'
+      - JSON: '{\"bitcoin\": \"<hex>\"}' or '{\"cardano\": \"<hex>\"}'
+
+  Beamed-from mapping (--beamed-from):
+    YAML/JSON mapping: input_index -> [source_utxo, nonce]
+    Example: '{0: [712fcb00...f66c:1, 4538918914141394474]}'
+";
+
 #[derive(Subcommand)]
 pub enum SpellCommands {
     /// Check spell correctness by running app contracts locally (no proof generation).
+    #[command(after_long_help = SPELL_DATA_HELP)]
     Check(#[command(flatten)] SpellCheckParams),
     /// Prove spell correctness and build a ready-to-broadcast transaction.
+    ///
+    /// Outputs a JSON array of hex-encoded transactions (Bitcoin)
+    /// or a Ledger CDDL JSON envelope (Cardano).
+    #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
-    /// Print the current protocol version and spell verification key (VK) in JSON.
+    /// Print the current protocol version and spell verification key (VK) as JSON to stdout.
     Vk(#[command(flatten)] SpellVkParams),
 }
 
@@ -207,8 +254,9 @@ pub struct ShowSpellParams {
 
 #[derive(Subcommand)]
 pub enum TxCommands {
-    /// Show the spell in a transaction. If the transaction has a spell and its valid proof, it
-    /// will be printed to stdout.
+    /// Extract and display the spell from a transaction.
+    ///
+    /// Prints the spell as YAML (default) or JSON if the transaction contains a valid proof.
     ShowSpell(#[command(flatten)] ShowSpellParams),
 }
 
@@ -221,11 +269,15 @@ pub enum AppCommands {
     },
 
     /// Build the app to WebAssembly (wasm32-wasip1).
+    ///
+    /// Prints the path to the built .wasm binary to stdout.
     Build,
 
     /// Show verification key (SHA-256 of Wasm binary) for an app.
+    ///
+    /// Prints the hex-encoded VK to stdout.
     Vk {
-        /// Path to the app's Wasm binary (default: target/wasm32-wasip1/release/<app>.wasm).
+        /// Path to app Wasm binary (builds the app if omitted).
         path: Option<PathBuf>,
     },
 }
@@ -233,6 +285,8 @@ pub enum AppCommands {
 #[derive(Subcommand)]
 pub enum WalletCommands {
     /// List outputs with charms in the user's wallet.
+    ///
+    /// Outputs YAML (default) or JSON. Requires `bitcoin-cli` to be available.
     List(#[command(flatten)] WalletListParams),
 }
 
@@ -268,7 +322,10 @@ pub enum UtilCommands {
     #[clap(hide = true)]
     InstallCircuitFiles,
 
-    /// Print hex-encoded dest value for use in spell YAML.
+    /// Print hex-encoded `dest` value for use in spell YAML.
+    ///
+    /// Accepts either --addr (Bitcoin/Cardano address) or --apps (Cardano only).
+    /// Prints the hex-encoded destination bytes to stdout.
     Dest(#[command(flatten)] DestParams),
 }
 
