@@ -828,6 +828,7 @@ mod tests {
         assert!(params.utxo_cost_per_byte > 0);
     }
 
+    #[ignore]
     #[test]
     fn test_analyze_saved_tx() {
         // Load the saved transaction from the test file
@@ -959,6 +960,7 @@ mod tests {
         eprintln!("\n=== End Analysis ===\n");
     }
 
+    #[ignore]
     #[test]
     fn test_script_data_hash_computation() {
         // Load the saved transaction

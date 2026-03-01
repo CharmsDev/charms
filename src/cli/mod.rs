@@ -31,7 +31,7 @@ use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circu
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = "Charms CLI: create, prove, and manage programmable assets (charms) on Bitcoin and Cardano using zero-knowledge proofs.")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -39,39 +39,39 @@ pub struct Cli {
 
 #[derive(Args)]
 pub struct ServerConfig {
-    /// IP address to listen on, defaults to `0.0.0.0` (all on IPv4).
+    /// IP address to listen on.
     #[arg(long, default_value = "0.0.0.0")]
     ip: IpAddr,
 
-    /// Port to listen on, defaults to 17784.
+    /// Port to listen on.
     #[arg(long, default_value = "17784")]
     port: u16,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Charms API Server.
+    /// Start the Charms REST API server (POST /spells/prove, GET /ready).
     Server(#[command(flatten)] ServerConfig),
 
-    /// Work with spells.
+    /// Create, verify, and prove spells (transaction metadata that defines charm operations).
     Spell {
         #[command(subcommand)]
         command: SpellCommands,
     },
 
-    /// Work with underlying blockchain transactions.
+    /// Inspect blockchain transactions for embedded spells.
     Tx {
         #[command(subcommand)]
         command: TxCommands,
     },
 
-    /// Manage apps.
+    /// Create, build, and inspect Charms apps (WebAssembly programs).
     App {
         #[command(subcommand)]
         command: AppCommands,
     },
 
-    /// Wallet commands.
+    /// List UTXOs with charms in the connected wallet.
     Wallet {
         #[command(subcommand)]
         command: WalletCommands,
@@ -123,14 +123,15 @@ pub struct SpellProveParams {
     #[arg(long, default_value = "2.0")]
     fee_rate: f64,
 
-    /// Target chain, defaults to `bitcoin`.
+    /// Target chain.
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
 
-    /// Is mock mode enabled?
+    /// Use mock mode (skip proof generation).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 
+    /// Collateral UTXO for Cardano transactions (required for --chain cardano).
     #[arg(long, alias = "collateral")]
     collateral_utxo: Option<String>,
 }
@@ -159,34 +160,35 @@ pub struct SpellCheckParams {
     #[arg(long)]
     prev_txs: Option<Vec<String>>,
 
-    /// Target chain, defaults to `bitcoin`.
+    /// Target chain.
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
 
-    /// Is mock mode enabled?
+    /// Use mock mode (skip proof generation).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 }
 
 #[derive(Args)]
 pub struct SpellVkParams {
-    /// Is mock mode enabled?
+    /// Use mock mode (show mock verification key).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 }
 
 #[derive(Subcommand)]
 pub enum SpellCommands {
-    /// Check the spell is correct.
+    /// Check spell correctness by running app contracts locally (no proof generation).
     Check(#[command(flatten)] SpellCheckParams),
-    /// Prove the spell is correct.
+    /// Prove spell correctness and build a ready-to-broadcast transaction.
     Prove(#[command(flatten)] SpellProveParams),
-    /// Print the current protocol version and spell VK (verification key) in JSON.
+    /// Print the current protocol version and spell verification key (VK) in JSON.
     Vk(#[command(flatten)] SpellVkParams),
 }
 
 #[derive(Args)]
 pub struct ShowSpellParams {
+    /// Target chain.
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
 
@@ -198,7 +200,7 @@ pub struct ShowSpellParams {
     #[arg(long)]
     json: bool,
 
-    /// Is mock mode enabled?
+    /// Use mock mode (accept mock proofs).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 }
@@ -212,18 +214,18 @@ pub enum TxCommands {
 
 #[derive(Subcommand)]
 pub enum AppCommands {
-    /// Create a new app.
+    /// Create a new app from template.
     New {
-        /// Name of the app. Directory <NAME> will be created.
+        /// Name of the app. A directory with this name will be created.
         name: String,
     },
 
-    /// Build the app.
+    /// Build the app to WebAssembly (wasm32-wasip1).
     Build,
 
-    /// Show verification key for an app.
+    /// Show verification key (SHA-256 of Wasm binary) for an app.
     Vk {
-        /// Path to the app's Wasm binary.
+        /// Path to the app's Wasm binary (default: target/wasm32-wasip1/release/<app>.wasm).
         path: Option<PathBuf>,
     },
 }
@@ -236,11 +238,11 @@ pub enum WalletCommands {
 
 #[derive(Args)]
 pub struct WalletListParams {
-    /// Output in JSON format (default is YAML)
+    /// Output in JSON format (default is YAML).
     #[arg(long)]
     json: bool,
 
-    /// Is mock mode enabled?
+    /// Use mock mode (accept mock proofs).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
 }
