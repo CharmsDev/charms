@@ -55,7 +55,7 @@ pub struct ProveRequest {
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, _>>")]
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
-    #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, Base64>>")]
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub binaries: BTreeMap<B32, Vec<u8>>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
