@@ -309,7 +309,7 @@ impl AppRunner {
         let instance = linker.instantiate_and_start(&mut store, &module)?;
 
         let Some(main_func) = instance.get_func(&store, "_start") else {
-            unreachable!("we should have a main function")
+            bail!("we should have a main function")
         };
         let result = main_func.typed::<(), ()>(&store)?.call(&mut store, ());
 
