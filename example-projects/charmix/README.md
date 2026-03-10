@@ -42,5 +42,5 @@ cat ./spells/mint-nft.yaml | envsubst | charms spell check --prev-txs=${prev_txs
 
 change_address=tb1qkja9rzk8ltewv8etxxe2mprxky0h6tvs94nsys
 
-cat ./spells/mint-nft.yaml | envsubst | charms spell prove --prev-txs=${prev_txs_0} --prev-txs=$prev_txs_1 --app-bins=${app_bin} --change-address tb1qkja9rzk8ltewv8etxxe2mprxky0h6tvs94nsys
+cat ./spells/mint-nft.yaml | envsubst | charms spell prove --prev-txs=${prev_txs_0} --prev-txs=$prev_txs_1 --app-bins=${app_bin} --change-address=${change_address}
 ```

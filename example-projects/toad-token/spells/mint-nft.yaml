@@ -10,6 +10,9 @@ ins:
   - utxo_id: ${in_utxo_0}
     charms: {}
 
+  - utxo_id: aea10a1e1591b5ac852c574c0a419c1c18296a1c9f86412caf0d0e0616b3e4e4:2
+    charms: {}
+
 outs:
   - address: ${addr_0}
     charms:
