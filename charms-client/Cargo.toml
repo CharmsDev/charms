@@ -19,8 +19,8 @@ ark-groth16 = { workspace = true }
 ark-serialize = { workspace = true }
 ark-snark = { workspace = true }
 bitcoin = { workspace = true, features = ["serde"] }
-charms-app-runner = { path = "../charms-app-runner", version = "11.0.1" }
-charms-data = { path = "../charms-data", version = "11.0.1" }
+charms-app-runner = { path = "../charms-app-runner", version = "11.1.0" }
+charms-data = { path = "../charms-data", version = "11.1.0" }
 cml-chain = { workspace = true, default-features = false }
 cml-core = { workspace = true, default-features = false }
 enum_dispatch = { version = "0.3.13" }
@@ -37,7 +37,7 @@ tracing = { workspace = true }
 uplc = { version = "1.1.21" }
 
 [dev-dependencies]
-charms-data = { path = "../charms-data", version = "11.0.1", features = ["test"] }
+charms-data = { path = "../charms-data", version = "11.1.0", features = ["test"] }
 ciborium = { workspace = true }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
