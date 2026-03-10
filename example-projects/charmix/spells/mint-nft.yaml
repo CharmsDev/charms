@@ -1,10 +1,13 @@
-version: 8
+version: 10
 
 apps:
   $00: n/${app_id}/${app_vk}
 
 ins:
   - utxo_id: ${in_utxo_0}
+    charms: {}
+
+  - utxo_id: aea10a1e1591b5ac852c574c0a419c1c18296a1c9f86412caf0d0e0616b3e4e4:2
     charms: {}
 
 outs:
