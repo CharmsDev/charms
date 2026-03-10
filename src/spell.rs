@@ -702,7 +702,7 @@ pub struct ProveRequest {
     pub app_private_inputs: BTreeMap<App, Data>,
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, DisplayFromStr>>")]
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, UtxoId>,
-    #[serde_as(as = "IfIsHumanReadable<BTreeMap<_, Base64>>")]
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, Base64>>")]
     pub binaries: BTreeMap<B32, Vec<u8>>,
     pub prev_txs: Vec<Tx>,
     pub change_address: String,
