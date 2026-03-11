@@ -326,7 +326,7 @@ pub fn from_spell(
     let coin_outs = spell.tx.coins.as_ref().expect("spell coins are expected");
 
     // Collect all scripts for minting
-    let mut all_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
+    let mut minting_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
 
     // Calculate minted/burned assets by comparing inputs and outputs
     let mut input_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
@@ -355,7 +355,7 @@ pub fn from_spell(
         let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
-        all_scripts.extend(scripts);
+        minting_scripts.extend(scripts);
         for (policy, assets) in multiasset.iter() {
             for (name, amount) in assets.iter() {
                 *output_assets
@@ -446,13 +446,9 @@ pub fn from_spell(
     // Add mint scripts and redeemers (only if there's actual minting/burning)
     if !mint_map.is_empty() {
         // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
-        let redeemer_raw = create_mint_redeemer(spell.version);
-        let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
-        let mut redeemer_cbor = Vec::new();
-        minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
-            .expect("CBOR encoding should not fail");
+        let redeemer_cbor = redeemer_cbor_bytes(spell);
 
-        for (policy, script) in &all_scripts {
+        for (policy, script) in &minting_scripts {
             // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
             let script_bytes = script.0.to_vec();
 
@@ -718,7 +714,16 @@ fn create_reward_account(
     pallas_primitives::conway::Bytes::from(account)
 }
 
-fn create_mint_redeemer(protocol_version: u32) -> Vec<u8> {
+fn redeemer_cbor_bytes(spell: &NormalizedSpell) -> Vec<u8> {
+    let redeemer_raw = raw_redeemer_bytes(spell.version);
+    let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
+    let mut redeemer_cbor = Vec::new();
+    minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
+        .expect("CBOR encoding should not fail");
+    redeemer_cbor
+}
+
+fn raw_redeemer_bytes(protocol_version: u32) -> Vec<u8> {
     // Format: NFT_LABEL (000de140) + "v<protocol_version>" as bytes
     const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
     let version_string = format!("v{}", protocol_version);
