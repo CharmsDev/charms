@@ -3,11 +3,11 @@ use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
 use charms_client::{
     NormalizedSpell, beamed_out_to_hash,
-    cardano_tx::{CardanoTx, OutputContent},
+    cardano_tx::{CardanoTx, OutputContent, proxy_script_hash},
     charms,
-    tx::Tx,
+    tx::{EnchantedTx, Tx},
 };
-use charms_data::{NativeOutput, TxId, util};
+use charms_data::{NFT, NativeOutput, TOKEN, TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
     assets::MultiAsset,
@@ -327,6 +327,8 @@ pub fn from_spell(
 
     // Collect all scripts for minting
     let mut minting_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
+    // Proxy scripts by script hash, for spending inputs at proxy script addresses
+    let mut spending_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
 
     // Calculate minted/burned assets by comparing inputs and outputs
     let mut input_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
@@ -334,7 +336,25 @@ pub fn from_spell(
     let mut output_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
         BTreeMap::new();
 
-    // Collect input assets
+    // Extract previous spells so we can determine input charms
+    let prev_spells: BTreeMap<TxId, (charms_client::NormalizedSpell, usize)> = prev_txs_by_id
+        .values()
+        .map(|tx| {
+            Ok((
+                tx.tx_id(),
+                (
+                    charms_client::tx::extended_normalized_spell(
+                        charms_lib::SPELL_VK,
+                        tx,
+                        spell.mock,
+                    )?,
+                    tx.tx_outs_len(),
+                ),
+            ))
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    // Collect input assets and spending scripts
     for utxo_id in spell_ins {
         let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
         if let Some(ma) = get_output_multiasset(&prev_output) {
@@ -345,6 +365,22 @@ pub fn from_spell(
                         .or_default()
                         .entry(name.clone())
                         .or_default() += u64::from(*amount);
+                }
+            }
+        }
+
+        // Collect spending scripts for inputs with non-token charms
+        if let Some((prev_spell, _)) = prev_spells.get(&utxo_id.0) {
+            if let Some(input_charms) = charms_client::charms_in_utxo(prev_spell, utxo_id) {
+                let non_token_apps: Vec<&charms_data::App> = input_charms
+                    .keys()
+                    .filter(|app| app.tag != TOKEN && app.tag != NFT)
+                    .collect();
+                if !non_token_apps.is_empty() {
+                    let (script_hash, script) = proxy_script_hash(&non_token_apps);
+                    let pallas_hash = cml_to_pallas_policy_id(&script_hash);
+                    let pallas_script = cml_to_pallas_script(&script);
+                    spending_scripts.insert(pallas_hash, pallas_script);
                 }
             }
         }
@@ -443,11 +479,11 @@ pub fn from_spell(
         }
     }
 
+    // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
+    let redeemer_cbor = redeemer_cbor_bytes(spell);
+
     // Add mint scripts and redeemers (only if there's actual minting/burning)
     if !mint_map.is_empty() {
-        // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
-        let redeemer_cbor = redeemer_cbor_bytes(spell);
-
         for (policy, script) in &minting_scripts {
             // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
             let script_bytes = script.0.to_vec();
@@ -465,6 +501,29 @@ pub fn from_spell(
         }
     }
 
+    // Add spend scripts and redeemers for inputs at proxy script addresses
+    if !spending_scripts.is_empty() {
+        for utxo_id in spell_ins {
+            let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
+            let address_bytes = get_output_address_bytes(&prev_output);
+            if let Some(script_hash) = get_script_payment_hash(&address_bytes) {
+                if let Some(script) = spending_scripts.get(&script_hash) {
+                    let script_bytes = script.0.to_vec();
+                    staging_tx = staging_tx
+                        .script(ScriptKind::PlutusV3, script_bytes)
+                        .add_spend_redeemer(
+                            txbuilder_input(utxo_id),
+                            redeemer_cbor.clone(),
+                            Some(pallas_txbuilder::ExUnits {
+                                mem: 250000,
+                                steps: 150000000,
+                            }),
+                        );
+                }
+            }
+        }
+    }
+
     // Set network ID from change address
     let network_id = if change_address[0] & 0x0F == 0x01 {
         1u8
@@ -474,7 +533,7 @@ pub fn from_spell(
     staging_tx = staging_tx.network_id(network_id);
 
     // Set language view for PlutusV3 cost model (only if there are scripts)
-    if !mint_map.is_empty() {
+    if !mint_map.is_empty() || !spending_scripts.is_empty() {
         if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
             staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
         }
@@ -698,6 +757,25 @@ fn get_output_multiasset(
             Value::Coin(_) => None,
             Value::Multiasset(_, ma) => Some(ma.clone()),
         },
+    }
+}
+
+fn get_output_address_bytes(output: &conway::TransactionOutput) -> Vec<u8> {
+    match output {
+        PseudoTransactionOutput::Legacy(legacy) => legacy.address.to_vec(),
+        PseudoTransactionOutput::PostAlonzo(post) => post.address.to_vec(),
+    }
+}
+
+/// Extract the script hash from a Shelley address payment credential, if it is a script address.
+fn get_script_payment_hash(address_bytes: &[u8]) -> Option<PallasPolicyId> {
+    let address = pallas_addresses::Address::from_bytes(address_bytes).ok()?;
+    match address {
+        pallas_addresses::Address::Shelley(shelley) => match shelley.payment() {
+            pallas_addresses::ShelleyPaymentPart::Script(hash) => Some(*hash),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

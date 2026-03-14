@@ -319,7 +319,7 @@ pub fn to_tx(
     }
 }
 
-fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
+pub fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
     (prev_spell.tx.outs)
         .get(utxo_id.1 as usize)
         .map(|n_charms| charms(prev_spell, n_charms))
