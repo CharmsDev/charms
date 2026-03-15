@@ -309,7 +309,8 @@ fn compute_input_permutation(spell_ins: &[UtxoId]) -> Vec<u32> {
     permutation
 }
 
-const SCROLS_VKEY_HASH: [u8; 28] = hex!("15bf560dabf4fe7f7ef78ac49c4fa846ebcde7009b1e886dd70d350d");
+const SCROLLS_VKEY_HASH: [u8; 28] =
+    hex!("15bf560dabf4fe7f7ef78ac49c4fa846ebcde7009b1e886dd70d350d");
 
 /// Build a transaction using pallas
 pub fn from_spell(
@@ -539,7 +540,7 @@ pub fn from_spell(
     );
 
     // Add Scrolls vkey hash to required signatories
-    staging_tx = staging_tx.disclosed_signer(SCROLS_VKEY_HASH.into());
+    staging_tx = staging_tx.disclosed_signer(SCROLLS_VKEY_HASH.into());
 
     // Build the transaction with pallas-txbuilder
     let built_tx = staging_tx
@@ -897,7 +898,7 @@ mod tests {
             hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a"); // Scrolls vkey
         let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
         dbg!(hex::encode(&vkey_hash));
-        assert_eq!(Hash::new(SCROLS_VKEY_HASH), vkey_hash);
+        assert_eq!(Hash::new(SCROLLS_VKEY_HASH), vkey_hash);
     }
 
     #[test]
