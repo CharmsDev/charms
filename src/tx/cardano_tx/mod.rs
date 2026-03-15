@@ -120,8 +120,7 @@ fn pallas_tx_hash(tx_id: TxId) -> pallas_crypto::hash::Hash<32> {
 }
 
 fn txbuilder_input(utxo_id: &UtxoId) -> Input {
-    let hash_bytes: [u8; 32] = *pallas_tx_hash(utxo_id.0);
-    Input::new(pallas_crypto::hash::Hash::new(hash_bytes), utxo_id.1 as u64)
+    Input::new(pallas_tx_hash(utxo_id.0), utxo_id.1 as u64)
 }
 
 /// Convert cml-chain CardanoTx to pallas Tx via CBOR
