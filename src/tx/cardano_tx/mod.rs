@@ -310,6 +310,8 @@ fn compute_input_permutation(spell_ins: &[UtxoId]) -> Vec<u32> {
     permutation
 }
 
+const SCROLS_VKEY_HASH: [u8; 28] = hex!("15bf560dabf4fe7f7ef78ac49c4fa846ebcde7009b1e886dd70d350d");
+
 /// Build a transaction using pallas
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -544,13 +546,8 @@ pub fn from_spell(
         pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
     );
 
-    // Require signature by VKey (32-byte public key, hashed to 28-byte key hash)
-    // TODO enforce in the Charms main (mint and spend) validator
-    let required_vkey: [u8; 32] =
-        hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a");
-    let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
-    dbg!(hex::encode(&vkey_hash));
-    staging_tx = staging_tx.disclosed_signer(vkey_hash);
+    // Add Scrolls vkey hash to required signatories
+    staging_tx = staging_tx.disclosed_signer(SCROLS_VKEY_HASH.into());
 
     // Build the transaction with pallas-txbuilder
     let built_tx = staging_tx
@@ -900,6 +897,16 @@ fn combine(_base_tx: conway::Tx, _tx: conway::Tx) -> conway::Tx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pallas_crypto::hash::Hash;
+
+    #[test]
+    fn scrolls_vkey_hash() {
+        let required_vkey: [u8; 32] =
+            hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a"); // Scrolls vkey
+        let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
+        dbg!(hex::encode(&vkey_hash));
+        assert_eq!(Hash::new(SCROLS_VKEY_HASH), vkey_hash);
+    }
 
     #[test]
     fn test_protocol_params_load() {
