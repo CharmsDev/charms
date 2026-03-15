@@ -337,19 +337,16 @@ pub fn from_spell(
         BTreeMap::new();
 
     // Extract previous spells so we can determine input charms
-    let prev_spells: BTreeMap<TxId, (charms_client::NormalizedSpell, usize)> = prev_txs_by_id
+    let prev_spells: BTreeMap<TxId, charms_client::NormalizedSpell> = prev_txs_by_id
         .values()
         .map(|tx| {
             Ok((
                 tx.tx_id(),
-                (
-                    charms_client::tx::extended_normalized_spell(
-                        charms_lib::SPELL_VK,
-                        tx,
-                        spell.mock,
-                    )?,
-                    tx.tx_outs_len(),
-                ),
+                charms_client::tx::extended_normalized_spell(
+                    charms_lib::SPELL_VK,
+                    tx,
+                    spell.mock,
+                )?,
             ))
         })
         .collect::<anyhow::Result<_>>()?;
@@ -370,7 +367,7 @@ pub fn from_spell(
         }
 
         // Collect spending scripts for inputs with non-token charms
-        if let Some((prev_spell, _)) = prev_spells.get(&utxo_id.0) {
+        if let Some(prev_spell) = prev_spells.get(&utxo_id.0) {
             if let Some(input_charms) = charms_client::charms_in_utxo(prev_spell, utxo_id) {
                 let non_token_apps: Vec<&charms_data::App> = input_charms
                     .keys()
