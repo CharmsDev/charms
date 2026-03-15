@@ -367,10 +367,7 @@ fn native_outs_comply(spell: &NormalizedSpell, tx: &CardanoTx) -> anyhow::Result
 }
 
 fn native_out_address_complies(charms: &Charms, address: &Address) -> anyhow::Result<()> {
-    let non_token_charms_apps = charms
-        .keys()
-        .filter(|&app| app.tag != TOKEN && app.tag != NFT)
-        .collect::<Vec<_>>();
+    let non_token_charms_apps = non_token_apps(charms);
     let non_token_charms_present = !non_token_charms_apps.is_empty();
 
     let is_address_charms_proxy_script: bool =
@@ -382,6 +379,13 @@ fn native_out_address_complies(charms: &Charms, address: &Address) -> anyhow::Re
     );
 
     Ok(())
+}
+
+pub fn non_token_apps(charms: &Charms) -> Vec<&App> {
+    charms
+        .keys()
+        .filter(|&app| app.tag != TOKEN && app.tag != NFT)
+        .collect::<Vec<_>>()
 }
 
 fn is_proxy_script_address(apps: &[&App], address: &Address) -> anyhow::Result<bool> {
