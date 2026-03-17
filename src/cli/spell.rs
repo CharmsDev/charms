@@ -118,7 +118,7 @@ impl Prove for SpellCli {
         // Normalize the prove request so that the emitted payload matches what
         // would actually be sent to the proving API (e.g., adjust coin contents
         // based on the selected chain).
-        adjust_coin_contents(&mut prove_request.spell, chain);
+        adjust_coin_contents(&mut prove_request.spell, chain)?;
 
         if payload {
             ensure!(
@@ -133,8 +133,8 @@ impl Prove for SpellCli {
             );
 
             match format {
-                Output::JSON => println!("{}", serde_json::to_string(&prove_request)?),
-                Output::CBOR => {
+                Output::Json => println!("{}", serde_json::to_string(&prove_request)?),
+                Output::Cbor => {
                     let bytes = util::write(&prove_request)?;
                     std::io::stdout().write_all(&bytes)?;
                 }
