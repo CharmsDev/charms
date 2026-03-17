@@ -1,6 +1,6 @@
 use crate::{
     cli,
-    cli::{SpellCheckParams, SpellProveParams},
+    cli::{Output, SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
         ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
@@ -13,10 +13,10 @@ use charms_client::{
     CURRENT_VERSION,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::UtxoId;
+use charms_data::{UtxoId, util};
 use charms_lib::SPELL_VK;
 use serde_json::json;
-use std::{future::Future, str::FromStr};
+use std::{future::Future, io::Write, str::FromStr};
 
 pub trait Check {
     fn check(&self, params: SpellCheckParams) -> Result<()>;
@@ -59,6 +59,8 @@ impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         let SpellProveParams {
             spell,
+            payload,
+            output: format,
             private_inputs,
             beamed_from,
             prev_txs,
@@ -93,8 +95,15 @@ impl Prove for SpellCli {
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+        let app_input = match binaries.is_empty() {
+            true => None,
+            false => Some(charms_data::AppInput {
+                app_binaries: binaries.clone(),
+                app_private_inputs: app_private_inputs.clone(),
+            }),
+        };
 
-        let prove_request = ProveRequest {
+        let mut prove_request = ProveRequest {
             spell: norm_spell,
             app_private_inputs,
             tx_ins_beamed_source_utxos,
@@ -105,6 +114,34 @@ impl Prove for SpellCli {
             chain,
             collateral_utxo,
         };
+
+        // Normalize the prove request so that the emitted payload matches what
+        // would actually be sent to the proving API (e.g., adjust coin contents
+        // based on the selected chain).
+        adjust_coin_contents(&mut prove_request.spell, chain)?;
+
+        if payload {
+            ensure!(
+                charms_client::is_correct(
+                    &prove_request.spell,
+                    &prove_request.prev_txs,
+                    app_input,
+                    SPELL_VK,
+                    &prove_request.tx_ins_beamed_source_utxos,
+                )?,
+                "spell verification failed"
+            );
+
+            match format {
+                Output::Json => println!("{}", serde_json::to_string(&prove_request)?),
+                Output::Cbor => {
+                    let bytes = util::write(&prove_request)?;
+                    std::io::stdout().write_all(&bytes)?;
+                }
+            }
+            return Ok(());
+        }
+
         let transactions = spell_prover.prove_spell_tx(prove_request).await?;
 
         match chain {
