@@ -1,6 +1,6 @@
 use crate::{
     cli,
-    cli::{SpellCheckParams, SpellProveParams},
+    cli::{Output, SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
         ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
@@ -13,10 +13,10 @@ use charms_client::{
     CURRENT_VERSION,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::UtxoId;
+use charms_data::{UtxoId, util};
 use charms_lib::SPELL_VK;
 use serde_json::json;
-use std::{future::Future, str::FromStr};
+use std::{future::Future, io::Write, str::FromStr};
 
 pub trait Check {
     fn check(&self, params: SpellCheckParams) -> Result<()>;
@@ -59,6 +59,8 @@ impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         let SpellProveParams {
             spell,
+            payload,
+            output: format,
             private_inputs,
             beamed_from,
             prev_txs,
@@ -93,6 +95,24 @@ impl Prove for SpellCli {
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+        let app_input = match binaries.is_empty() {
+            true => None,
+            false => Some(charms_data::AppInput {
+                app_binaries: binaries.clone(),
+                app_private_inputs: app_private_inputs.clone(),
+            }),
+        };
+
+        ensure!(
+            charms_client::is_correct(
+                &norm_spell,
+                &prev_txs,
+                app_input,
+                SPELL_VK,
+                &tx_ins_beamed_source_utxos,
+            )?,
+            "spell verification failed"
+        );
 
         let prove_request = ProveRequest {
             spell: norm_spell,
@@ -105,6 +125,18 @@ impl Prove for SpellCli {
             chain,
             collateral_utxo,
         };
+
+        if payload {
+            match format {
+                Output::JSON => println!("{}", serde_json::to_string(&prove_request)?),
+                Output::CBOR => {
+                    let bytes = util::write(&prove_request)?;
+                    std::io::stdout().write_all(&bytes)?;
+                }
+            }
+            return Ok(());
+        }
+
         let transactions = spell_prover.prove_spell_tx(prove_request).await?;
 
         match chain {
