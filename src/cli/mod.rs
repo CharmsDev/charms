@@ -24,7 +24,7 @@ use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
 use charms_client::tx::Chain;
 use charms_data::{App, check};
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{CompleteEnv, Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
@@ -137,11 +137,25 @@ Then type `charms <TAB>` to see available commands and options.")]
     },
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+pub enum Output {
+    CBOR,
+    JSON,
+}
+
 #[derive(Args)]
 pub struct SpellProveParams {
     /// Path to the spell file (YAML or JSON).
     #[arg(long, default_value = "/dev/stdin")]
     spell: PathBuf,
+
+    /// Output proving API payload instead of calling the API.
+    #[arg(long, default_value = "false", hide_env = true)]
+    payload: bool,
+
+    /// Output format for payload (JSON or CBOR).
+    #[arg(long, short = 'o', default_value = "json", value_enum)]
+    output: Output,
 
     /// Path to the private inputs file (YAML or JSON).
     #[arg(long)]
