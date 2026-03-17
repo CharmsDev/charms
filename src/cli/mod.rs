@@ -139,8 +139,10 @@ Then type `charms <TAB>` to see available commands and options.")]
 
 #[derive(Clone, Debug, ValueEnum)]
 pub enum Output {
-    CBOR,
-    JSON,
+    #[value(name = "cbor")]
+    Cbor,
+    #[value(name = "json")]
+    Json,
 }
 
 #[derive(Args)]
@@ -154,7 +156,7 @@ pub struct SpellProveParams {
     payload: bool,
 
     /// Output format for payload (JSON or CBOR).
-    #[arg(long, short = 'o', default_value = "json", value_enum)]
+    #[arg(long, short = 'o', default_value = "json", value_enum, requires = "payload")]
     output: Output,
 
     /// Path to the private inputs file (YAML or JSON).

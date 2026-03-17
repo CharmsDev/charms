@@ -103,18 +103,7 @@ impl Prove for SpellCli {
             }),
         };
 
-        ensure!(
-            charms_client::is_correct(
-                &norm_spell,
-                &prev_txs,
-                app_input,
-                SPELL_VK,
-                &tx_ins_beamed_source_utxos,
-            )?,
-            "spell verification failed"
-        );
-
-        let prove_request = ProveRequest {
+        let mut prove_request = ProveRequest {
             spell: norm_spell,
             app_private_inputs,
             tx_ins_beamed_source_utxos,
@@ -126,7 +115,23 @@ impl Prove for SpellCli {
             collateral_utxo,
         };
 
+        // Normalize the prove request so that the emitted payload matches what
+        // would actually be sent to the proving API (e.g., adjust coin contents
+        // based on the selected chain).
+        adjust_coin_contents(&mut prove_request.spell, chain);
+
         if payload {
+            ensure!(
+                charms_client::is_correct(
+                    &prove_request.spell,
+                    &prove_request.prev_txs,
+                    app_input,
+                    SPELL_VK,
+                    &prove_request.tx_ins_beamed_source_utxos,
+                )?,
+                "spell verification failed"
+            );
+
             match format {
                 Output::JSON => println!("{}", serde_json::to_string(&prove_request)?),
                 Output::CBOR => {
