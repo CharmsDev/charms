@@ -208,7 +208,7 @@ impl Check for SpellCli {
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, norm_spell.mock)?;
+        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,

@@ -182,7 +182,7 @@ impl ProveSpellTxImpl {
 
         ensure_all_prev_txs_are_present(&norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
 
-        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, norm_spell.mock)?;
+        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, &norm_spell)?;
 
         let tx = charms_client::to_tx(
             &norm_spell,

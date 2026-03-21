@@ -172,8 +172,9 @@ pub fn utxo_id_hash_with_nonce(utxo_id: &UtxoId, nonce: Option<u64>) -> B32 {
 pub fn prev_spells(
     prev_txs: &[Tx],
     spell_vk: &str,
-    mock: bool,
+    norm_spell: &NormalizedSpell,
 ) -> anyhow::Result<BTreeMap<TxId, (NormalizedSpell, usize)>> {
+    let mock = norm_spell.mock;
     prev_txs
         .iter()
         .map(|tx| {
@@ -319,7 +320,7 @@ pub fn to_tx(
     }
 }
 
-fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
+pub fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<Charms> {
     (prev_spell.tx.outs)
         .get(utxo_id.1 as usize)
         .map(|n_charms| charms(prev_spell, n_charms))
@@ -356,7 +357,7 @@ pub fn is_correct(
         tx_ins_beamed_source_utxos
     ));
 
-    let prev_spells = prev_spells(&prev_txs, spell_vk, spell.mock)?;
+    let prev_spells = prev_spells(&prev_txs, spell_vk, &spell)?;
 
     ensure!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 

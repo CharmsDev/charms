@@ -3,9 +3,9 @@ use anyhow::{Context, Error, anyhow, bail};
 use candid::{Decode, Encode, Principal};
 use charms_client::{
     NormalizedSpell, beamed_out_to_hash,
-    cardano_tx::{CardanoTx, OutputContent},
+    cardano_tx::{CardanoTx, OutputContent, non_token_apps, proxy_script_hash},
     charms,
-    tx::Tx,
+    tx::{EnchantedTx, Tx},
 };
 use charms_data::{NativeOutput, TxId, util};
 use cml_chain::{
@@ -38,9 +38,9 @@ type PallasMultiasset = pallas_primitives::conway::Multiasset<u64>;
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-const V10_NFT_TX_HASH: [u8; 32] =
-    hex!("49d1f96be0002bcd0241917142aa6a58344923eda8ed54fb46da4ec5f4e3bff2");
-const V10_NFT_OUTPUT_INDEX: u64 = 0;
+const V11_NFT_TX_HASH: [u8; 32] =
+    hex!("94df3842c70e64d320bb918efb08b023f22c364707b29a4532efe8e5eafca09e");
+const V11_NFT_OUTPUT_INDEX: u64 = 0;
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
@@ -120,8 +120,7 @@ fn pallas_tx_hash(tx_id: TxId) -> pallas_crypto::hash::Hash<32> {
 }
 
 fn txbuilder_input(utxo_id: &UtxoId) -> Input {
-    let hash_bytes: [u8; 32] = *pallas_tx_hash(utxo_id.0);
-    Input::new(pallas_crypto::hash::Hash::new(hash_bytes), utxo_id.1 as u64)
+    Input::new(pallas_tx_hash(utxo_id.0), utxo_id.1 as u64)
 }
 
 /// Convert cml-chain CardanoTx to pallas Tx via CBOR
@@ -310,6 +309,9 @@ fn compute_input_permutation(spell_ins: &[UtxoId]) -> Vec<u32> {
     permutation
 }
 
+const SCROLLS_VKEY_HASH: [u8; 28] =
+    hex!("15bf560dabf4fe7f7ef78ac49c4fa846ebcde7009b1e886dd70d350d");
+
 /// Build a transaction using pallas
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -326,7 +328,9 @@ pub fn from_spell(
     let coin_outs = spell.tx.coins.as_ref().expect("spell coins are expected");
 
     // Collect all scripts for minting
-    let mut all_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
+    let mut minting_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
+    // Proxy scripts by script hash, for spending inputs at proxy script addresses
+    let mut spending_scripts: BTreeMap<PallasPolicyId, PallasPlutusV3Script> = BTreeMap::new();
 
     // Calculate minted/burned assets by comparing inputs and outputs
     let mut input_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
@@ -334,7 +338,18 @@ pub fn from_spell(
     let mut output_assets: BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>> =
         BTreeMap::new();
 
-    // Collect input assets
+    // Extract previous spells so we can determine input charms
+    let prev_spells: BTreeMap<TxId, charms_client::NormalizedSpell> = prev_txs_by_id
+        .values()
+        .map(|tx| {
+            Ok((
+                tx.tx_id(),
+                charms_client::tx::extended_normalized_spell(charms_lib::SPELL_VK, tx, spell.mock)?,
+            ))
+        })
+        .collect::<anyhow::Result<_>>()?;
+
+    // Collect input assets and spending scripts
     for utxo_id in spell_ins {
         let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
         if let Some(ma) = get_output_multiasset(&prev_output) {
@@ -348,6 +363,19 @@ pub fn from_spell(
                 }
             }
         }
+
+        // Collect spending scripts for inputs with non-token charms
+        if let Some(prev_spell) = prev_spells.get(&utxo_id.0) {
+            if let Some(input_charms) = charms_client::charms_in_utxo(prev_spell, utxo_id) {
+                let non_token_apps = non_token_apps(&input_charms);
+                if !non_token_apps.is_empty() {
+                    let (script_hash, script) = proxy_script_hash(&non_token_apps);
+                    let pallas_hash = cml_to_pallas_policy_id(&script_hash);
+                    let pallas_script = cml_to_pallas_script(&script);
+                    spending_scripts.insert(pallas_hash, pallas_script);
+                }
+            }
+        }
     }
 
     // Collect output assets and scripts
@@ -355,7 +383,7 @@ pub fn from_spell(
         let beamed_out = beamed_out_to_hash(spell, i as u32).is_some();
 
         let (multiasset, scripts) = pallas_multi_asset(&charms(spell, spell_out), beamed_out)?;
-        all_scripts.extend(scripts);
+        minting_scripts.extend(scripts);
         for (policy, assets) in multiasset.iter() {
             for (name, amount) in assets.iter() {
                 *output_assets
@@ -427,8 +455,8 @@ pub fn from_spell(
 
     // Add reference input (V10 NFT with script)
     let ref_input = Input::new(
-        pallas_crypto::hash::Hash::new(V10_NFT_TX_HASH),
-        V10_NFT_OUTPUT_INDEX,
+        pallas_crypto::hash::Hash::new(V11_NFT_TX_HASH),
+        V11_NFT_OUTPUT_INDEX,
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
@@ -443,16 +471,12 @@ pub fn from_spell(
         }
     }
 
+    // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
+    let redeemer_cbor = redeemer_cbor_bytes(spell);
+
     // Add mint scripts and redeemers (only if there's actual minting/burning)
     if !mint_map.is_empty() {
-        // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
-        let redeemer_raw = create_mint_redeemer(spell.version);
-        let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
-        let mut redeemer_cbor = Vec::new();
-        minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
-            .expect("CBOR encoding should not fail");
-
-        for (policy, script) in &all_scripts {
+        for (policy, script) in &minting_scripts {
             // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
             let script_bytes = script.0.to_vec();
 
@@ -469,6 +493,29 @@ pub fn from_spell(
         }
     }
 
+    // Add spend scripts and redeemers for inputs at proxy script addresses
+    if !spending_scripts.is_empty() {
+        for utxo_id in spell_ins {
+            let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
+            let address_bytes = get_output_address_bytes(&prev_output);
+            if let Some(script_hash) = get_script_payment_hash(&address_bytes) {
+                if let Some(script) = spending_scripts.get(&script_hash) {
+                    let script_bytes = script.0.to_vec();
+                    staging_tx = staging_tx
+                        .script(ScriptKind::PlutusV3, script_bytes)
+                        .add_spend_redeemer(
+                            txbuilder_input(utxo_id),
+                            redeemer_cbor.clone(),
+                            Some(pallas_txbuilder::ExUnits {
+                                mem: 250000,
+                                steps: 150000000,
+                            }),
+                        );
+                }
+            }
+        }
+    }
+
     // Set network ID from change address
     let network_id = if change_address[0] & 0x0F == 0x01 {
         1u8
@@ -478,7 +525,7 @@ pub fn from_spell(
     staging_tx = staging_tx.network_id(network_id);
 
     // Set language view for PlutusV3 cost model (only if there are scripts)
-    if !mint_map.is_empty() {
+    if !mint_map.is_empty() || !spending_scripts.is_empty() {
         if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
             staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
         }
@@ -492,13 +539,8 @@ pub fn from_spell(
         pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
     );
 
-    // Require signature by VKey (32-byte public key, hashed to 28-byte key hash)
-    // TODO enforce in the Charms main (mint and spend) validator
-    let required_vkey: [u8; 32] =
-        hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a");
-    let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
-    dbg!(hex::encode(&vkey_hash));
-    staging_tx = staging_tx.disclosed_signer(vkey_hash);
+    // Add Scrolls vkey hash to required signatories
+    staging_tx = staging_tx.disclosed_signer(SCROLLS_VKEY_HASH.into());
 
     // Build the transaction with pallas-txbuilder
     let built_tx = staging_tx
@@ -705,6 +747,25 @@ fn get_output_multiasset(
     }
 }
 
+fn get_output_address_bytes(output: &conway::TransactionOutput) -> Vec<u8> {
+    match output {
+        PseudoTransactionOutput::Legacy(legacy) => legacy.address.to_vec(),
+        PseudoTransactionOutput::PostAlonzo(post) => post.address.to_vec(),
+    }
+}
+
+/// Extract the script hash from a Shelley address payment credential, if it is a script address.
+fn get_script_payment_hash(address_bytes: &[u8]) -> Option<PallasPolicyId> {
+    let address = pallas_addresses::Address::from_bytes(address_bytes).ok()?;
+    match address {
+        pallas_addresses::Address::Shelley(shelley) => match shelley.payment() {
+            pallas_addresses::ShelleyPaymentPart::Script(hash) => Some(*hash),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn create_reward_account(
     script_hash: &[u8; 28],
     network_id: u8,
@@ -718,7 +779,16 @@ fn create_reward_account(
     pallas_primitives::conway::Bytes::from(account)
 }
 
-fn create_mint_redeemer(protocol_version: u32) -> Vec<u8> {
+fn redeemer_cbor_bytes(spell: &NormalizedSpell) -> Vec<u8> {
+    let redeemer_raw = raw_redeemer_bytes(spell.version);
+    let redeemer_plutus_data = PlutusData::BoundedBytes(BoundedBytes::from(redeemer_raw));
+    let mut redeemer_cbor = Vec::new();
+    minicbor::encode(&redeemer_plutus_data, &mut redeemer_cbor)
+        .expect("CBOR encoding should not fail");
+    redeemer_cbor
+}
+
+fn raw_redeemer_bytes(protocol_version: u32) -> Vec<u8> {
     // Format: NFT_LABEL (000de140) + "v<protocol_version>" as bytes
     const NFT_LABEL: &[u8] = &[0x00, 0x0d, 0xe1, 0x40];
     let version_string = format!("v{}", protocol_version);
@@ -820,6 +890,16 @@ fn combine(_base_tx: conway::Tx, _tx: conway::Tx) -> conway::Tx {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pallas_crypto::hash::Hash;
+
+    #[test]
+    fn scrolls_vkey_hash() {
+        let required_vkey: [u8; 32] =
+            hex!("30e99359bc028dbf5a369df63744eb2a2e0e99512d8f6bdb0124ef2f5c7cf80a"); // Scrolls vkey
+        let vkey_hash = pallas_crypto::hash::Hasher::<224>::hash(&required_vkey);
+        dbg!(hex::encode(&vkey_hash));
+        assert_eq!(Hash::new(SCROLLS_VKEY_HASH), vkey_hash);
+    }
 
     #[test]
     fn test_protocol_params_load() {
