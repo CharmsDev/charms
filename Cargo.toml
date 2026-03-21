@@ -63,7 +63,7 @@ sp1-cuda = { version = "6.0.2" }
 sp1-primitives = { version = "6.0.2" }
 sp1-prover = { version = "6.0.2" }
 sp1-sdk = { version = "6.0.2", default-features = false, features = ["network"] }
-sp1-verifier = { version = "6.0.2" }
+sp1-verifier = { version = "6.0.2", default-features = false }
 sp1-zkvm = { version = "6.0.2" }
 test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }

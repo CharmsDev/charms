@@ -33,7 +33,7 @@ mod test {
             "charms-spell-checker MUST NOT be NEWER than charms-proof-wrapper"
         );
 
-        let client = ProverClient::builder().cpu().build().await;
+        let client = ProverClient::builder().light().build().await;
 
         let pk = client
             .setup(Elf::Static(PROOF_WRAPPER_BINARY))

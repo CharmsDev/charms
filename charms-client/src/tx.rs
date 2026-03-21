@@ -161,7 +161,7 @@ pub const V9_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V10_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V11_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V12_GROTH16_VK_BYTES: &'static [u8] = include_bytes!("../vk/v12/groth16_vk.bin");
-pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V11_GROTH16_VK_BYTES;
+pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V12_GROTH16_VK_BYTES;
 
 pub fn to_serialized_pv<T: Serialize>(spell_version: u32, t: &T) -> Vec<u8> {
     match spell_version {
@@ -189,8 +189,15 @@ pub fn verify_snark_proof(
 ) -> anyhow::Result<()> {
     let groth16_vk = groth16_vk(spell_version, mock)?;
     match mock {
-        false => Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
-            .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
+        false => {
+            if spell_version <= V11 {
+                sp1_verifier_5::Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
+                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
+            } else {
+                Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
+                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
+            }
+        }
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
 }

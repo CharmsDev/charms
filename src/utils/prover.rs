@@ -25,7 +25,7 @@ pub trait CharmsSP1Prover: Send + Sync {
 impl CharmsSP1Prover for CpuProver {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
         let pk: SP1ProvingKey =
-            block_on(Prover::setup(self, Elf::from(elf))).expect("setup failed");
+            block_on(Prover::setup(self, Elf::from(elf)).into_future()).expect("setup failed");
         let vk = pk.verifying_key().clone();
         (pk, vk)
     }
@@ -36,8 +36,11 @@ impl CharmsSP1Prover for CpuProver {
         stdin: &SP1Stdin,
         kind: SP1ProofMode,
     ) -> anyhow::Result<(SP1ProofWithPublicValues, u64)> {
-        let proof =
-            block_on(Prover::prove(self, pk, stdin.clone()).mode(kind).into_future())?;
+        let proof = block_on(
+            Prover::prove(self, pk, stdin.clone())
+                .mode(kind)
+                .into_future(),
+        )?;
         Ok((proof, 0))
     }
 
@@ -55,7 +58,7 @@ impl CharmsSP1Prover for CpuProver {
 impl CharmsSP1Prover for NetworkProver {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey) {
         let pk: SP1ProvingKey =
-            block_on(Prover::setup(self, Elf::from(elf))).expect("setup failed");
+            block_on(Prover::setup(self, Elf::from(elf)).into_future()).expect("setup failed");
         let vk = pk.verifying_key().clone();
         (pk, vk)
     }
@@ -69,6 +72,9 @@ impl CharmsSP1Prover for NetworkProver {
         let proof = block_on(
             Prover::prove(self, pk, stdin.clone())
                 .mode(kind)
+                .gas_limit(16_000_000_000)
+                .cycle_limit(16_000_000_000)
+                .max_price_per_pgu(500_000_000)
                 .skip_simulation(true)
                 .strategy(FulfillmentStrategy::Auction)
                 .into_future(),

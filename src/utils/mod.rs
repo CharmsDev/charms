@@ -9,8 +9,6 @@ use tokio::{sync::OnceCell, task::block_in_place};
 pub(crate) mod logger;
 pub mod pool;
 pub mod prover;
-#[cfg(feature = "prover")]
-pub(crate) mod sp1;
 
 pub const TRANSIENT_PROVER_FAILURE: &str = " transient prover failure:";
 

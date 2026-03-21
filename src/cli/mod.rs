@@ -13,7 +13,7 @@ use crate::{
     },
     spell::{CharmsFee, MockProver, ProveSpellTx, ProveSpellTxImpl},
     utils,
-    utils::BoxedSP1Prover,
+    utils::{BoxedSP1Prover, block_on},
 };
 #[cfg(feature = "prover")]
 use crate::{spell::Prover, utils::Shared};
@@ -25,7 +25,6 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{CompleteEnv, Shell, generate};
 use serde::Serialize;
 use sp1_sdk::{CpuProver, NetworkProver, ProverClient, install::try_install_circuit_artifacts};
-use crate::utils::block_on;
 use std::{io, net::IpAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 #[derive(Parser)]
@@ -154,7 +153,13 @@ pub struct SpellProveParams {
     payload: bool,
 
     /// Output format for payload (JSON or CBOR).
-    #[arg(long, short = 'o', default_value = "json", value_enum, requires = "payload")]
+    #[arg(
+        long,
+        short = 'o',
+        default_value = "json",
+        value_enum,
+        requires = "payload"
+    )]
     output: Output,
 
     /// Path to the private inputs file (YAML or JSON).
@@ -512,14 +517,6 @@ fn spell_sp1_client(app_sp1_client: &Arc<Shared<BoxedSP1Prover>>) -> Arc<Shared<
 }
 
 #[tracing::instrument(level = "info")]
-#[cfg(feature = "prover")]
-fn charms_sp1_cuda_prover() -> utils::sp1::CharmsCudaProver {
-    let cuda_prover = block_on(ProverClient::builder().cuda().build());
-    let light_prover = block_on(sp1_sdk::LightProver::new());
-    utils::sp1::CharmsCudaProver::new(cuda_prover, light_prover)
-}
-
-#[tracing::instrument(level = "info")]
 pub fn sp1_cpu_prover() -> CpuProver {
     block_on(ProverClient::builder().cpu().build())
 }
@@ -543,7 +540,6 @@ fn sp1_named_env_client(name: &str) -> BoxedSP1Prover {
     };
     match name {
         #[cfg(feature = "prover")]
-        "cuda" => Box::new(charms_sp1_cuda_prover()),
         "cpu" => Box::new(sp1_cpu_prover()),
         "network" => Box::new(sp1_network_prover()),
         _ => unimplemented!("only 'cuda', 'cpu' and 'network' are supported as prover values"),
