@@ -344,7 +344,7 @@ pub fn from_spell(
         .map(|tx| {
             Ok((
                 tx.tx_id(),
-                charms_client::tx::extended_normalized_spell(charms_lib::SPELL_VK, tx, spell.mock)?,
+                charms_client::tx::extended_normalized_spell(charms_lib::SPELL_VK, spell, tx)?,
             ))
         })
         .collect::<anyhow::Result<_>>()?;

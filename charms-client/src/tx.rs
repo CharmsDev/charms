@@ -20,6 +20,11 @@ pub trait EnchantedTx {
         spell_vk: &str,
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell>;
+    fn virtual_spell(
+        &self,
+        spell_vk: &str,
+        next_spell: &NormalizedSpell,
+    ) -> anyhow::Result<NormalizedSpell>;
     fn tx_outs_len(&self) -> usize;
     fn tx_id(&self) -> TxId;
     fn hex(&self) -> String;
@@ -84,22 +89,10 @@ pub fn committed_normalized_spell(
 /// transaction does not have one. Extend with native coin output amounts if necessary.
 pub fn extended_normalized_spell(
     spell_vk: &str,
+    next_spell: &NormalizedSpell,
     tx: &Tx,
-    mock: bool,
 ) -> anyhow::Result<NormalizedSpell> {
-    match tx.extract_and_verify_spell(spell_vk, mock) {
-        Ok(mut spell) => {
-            spell.tx.coins = Some(tx.all_coin_outs(&spell)?);
-            Ok(spell)
-        }
-        Err(_) => {
-            let mut spell = NormalizedSpell::default();
-            spell.tx.ins = Some(tx.spell_ins());
-            spell.tx.outs = vec![];
-            spell.tx.coins = Some(tx.all_coin_outs(&spell)?);
-            Ok(spell)
-        }
-    }
+    tx.virtual_spell(spell_vk, next_spell)
 }
 
 pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Result<&str> {

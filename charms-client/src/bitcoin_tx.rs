@@ -106,6 +106,26 @@ impl EnchantedTx for BitcoinTx {
         Ok(spell)
     }
 
+    fn virtual_spell(
+        &self,
+        spell_vk: &str,
+        next_spell: &NormalizedSpell,
+    ) -> anyhow::Result<NormalizedSpell> {
+        match self.extract_and_verify_spell(spell_vk, next_spell.mock) {
+            Ok(mut spell) => {
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+            Err(_) => {
+                let mut spell = NormalizedSpell::default();
+                spell.tx.ins = Some(self.spell_ins());
+                spell.tx.outs = vec![];
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+        }
+    }
+
     fn tx_outs_len(&self) -> usize {
         self.inner().output.len()
     }

@@ -1,4 +1,6 @@
-use crate::{NormalizedSpell, Proof, V10, beamed_out_to_hash, charms, tx, tx::EnchantedTx};
+use crate::{
+    NormalizedCharms, NormalizedSpell, Proof, V10, beamed_out_to_hash, charms, tx, tx::EnchantedTx,
+};
 use anyhow::{anyhow, bail, ensure};
 use charms_data::{App, Charms, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::{
@@ -137,6 +139,61 @@ impl EnchantedTx for CardanoTx {
         tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
 
         Ok(spell)
+    }
+
+    fn virtual_spell(
+        &self,
+        spell_vk: &str,
+        next_spell: &NormalizedSpell,
+    ) -> anyhow::Result<NormalizedSpell> {
+        match self.extract_and_verify_spell(spell_vk, next_spell.mock) {
+            Ok(mut spell) => {
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+            Err(_) => {
+                let mut spell = NormalizedSpell::default();
+                spell.tx.ins = Some(self.spell_ins());
+
+                // Look at the apps in next_spell, compute CNTs representing them,
+                // and if any are present in this tx's outputs, add the charms to
+                // the corresponding virtual spell outs.
+                let apps = crate::apps(next_spell);
+
+                spell.tx.outs = (&self.inner().body.outputs)
+                    .iter()
+                    .map(|tx_out| {
+                        let ma = &tx_out.amount().multiasset;
+                        let mut n_charms = NormalizedCharms::new();
+                        for (i, app) in apps.iter().enumerate() {
+                            if app.tag != TOKEN {
+                                // TODO add support for NFTs
+                                continue;
+                            }
+                            let policy_id = policy_id(app).0;
+                            let asset_name = asset_name(app);
+                            if let Some(amount) = ma.get(&policy_id, &asset_name) {
+                                let data = match app.tag {
+                                    TOKEN => Data::from(&(amount as u64)),
+                                    // NFT => Data::empty(), // TODO add support for NFTs
+                                    _ => unreachable!(),
+                                };
+                                n_charms.insert(i as u32, data);
+                            }
+                        }
+                        n_charms
+                    })
+                    .collect();
+
+                spell.app_public_inputs = apps
+                    .iter()
+                    .map(|app| (app.clone(), Data::empty()))
+                    .collect();
+
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+        }
     }
 
     fn tx_outs_len(&self) -> usize {

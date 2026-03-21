@@ -178,14 +178,13 @@ pub fn prev_spells(
     spell_vk: &str,
     norm_spell: &NormalizedSpell,
 ) -> anyhow::Result<BTreeMap<TxId, (NormalizedSpell, usize)>> {
-    let mock = norm_spell.mock;
     prev_txs
         .iter()
         .map(|tx| {
             Ok((
                 tx.tx_id(),
                 (
-                    extended_normalized_spell(spell_vk, tx, mock)?,
+                    extended_normalized_spell(spell_vk, norm_spell, tx)?,
                     tx.tx_outs_len(),
                 ),
             ))
