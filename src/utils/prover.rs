@@ -1,11 +1,10 @@
+use super::block_on;
 use sp1_sdk::{
     CpuProver, Elf, ExecutionReport, NetworkProver, ProveRequest, Prover, ProvingKey, SP1ProofMode,
     SP1ProofWithPublicValues, SP1ProvingKey, SP1Stdin, SP1VerifyingKey,
     network::FulfillmentStrategy,
 };
-use std::future::IntoFuture;
-
-use super::block_on;
+use std::{future::IntoFuture, time::Duration};
 
 pub trait CharmsSP1Prover: Send + Sync {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey);
@@ -74,8 +73,9 @@ impl CharmsSP1Prover for NetworkProver {
                 .mode(kind)
                 .gas_limit(16_000_000_000)
                 .cycle_limit(16_000_000_000)
-                .max_price_per_pgu(500_000_000)
+                .max_price_per_pgu(1_000_000_000)
                 .skip_simulation(true)
+                .auction_timeout(Duration::from_secs(15))
                 .strategy(FulfillmentStrategy::Auction)
                 .into_future(),
         )?;
