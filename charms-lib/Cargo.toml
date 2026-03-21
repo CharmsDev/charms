@@ -18,7 +18,7 @@ wasm = ["wasm-bindgen", "serde-wasm-bindgen", "getrandom"]
 
 [dependencies]
 charms-client = { path = "../charms-client", version = "12.0.0" }
-getrandom = { version = "0.4.1", optional = true, features = ["wasm_js"] }
+getrandom = { version = "0.4.2", optional = true, features = ["wasm_js"] }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
 wasm-bindgen = { version = "0.2.114", optional = true }
 
