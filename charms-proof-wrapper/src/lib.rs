@@ -2,7 +2,7 @@ use sp1_primitives::io::sha256_hash;
 use sp1_zkvm::lib::verify::verify_sp1_proof;
 
 pub const SPELL_CHECKER_VK: [u32; 8] = [
-    1050280582, 2030147292, 1483342893, 849406808, 1572426688, 528456045, 1695898797, 711289442,
+    128641635, 1307662796, 31074232, 1385511702, 1385924035, 1463747598, 1152047826, 1263855208,
 ];
 
 pub fn main() {
@@ -31,7 +31,7 @@ mod test {
 
     #[test]
     fn test_spell_vk() {
-        let client = ProverClient::builder().cpu().build();
+        let client = ProverClient::builder().light().build();
 
         dbg!("client built");
 
