@@ -32,6 +32,12 @@ jobs:
         with:
           cache-key: ${{env.MY_RUNNER}}
 
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: '34.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}   # Avoids GitHub API rate limiting
+
       # Build with the prover feature
       - name: Build the application
         run: |
