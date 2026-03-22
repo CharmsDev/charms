@@ -364,9 +364,14 @@ pub fn from_spell(
             }
         }
 
-        // Collect spending scripts for inputs with non-token charms
+        // Collect minting and spending scripts for inputs
         if let Some(prev_spell) = prev_spells.get(&utxo_id.0) {
             if let Some(input_charms) = charms_client::charms_in_utxo(prev_spell, utxo_id) {
+                // Collect minting scripts (needed for fully burned tokens)
+                let (_, scripts) = pallas_multi_asset(&input_charms, false)?;
+                minting_scripts.extend(scripts);
+
+                // Collect spending scripts for inputs with non-token charms
                 let non_token_apps = non_token_apps(&input_charms);
                 if !non_token_apps.is_empty() {
                     let (script_hash, script) = proxy_script_hash(&non_token_apps);
@@ -474,10 +479,9 @@ pub fn from_spell(
     // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
     let redeemer_cbor = redeemer_cbor_bytes(spell);
 
-    // Add mint scripts and redeemers (only if there's actual minting/burning)
-    if !mint_map.is_empty() {
-        for (policy, script) in &minting_scripts {
-            // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
+    // Add mint scripts and redeemers only for policies present in mint_map
+    for (policy, _) in &mint_map {
+        if let Some(script) = minting_scripts.get(policy) {
             let script_bytes = script.0.to_vec();
 
             staging_tx = staging_tx
