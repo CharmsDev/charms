@@ -4,12 +4,7 @@ use bitcoin::Transaction;
 use charms_client::{NormalizedCharms, bitcoin_tx::BitcoinTx, tx::Tx};
 use charms_data::{App, Data, TxId, UtxoId};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    io::{self, Write},
-    process::Command,
-    str::FromStr,
-};
+use std::{collections::BTreeMap, process::Command, str::FromStr};
 
 pub trait List {
     fn list(&self, params: WalletListParams) -> Result<()>;
