@@ -38,9 +38,9 @@ type PallasMultiasset = pallas_primitives::conway::Multiasset<u64>;
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-const V11_NFT_TX_HASH: [u8; 32] =
-    hex!("94df3842c70e64d320bb918efb08b023f22c364707b29a4532efe8e5eafca09e");
-const V11_NFT_OUTPUT_INDEX: u64 = 0;
+const V12_NFT_TX_HASH: [u8; 32] =
+    hex!("e6ef9723be0a52566df5951d0b7bec862623936389f43d673b16406163d4c08e");
+const V12_NFT_OUTPUT_INDEX: u64 = 0;
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
@@ -344,7 +344,7 @@ pub fn from_spell(
         .map(|tx| {
             Ok((
                 tx.tx_id(),
-                charms_client::tx::extended_normalized_spell(charms_lib::SPELL_VK, tx, spell.mock)?,
+                charms_client::tx::extended_normalized_spell(charms_lib::SPELL_VK, spell, tx)?,
             ))
         })
         .collect::<anyhow::Result<_>>()?;
@@ -364,9 +364,14 @@ pub fn from_spell(
             }
         }
 
-        // Collect spending scripts for inputs with non-token charms
+        // Collect minting and spending scripts for inputs
         if let Some(prev_spell) = prev_spells.get(&utxo_id.0) {
             if let Some(input_charms) = charms_client::charms_in_utxo(prev_spell, utxo_id) {
+                // Collect minting scripts (needed for fully burned tokens)
+                let (_, scripts) = pallas_multi_asset(&input_charms, false)?;
+                minting_scripts.extend(scripts);
+
+                // Collect spending scripts for inputs with non-token charms
                 let non_token_apps = non_token_apps(&input_charms);
                 if !non_token_apps.is_empty() {
                     let (script_hash, script) = proxy_script_hash(&non_token_apps);
@@ -455,8 +460,8 @@ pub fn from_spell(
 
     // Add reference input (V10 NFT with script)
     let ref_input = Input::new(
-        pallas_crypto::hash::Hash::new(V11_NFT_TX_HASH),
-        V11_NFT_OUTPUT_INDEX,
+        pallas_crypto::hash::Hash::new(V12_NFT_TX_HASH),
+        V12_NFT_OUTPUT_INDEX,
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
@@ -474,10 +479,9 @@ pub fn from_spell(
     // Create redeemer as CBOR-encoded PlutusData::BoundedBytes
     let redeemer_cbor = redeemer_cbor_bytes(spell);
 
-    // Add mint scripts and redeemers (only if there's actual minting/burning)
-    if !mint_map.is_empty() {
-        for (policy, script) in &minting_scripts {
-            // Pass raw script bytes - pallas-txbuilder will hash them with the appropriate tag
+    // Add mint scripts and redeemers only for policies present in mint_map
+    for (policy, _) in &mint_map {
+        if let Some(script) = minting_scripts.get(policy) {
             let script_bytes = script.0.to_vec();
 
             staging_tx = staging_tx

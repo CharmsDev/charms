@@ -2,7 +2,7 @@
 name = "charms-spell-checker"
 description = "Recursive validation of spells creating Charms"
 
-version = "11.1.0"
+version = "12.0.0"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
@@ -10,9 +10,9 @@ license = "MIT"
 [workspace]
 
 [dependencies]
-charms-client = { path = "../charms-client", version = "11.1.0" }
-charms-data = { path = "../charms-data", version = "11.1.0" }
-sp1-zkvm = { version = "5.2.4", features = ["verify"] }
+charms-client = { path = "../charms-client", version = "12.0.0" }
+charms-data = { path = "../charms-data", version = "12.0.0" }
+sp1-zkvm = { version = "6.0.2", features = ["verify"] }
 
 [profile.release]
 codegen-units = 1
@@ -22,5 +22,5 @@ strip = "debuginfo"
 overflow-checks = true
 
 [patch.crates-io]
-secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.29.1-sp1-5.0.0" }
-sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-4.0.0" }
+secp256k1 = { git = "https://github.com/sp1-patches/rust-secp256k1", tag = "patch-0.29.1-sp1-6.0.0" }
+sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-6.0.0" }

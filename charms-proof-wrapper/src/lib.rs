@@ -2,7 +2,7 @@ use sp1_primitives::io::sha256_hash;
 use sp1_zkvm::lib::verify::verify_sp1_proof;
 
 pub const SPELL_CHECKER_VK: [u32; 8] = [
-    878788201, 878484971, 1475505624, 1656665074, 899827180, 1164791015, 931451307, 1005510337,
+    128641635, 1307662796, 31074232, 1385511702, 1385924035, 1463747598, 1152047826, 1263855208,
 ];
 
 pub fn main() {
@@ -21,16 +21,24 @@ fn verify_proof(vk: &[u32; 8], committed_data: &[u8]) {
 #[cfg(test)]
 mod test {
     use super::*;
-    use sp1_sdk::{HashableKey, Prover, ProverClient};
+    use sp1_sdk::{
+        HashableKey, ProvingKey,
+        blocking::{Prover, ProverClient},
+    };
 
     /// RISC-V binary compiled from `charms-spell-checker`.
     pub const SPELL_CHECKER_BINARY: &[u8] = include_bytes!("../../src/bin/charms-spell-checker");
 
     #[test]
     fn test_spell_vk() {
-        let client = ProverClient::builder().cpu().build();
+        let client = ProverClient::builder().light().build();
 
-        let (_, vk) = client.setup(SPELL_CHECKER_BINARY);
-        assert_eq!(SPELL_CHECKER_VK, vk.hash_u32());
+        dbg!("client built");
+
+        let pk = client.setup(SPELL_CHECKER_BINARY.into()).unwrap();
+
+        dbg!("pk obtained");
+
+        assert_eq!(SPELL_CHECKER_VK, pk.verifying_key().hash_u32());
     }
 }

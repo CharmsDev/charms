@@ -21,8 +21,8 @@ use charms_client::{BeamSource, MOCK_SPELL_VK, NormalizedSpell, Proof, SpellProv
 use charms_data::{App, AppInput, B32, Data, util};
 use charms_lib::SPELL_VK;
 use sha2::{Digest, Sha256};
-use sp1_prover::{HashableKey, SP1ProvingKey, SP1VerifyingKey};
-use sp1_sdk::{SP1Proof, SP1ProofMode, SP1Stdin};
+use sp1_prover::HashableKey;
+use sp1_sdk::{SP1Proof, SP1ProofMode, SP1ProvingKey, SP1Stdin, SP1VerifyingKey};
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{app, utils::TRANSIENT_PROVER_FAILURE};

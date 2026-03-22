@@ -13,13 +13,10 @@ use crate::{
     },
     spell::{CharmsFee, MockProver, ProveSpellTx, ProveSpellTxImpl},
     utils,
-    utils::BoxedSP1Prover,
+    utils::{BoxedSP1Prover, block_on},
 };
 #[cfg(feature = "prover")]
-use crate::{
-    spell::Prover,
-    utils::{Shared, sp1::cuda::SP1CudaProver},
-};
+use crate::{spell::Prover, utils::Shared};
 use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
 use charms_client::tx::Chain;
@@ -156,7 +153,13 @@ pub struct SpellProveParams {
     payload: bool,
 
     /// Output format for payload (JSON or CBOR).
-    #[arg(long, short = 'o', default_value = "json", value_enum, requires = "payload")]
+    #[arg(
+        long,
+        short = 'o',
+        default_value = "json",
+        value_enum,
+        requires = "payload"
+    )]
     output: Output,
 
     /// Path to the private inputs file (YAML or JSON).
@@ -514,27 +517,13 @@ fn spell_sp1_client(app_sp1_client: &Arc<Shared<BoxedSP1Prover>>) -> Arc<Shared<
 }
 
 #[tracing::instrument(level = "info")]
-#[cfg(feature = "prover")]
-fn charms_sp1_cuda_prover() -> utils::sp1::CudaProver {
-    utils::sp1::CudaProver::new(
-        sp1_prover::SP1Prover::new(),
-        SP1CudaProver::new(gpu_service_url()).unwrap(),
-    )
-}
-
-#[cfg(feature = "prover")]
-fn gpu_service_url() -> String {
-    std::env::var("SP1_GPU_SERVICE_URL").unwrap_or("http://localhost:3000/twirp/".to_string())
-}
-
-#[tracing::instrument(level = "info")]
 pub fn sp1_cpu_prover() -> CpuProver {
-    ProverClient::builder().cpu().build()
+    block_on(ProverClient::builder().cpu().build())
 }
 
 #[tracing::instrument(level = "info")]
 pub fn sp1_network_prover() -> NetworkProver {
-    ProverClient::builder().network().build()
+    block_on(ProverClient::builder().network().build())
 }
 
 #[tracing::instrument(level = "info")]
@@ -551,7 +540,6 @@ fn sp1_named_env_client(name: &str) -> BoxedSP1Prover {
     };
     match name {
         #[cfg(feature = "prover")]
-        "cuda" => Box::new(charms_sp1_cuda_prover()),
         "cpu" => Box::new(sp1_cpu_prover()),
         "network" => Box::new(sp1_network_prover()),
         _ => unimplemented!("only 'cuda', 'cpu' and 'network' are supported as prover values"),

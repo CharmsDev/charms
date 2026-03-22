@@ -16,10 +16,10 @@ pub const PROOF_WRAPPER_BINARY: &[u8] = include_bytes!("./bin/charms-proof-wrapp
 mod test {
     use super::*;
     use charms_lib::SPELL_VK;
-    use sp1_sdk::{HashableKey, Prover, ProverClient};
+    use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey};
 
-    #[test]
-    fn test_spell_vk() {
+    #[tokio::test]
+    async fn test_spell_vk() {
         let a = std::fs::metadata("./src/bin/charms-spell-checker")
             .unwrap()
             .modified()
@@ -29,14 +29,17 @@ mod test {
             .modified()
             .unwrap();
         assert!(
-            a < b,
-            "charms-spell-checker MUST be OLDER than charms-proof-wrapper"
+            a <= b,
+            "charms-spell-checker MUST NOT be NEWER than charms-proof-wrapper"
         );
 
-        let client = ProverClient::builder().cpu().build();
+        let client = ProverClient::builder().light().build().await;
 
-        let (_, vk) = client.setup(PROOF_WRAPPER_BINARY);
-        let s = vk.bytes32();
+        let pk = client
+            .setup(Elf::Static(PROOF_WRAPPER_BINARY))
+            .await
+            .unwrap();
+        let s = pk.verifying_key().bytes32();
         assert_eq!(SPELL_VK, s.as_str());
     }
 }

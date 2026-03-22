@@ -1,12 +1,13 @@
-use crate::{cli, cli::WalletListParams, tx, utils::str_index};
+use crate::{cli::WalletListParams, tx};
 use anyhow::{Result, ensure};
-use bitcoin::{Transaction, hashes::Hash};
-use charms_client::{NormalizedCharms, NormalizedSpell, bitcoin_tx::BitcoinTx, tx::Tx};
+use bitcoin::Transaction;
+use charms_client::{NormalizedCharms, bitcoin_tx::BitcoinTx, tx::Tx};
 use charms_data::{App, Data, TxId, UtxoId};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    process::{Command, Stdio},
+    collections::BTreeMap,
+    io::{self, Write},
+    process::Command,
     str::FromStr,
 };
 
@@ -31,6 +32,7 @@ struct BListUnspentItem {
 
 #[derive(Debug, Serialize)]
 struct OutputWithCharms {
+    utxo_id: UtxoId,
     confirmations: u32,
     sats: u64,
     charms: BTreeMap<String, Data>,
@@ -38,93 +40,74 @@ struct OutputWithCharms {
 
 type ParsedCharms = BTreeMap<App, Data>;
 
-#[derive(Debug, Serialize)]
-struct AppsAndCharmsOutputs {
-    apps: BTreeMap<String, App>,
-    outputs: BTreeMap<UtxoId, OutputWithCharms>,
-}
-
 impl List for WalletCli {
     fn list(&self, params: WalletListParams) -> Result<()> {
-        let b_cli = Command::new("bitcoin-cli")
+        let output = Command::new("bitcoin-cli")
             .args(&["listunspent", "0"]) // include outputs with 0 confirmations
-            .stdout(Stdio::piped())
-            .spawn()?;
-        let output = b_cli.wait_with_output()?;
+            .output()?;
         let b_list_unspent: Vec<BListUnspentItem> = serde_json::from_slice(&output.stdout)?;
 
-        let unspent_charms_outputs = outputs_with_charms(b_list_unspent, params.mock)?;
+        // Group by txid
+        let mut by_txid: BTreeMap<String, Vec<BListUnspentItem>> = BTreeMap::new();
+        for item in b_list_unspent {
+            by_txid.entry(item.txid.clone()).or_default().push(item);
+        }
 
-        cli::print_output(&unspent_charms_outputs, params.json)?;
+        // let stdout = io::stdout();
+        // let mut out = stdout.lock();
+
+        // Process each txid group: fetch tx, check for spell, output charms immediately
+        for (txid, utxos) in by_txid {
+            eprintln!("Looking at tx {}...", txid);
+            let tx: Transaction = match get_tx(&txid) {
+                Ok(tx) => tx,
+                Err(_) => continue,
+            };
+            let spell = match tx::spell(&Tx::Bitcoin(BitcoinTx::Simple(tx)), params.mock) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            let apps: Vec<App> = spell.app_public_inputs.keys().cloned().collect();
+
+            for utxo in utxos {
+                if !utxo.solvable {
+                    continue;
+                }
+                let txid =
+                    TxId::from_str(&utxo.txid).expect("txids from bitcoin-cli should be valid");
+                let n_charms = match spell.tx.outs.get(utxo.vout as usize) {
+                    Some(c) if !c.is_empty() => c,
+                    _ => continue,
+                };
+
+                let charms = parsed_charms(n_charms, &apps);
+                let charms_display: BTreeMap<String, Data> = charms
+                    .iter()
+                    .map(|(app, value)| (app.to_string(), value.clone()))
+                    .collect();
+
+                let sats = (utxo.amount * 100_000_000f64) as u64;
+                let entry = OutputWithCharms {
+                    utxo_id: UtxoId(txid, utxo.vout),
+                    confirmations: utxo.confirmations,
+                    sats,
+                    charms: charms_display,
+                };
+
+                if params.json {
+                    let s = serde_json::to_string_pretty(&entry)?;
+                    println!("{}", s);
+                } else {
+                    println!("---");
+                    let s = serde_yaml::to_string(&entry)?;
+                    println!("{}", s);
+                }
+            }
+        }
+
         Ok(())
     }
-}
-
-fn outputs_with_charms(
-    b_list_unspent: Vec<BListUnspentItem>,
-    mock: bool,
-) -> Result<AppsAndCharmsOutputs> {
-    let txid_set = b_list_unspent
-        .iter()
-        .map(|item| item.txid.clone())
-        .collect::<BTreeSet<_>>();
-    let spells = txs_with_spells(txid_set.into_iter(), mock)?;
-    let utxos_with_charms: BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)> =
-        utxos_with_charms(&spells, b_list_unspent);
-    let apps = collect_apps(&utxos_with_charms);
-
-    Ok(AppsAndCharmsOutputs {
-        apps: enumerate_apps(&apps),
-        outputs: pretty_outputs(utxos_with_charms, &apps),
-    })
-}
-
-fn txs_with_spells(
-    txid_iter: impl Iterator<Item = String>,
-    mock: bool,
-) -> Result<BTreeMap<TxId, NormalizedSpell>> {
-    let txs_with_spells = txid_iter
-        .map(|txid| {
-            let tx: Transaction = get_tx(&txid)?;
-            Ok(tx)
-        })
-        .map(|tx_result: Result<Transaction>| {
-            let tx = tx_result?;
-            let txid = tx.compute_txid();
-            let norm_spell_opt = tx::spell(&Tx::Bitcoin(BitcoinTx::Simple(tx)), mock);
-            Ok(norm_spell_opt.map(|ns| (TxId(txid.to_byte_array()), ns)))
-        })
-        .filter_map(|tx_result| match tx_result {
-            Ok(Some(v)) => Some(Ok(v)),
-            Ok(None) => None,
-            Err(e) => Some(Err(e)),
-        })
-        .collect::<Result<_>>()?;
-
-    Ok(txs_with_spells)
-}
-
-fn utxos_with_charms(
-    spells: &BTreeMap<TxId, NormalizedSpell>,
-    b_list_unspent: Vec<BListUnspentItem>,
-) -> BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)> {
-    b_list_unspent
-        .into_iter()
-        .filter(|item| item.solvable)
-        .filter_map(|b_utxo| {
-            let txid =
-                TxId::from_str(&b_utxo.txid).expect("txids from bitcoin-cli should be valid");
-            let i = b_utxo.vout;
-            spells
-                .get(&txid)
-                .and_then(|ns| ns.tx.outs.get(i as usize))
-                .filter(|n_charms| !n_charms.is_empty())
-                .map(|n_charms| {
-                    let apps: Vec<App> = spells[&txid].app_public_inputs.keys().cloned().collect();
-                    (UtxoId(txid, i), (b_utxo, parsed_charms(n_charms, &apps)))
-                })
-        })
-        .collect()
 }
 
 /// Convert NormalizedCharms (u32-indexed) to ParsedCharms (App-keyed)
@@ -136,57 +119,10 @@ fn parsed_charms(n_charms: &NormalizedCharms, apps: &[App]) -> ParsedCharms {
         .collect()
 }
 
-fn collect_apps(
-    strings_of_charms: &BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)>,
-) -> BTreeMap<App, String> {
-    let apps: BTreeSet<App> = strings_of_charms
-        .iter()
-        .flat_map(|(_utxo, (_sats, charms))| charms.keys())
-        .cloned()
-        .collect();
-    apps.into_iter()
-        .zip(0..)
-        .map(|(app, i)| (app, str_index(&i)))
-        .collect()
-}
-
-fn enumerate_apps(apps: &BTreeMap<App, String>) -> BTreeMap<String, App> {
-    apps.iter()
-        .map(|(app, i)| (i.clone(), app.clone()))
-        .collect()
-}
-
-fn pretty_outputs(
-    utxos_with_charms: BTreeMap<UtxoId, (BListUnspentItem, ParsedCharms)>,
-    apps: &BTreeMap<App, String>,
-) -> BTreeMap<UtxoId, OutputWithCharms> {
-    utxos_with_charms
-        .into_iter()
-        .map(|(utxo_id, (utxo, charms))| {
-            let charms = charms
-                .iter()
-                .map(|(app, value)| (apps[app].clone(), value.clone()))
-                .collect();
-            let confirmations = utxo.confirmations;
-            let sats = (utxo.amount * 100000000f64) as u64;
-            (
-                utxo_id.clone(),
-                OutputWithCharms {
-                    confirmations,
-                    sats,
-                    charms,
-                },
-            )
-        })
-        .collect()
-}
-
 fn get_tx(txid: &str) -> Result<Transaction> {
-    let b_cli = Command::new("bitcoin-cli")
+    let output = Command::new("bitcoin-cli")
         .args(&["getrawtransaction", txid])
-        .stdout(Stdio::piped())
-        .spawn()?;
-    let output = b_cli.wait_with_output()?;
+        .output()?;
     ensure!(
         output.status.success(),
         "bitcoin-cli getrawtransaction failed"

@@ -24,7 +24,7 @@ exclude = ["charms-spell-checker"]
 resolver = "3"
 
 [workspace.package]
-version = "11.1.0"
+version = "12.0.0"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
@@ -58,13 +58,13 @@ serde = { version = "1.0" }
 serde_json = { version = "1.0.149" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-core-machine = { version = "5.2.4" }
-sp1-cuda = { version = "5.2.4" }
-sp1-primitives = { version = "5.2.4" }
-sp1-prover = { version = "5.2.4" }
-sp1-sdk = { version = "5.2.4", default-features = false, features = ["network"] }
-sp1-verifier = { version = "5.2.4" }
-sp1-zkvm = { version = "5.2.4" }
+sp1-core-machine = { version = "6.0.2" }
+sp1-cuda = { version = "6.0.2" }
+sp1-primitives = { version = "6.0.2" }
+sp1-prover = { version = "6.0.2" }
+sp1-sdk = { version = "6.0.2", default-features = false, features = ["network"] }
+sp1-verifier = { version = "6.0.2", default-features = false }
+sp1-zkvm = { version = "6.0.2" }
 test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }
 
@@ -88,19 +88,19 @@ bech32 = { version = "0.11.1" }
 bincode = { version = "1.3.3" }
 bitcoin = { workspace = true, features = ["rand", "rand-std"] }
 candid = { version = "0.10" }
-charms-app-runner = { path = "./charms-app-runner", version = "11.1.0" }
-charms-client = { path = "./charms-client", version = "11.1.0" }
-charms-data = { path = "./charms-data", version = "11.1.0" }
-charms-lib = { path = "./charms-lib", version = "11.1.0" }
-charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "11.1.0" }
-clap = { version = "4.5.60", features = ["derive"] }
-clap_complete = { version = "4.5.66", features = ["unstable-dynamic"] }
+charms-app-runner = { path = "./charms-app-runner", version = "12.0.0" }
+charms-client = { path = "./charms-client", version = "12.0.0" }
+charms-data = { path = "./charms-data", version = "12.0.0" }
+charms-lib = { path = "./charms-lib", version = "12.0.0" }
+charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "12.0.0" }
+clap = { version = "4.6.0", features = ["derive"] }
+clap_complete = { version = "4.6.0", features = ["unstable-dynamic"] }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
 const_format = { version = "0.2.35" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
-ic-agent = { version = "0.45" }
+ic-agent = { version = "0.46" }
 pallas-addresses = { workspace = true }
 pallas-codec = { workspace = true }
 pallas-crypto = { workspace = true }
@@ -112,20 +112,20 @@ reqwest = { version = "0.13.2", features = ["json"] }
 rslock = { version = "0.7.4", optional = true, features = ["tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-serde_with = { version = "3.17.0", features = ["base64"] }
+serde_with = { version = "3.18.0", features = ["base64"] }
 serde_yaml = { workspace = true }
 sha2 = { workspace = true }
 sp1-core-machine = { workspace = true }
 sp1-cuda = { workspace = true }
 sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
-tokio = { version = "1.49", features = ["full"] }
-toml = { version = "1.0.3" }
+tokio = { version = "1.50", features = ["full"] }
+toml = { version = "1.0.7" }
 tower-http = { version = "0.6.8", features = ["cors"] }
 tracing = { workspace = true }
 tracing-forest = { version = "0.3.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-twirp = { package = "twirp-rs", version = "0.13.0-succinct" }
+
 
 [dev-dependencies]
 proptest = { workspace = true }
@@ -142,6 +142,3 @@ opt-level = 3
 strip = "debuginfo"
 overflow-checks = true
 panic = "abort"
-
-[patch.crates-io]
-sha2 = { git = "https://github.com/sp1-patches/RustCrypto-hashes", package = "sha2", tag = "patch-sha2-0.10.9-sp1-4.0.0" }

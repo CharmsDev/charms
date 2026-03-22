@@ -1,8 +1,8 @@
 use crate::{
     CURRENT_VERSION, MOCK_SPELL_VK, NormalizedSpell, V0, V0_SPELL_VK, V1, V1_SPELL_VK, V2,
     V2_SPELL_VK, V3, V3_SPELL_VK, V4, V4_SPELL_VK, V5, V5_SPELL_VK, V6, V6_SPELL_VK, V7,
-    V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, ark, bitcoin_tx::BitcoinTx,
-    cardano_tx::CardanoTx,
+    V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, V11, V11_SPELL_VK, ark,
+    bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
@@ -19,6 +19,11 @@ pub trait EnchantedTx {
         &self,
         spell_vk: &str,
         mock: bool,
+    ) -> anyhow::Result<NormalizedSpell>;
+    fn virtual_spell(
+        &self,
+        spell_vk: &str,
+        next_spell: &NormalizedSpell,
     ) -> anyhow::Result<NormalizedSpell>;
     fn tx_outs_len(&self) -> usize;
     fn tx_id(&self) -> TxId;
@@ -84,22 +89,10 @@ pub fn committed_normalized_spell(
 /// transaction does not have one. Extend with native coin output amounts if necessary.
 pub fn extended_normalized_spell(
     spell_vk: &str,
+    next_spell: &NormalizedSpell,
     tx: &Tx,
-    mock: bool,
 ) -> anyhow::Result<NormalizedSpell> {
-    match tx.extract_and_verify_spell(spell_vk, mock) {
-        Ok(mut spell) => {
-            spell.tx.coins = Some(tx.all_coin_outs(&spell)?);
-            Ok(spell)
-        }
-        Err(_) => {
-            let mut spell = NormalizedSpell::default();
-            spell.tx.ins = Some(tx.spell_ins());
-            spell.tx.outs = vec![];
-            spell.tx.coins = Some(tx.all_coin_outs(&spell)?);
-            Ok(spell)
-        }
-    }
+    tx.virtual_spell(spell_vk, next_spell)
 }
 
 pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Result<&str> {
@@ -108,6 +101,7 @@ pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Resul
     }
     match spell_version {
         CURRENT_VERSION => Ok(spell_vk),
+        V11 => Ok(V11_SPELL_VK),
         V10 => Ok(V10_SPELL_VK),
         V9 => Ok(V9_SPELL_VK),
         V8 => Ok(V8_SPELL_VK),
@@ -129,6 +123,7 @@ pub fn groth16_vk(spell_version: u32, mock: bool) -> anyhow::Result<&'static [u8
     }
     match spell_version {
         CURRENT_VERSION => Ok(CURRENT_GROTH16_VK_BYTES),
+        V11 => Ok(V11_GROTH16_VK_BYTES),
         V10 => Ok(V10_GROTH16_VK_BYTES),
         V9 => Ok(V9_GROTH16_VK_BYTES),
         V8 => Ok(V8_GROTH16_VK_BYTES),
@@ -158,11 +153,12 @@ pub const V8_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V9_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V10_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
 pub const V11_GROTH16_VK_BYTES: &'static [u8] = V4_GROTH16_VK_BYTES;
-pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V11_GROTH16_VK_BYTES;
+pub const V12_GROTH16_VK_BYTES: &'static [u8] = include_bytes!("../vk/v12/groth16_vk.bin");
+pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V12_GROTH16_VK_BYTES;
 
 pub fn to_serialized_pv<T: Serialize>(spell_version: u32, t: &T) -> Vec<u8> {
     match spell_version {
-        CURRENT_VERSION | V10 | V9 | V8 | V7 | V6 | V5 | V4 | V3 | V2 | V1 => {
+        CURRENT_VERSION | V11 | V10 | V9 | V8 | V7 | V6 | V5 | V4 | V3 | V2 | V1 => {
             // we commit to CBOR-encoded tuple `(spell_vk, n_spell)`
             util::write(t).unwrap()
         }
@@ -186,8 +182,15 @@ pub fn verify_snark_proof(
 ) -> anyhow::Result<()> {
     let groth16_vk = groth16_vk(spell_version, mock)?;
     match mock {
-        false => Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
-            .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
+        false => {
+            if spell_version <= V11 {
+                sp1_verifier_5::Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
+                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
+            } else {
+                Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
+                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
+            }
+        }
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
 }

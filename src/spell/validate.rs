@@ -176,7 +176,6 @@ impl ProveSpellTxImpl {
 
         let norm_spell = &mut prove_request.spell;
         adjust_coin_contents(norm_spell, prove_request.chain)?;
-        dbg!(&norm_spell);
         let app_private_inputs = &prove_request.app_private_inputs;
         let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
 
