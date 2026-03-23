@@ -5,11 +5,12 @@ use charms_client::{
     NormalizedSpell, beamed_out_to_hash,
     cardano_tx::{CardanoTx, OutputContent, non_token_apps, proxy_script_hash},
     charms,
-    tx::{EnchantedTx, Tx},
+    tx::{Chain, EnchantedTx, Tx},
 };
 use charms_data::{NativeOutput, TxId, util};
 use cml_chain::{
     Deserialize as CmlDeserialize, PolicyId as CmlPolicyId, Serialize as CmlSerialize,
+    address::Address,
     assets::MultiAsset,
     plutus::PlutusV3Script as CmlPlutusV3Script,
     transaction::{DatumOption, Transaction as CmlTransaction},
@@ -312,6 +313,8 @@ fn compute_input_permutation(spell_ins: &[UtxoId]) -> Vec<u32> {
 const SCROLLS_VKEY_HASH: [u8; 28] =
     hex!("15bf560dabf4fe7f7ef78ac49c4fa846ebcde7009b1e886dd70d350d");
 
+const DEFAULT_FEE_ADDR: &str = "addr1qyp2t40fprytezw5nnlj6qjxn82ck3yhkvdy3ze9muqzvj2x2862gdndh8y3vc3yja94sf98cyyu2qsjhy8y5949w37qyt3lnt";
+
 /// Build a transaction using pallas
 pub fn from_spell(
     spell: &NormalizedSpell,
@@ -319,7 +322,10 @@ pub fn from_spell(
     change_address: &[u8],
     spell_data: &[u8],
     collateral_utxo: Option<UtxoId>,
+    charms_fee: Option<CharmsFee>,
 ) -> anyhow::Result<conway::Tx> {
+    let fee_addr_bytes = fee_addr_bytes(charms_fee)?;
+
     let protocol_params = load_protocol_params();
     let collateral_utxo = collateral_utxo.ok_or_else(|| anyhow!("collateral_utxo is required"))?;
 
@@ -449,7 +455,7 @@ pub fn from_spell(
     let spell_data_min_ada = spell_data_min_ada + spell_data_min_ada / 10;
 
     let spell_data_output = Output::new(
-        pallas_addresses::Address::from_bytes(change_address).expect("valid address"),
+        pallas_addresses::Address::from_bytes(&fee_addr_bytes).expect("valid address"),
         spell_data_min_ada,
     )
     .set_inline_datum(spell_datum_cbor);
@@ -661,6 +667,18 @@ pub fn from_spell(
     Ok(tx)
 }
 
+fn fee_addr_bytes(charms_fee: Option<CharmsFee>) -> anyhow::Result<Vec<u8>> {
+    let fee_addr_str = charms_fee
+        .as_ref()
+        .and_then(|cf| cf.fee_addresses.get(&Chain::Cardano))
+        .and_then(|fa| fa.get("mainnet"))
+        .map_or(DEFAULT_FEE_ADDR, |s| s.as_str());
+    let fee_addr_bytes = Address::from_bech32(fee_addr_str)
+        .map_err(|e| anyhow!(format!("{}", e)))?
+        .to_raw_bytes();
+    Ok(fee_addr_bytes)
+}
+
 fn compute_mint_map(
     input_assets: &BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>,
     output_assets: &BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>,
@@ -841,7 +859,7 @@ pub async fn make_transactions(
     spell_data: &[u8],
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     underlying_tx: Option<Tx>,
-    _charms_fee: Option<CharmsFee>,
+    charms_fee: Option<CharmsFee>,
     _total_cycles: u64,
     collateral_utxo: Option<UtxoId>,
 ) -> Result<Vec<Tx>, Error> {
@@ -865,6 +883,7 @@ pub async fn make_transactions(
         &change_address_bytes,
         spell_data,
         collateral_utxo,
+        charms_fee,
     )?;
 
     let tx = match underlying_tx {
