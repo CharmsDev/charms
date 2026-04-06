@@ -287,6 +287,7 @@ pub fn to_tx(
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
         let charms = charms_in_utxo(prev_spell, utxo_id)
+            .filter(|c| !c.is_empty())
             .or_else(|| {
                 tx_ins_beamed_source_utxos
                     .get(utxo_id)
