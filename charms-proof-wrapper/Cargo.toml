@@ -17,4 +17,4 @@ sp1-zkvm = { workspace = true, features = ["verify"] }
 
 [dev-dependencies]
 sp1-sdk = { workspace = true, features = ["blocking"] }
-tokio = { version = "1.50", features = ["macros", "rt"] }
+tokio = { version = "1.51", features = ["macros", "rt"] }
