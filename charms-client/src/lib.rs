@@ -287,7 +287,6 @@ pub fn to_tx(
     let from_utxo_id = |utxo_id: &UtxoId| -> (UtxoId, Charms) {
         let (prev_spell, _) = &prev_spells[&utxo_id.0];
         let charms = charms_in_utxo(prev_spell, utxo_id)
-            .filter(|c| !c.is_empty())
             .or_else(|| {
                 tx_ins_beamed_source_utxos
                     .get(utxo_id)
@@ -328,6 +327,7 @@ pub fn charms_in_utxo(prev_spell: &NormalizedSpell, utxo_id: &UtxoId) -> Option<
     (prev_spell.tx.outs)
         .get(utxo_id.1 as usize)
         .map(|n_charms| charms(prev_spell, n_charms))
+        .filter(|c| !c.is_empty())
 }
 
 /// Return [`charms_data::Charms`] for the given [`NormalizedCharms`].
