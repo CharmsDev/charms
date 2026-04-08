@@ -670,13 +670,13 @@
     "govActionLifetime": 6,
     "maxBlockBodySize": 90112,
     "maxBlockExecutionUnits": {
-        "memory": 62000000,
+        "memory": 72000000,
         "steps": 20000000000
     },
     "maxBlockHeaderSize": 1100,
     "maxCollateralInputs": 3,
     "maxTxExecutionUnits": {
-        "memory": 14000000,
+        "memory": 16500000,
         "steps": 10000000000
     },
     "maxTxSize": 16384,
