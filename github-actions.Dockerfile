@@ -1,5 +1,5 @@
 FROM ubuntu
 RUN apt-get update && apt-get install -y curl
-COPY ./bin/charms /usr/local/bin/
-COPY ./prover/bin/charms /usr/local/bin/charms-prover
-CMD ["charms", "server"]
+COPY ./bin/charms        /usr/local/bin/
+COPY ./bin/charms-prover /usr/local/bin/
+CMD ["charms-prover", "server"]

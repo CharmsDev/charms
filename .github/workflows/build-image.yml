@@ -41,8 +41,8 @@ jobs:
       # Build with the prover feature
       - name: Build the application
         run: |
-          cargo install --path . --locked --bin charms --features prover --root ./prover/
-          cargo install --path . --locked --bin charms                   --root .
+          cargo install --path . --locked --bin charms-prover --features prover --root .
+          cargo install --path . --locked --bin charms                          --root .
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

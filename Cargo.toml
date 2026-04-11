@@ -9,6 +9,15 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[[bin]]
+name = "charms"
+path = "src/main.rs"
+
+[[bin]]
+name = "charms-prover"
+path = "src/main.rs"
+required-features = ["prover"]
+
 [workspace]
 members = [
     ".",
