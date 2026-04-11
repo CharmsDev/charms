@@ -14,6 +14,6 @@ homepage.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 charms-data = { path = "../charms-data", version = "13.0.0" }
-rand = { version = "0.10.1" }
+rand = { version = "0.10.0" }
 sha2 = { workspace = true }
 wasmi = { version = "1.0.9", default-features = false, features = ["std", "prefer-btree-collections"] }

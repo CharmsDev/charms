@@ -67,13 +67,13 @@ serde = { version = "1.0" }
 serde_json = { version = "1.0.149" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-core-machine = { version = "6.1.0" }
-sp1-cuda = { version = "6.1.0" }
-sp1-primitives = { version = "6.1.0" }
-sp1-prover = { version = "6.1.0" }
-sp1-sdk = { version = "6.1.0", default-features = false, features = ["network"] }
-sp1-verifier = { version = "6.1.0", default-features = false }
-sp1-zkvm = { version = "6.1.0" }
+sp1-core-machine = { version = "6.0.2" }
+sp1-cuda = { version = "6.0.2" }
+sp1-primitives = { version = "6.0.2" }
+sp1-prover = { version = "6.0.2" }
+sp1-sdk = { version = "6.0.2", default-features = false, features = ["network"] }
+sp1-verifier = { version = "6.0.2", default-features = false }
+sp1-zkvm = { version = "6.0.2" }
 test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }
 
@@ -103,13 +103,13 @@ charms-data = { path = "./charms-data", version = "13.0.0" }
 charms-lib = { path = "./charms-lib", version = "13.0.0" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "13.0.0" }
 clap = { version = "4.6.0", features = ["derive"] }
-clap_complete = { version = "4.6.1", features = ["unstable-dynamic"] }
+clap_complete = { version = "4.6.0", features = ["unstable-dynamic"] }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
 const_format = { version = "0.2.35" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
-ic-agent = { version = "0.47" }
+ic-agent = { version = "0.46" }
 pallas-addresses = { workspace = true }
 pallas-codec = { workspace = true }
 pallas-crypto = { workspace = true }
