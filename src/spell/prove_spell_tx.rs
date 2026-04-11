@@ -2,8 +2,6 @@ use super::{
     prove::Prove,
     request::{CharmsFee, ProveRequest},
 };
-#[cfg(feature = "prover")]
-use crate::utils::block_on;
 #[cfg(not(feature = "prover"))]
 use crate::utils::retry;
 use crate::{
@@ -224,33 +222,36 @@ impl ProveSpellTx for ProveSpellTxImpl {
             match con.get(request_key.as_str()).await? {
                 Some(ProofState::Done { result, .. }) => Ok(result),
                 _ => {
-                    const LOCK_TTL: Duration = Duration::from_secs(5);
+                    const LOCK_TTL: Duration = Duration::from_secs(600);
 
-                    let mut con = con.clone();
-                    let request_key = request_key.clone();
+                    let lock = lock_manager
+                        .acquire_no_guard(lock_key.as_bytes(), LOCK_TTL)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("failed to acquire lock: {e}"))?;
 
-                    let result: Vec<Tx> = lock_manager
-                        .using(lock_key.as_bytes(), LOCK_TTL, || async move {
-                            match con.get(request_key.as_str()).await? {
-                                Some(ProofState::Done { result, .. }) => {
-                                    return Ok(result);
-                                }
-                                _ => {}
-                            };
+                    // Check cache again after acquiring lock (another worker may have finished)
+                    let result: anyhow::Result<Vec<Tx>> = async {
+                        match con.get(request_key.as_str()).await? {
+                            Some(ProofState::Done { result, .. }) => return Ok(result),
+                            _ => {}
+                        };
 
-                            let _: () = block_on(con.set(
+                        let _: () = con
+                            .set(
                                 request_key.as_str(),
                                 ProofState::Processing {
                                     request_data: RequestData {
                                         committed_data_hash,
                                     },
                                 },
-                            ))?;
+                            )
+                            .await?;
 
-                            let r: Vec<Tx> =
-                                self.do_prove_spell_tx(prove_request, app_cycles).await?;
+                        let r: Vec<Tx> =
+                            self.do_prove_spell_tx(prove_request, app_cycles).await?;
 
-                            let _: () = block_on(con.set(
+                        let _: () = con
+                            .set(
                                 request_key.as_str(),
                                 ProofState::Done {
                                     request_data: RequestData {
@@ -258,15 +259,18 @@ impl ProveSpellTx for ProveSpellTxImpl {
                                     },
                                     result: r.clone(),
                                 },
-                            ))?;
+                            )
+                            .await?;
 
-                            Ok::<_, anyhow::Error>(r)
-                        })
-                        .await??;
+                        Ok(r)
+                    }
+                    .await;
+
+                    lock_manager.unlock(&lock).await;
 
                     // TODO save permanent error to the cache
 
-                    Ok(result)
+                    Ok(result?)
                 }
             }
         } else {

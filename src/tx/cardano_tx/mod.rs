@@ -97,6 +97,7 @@ async fn call_scrolls_sign(tx: &conway::Tx) -> anyhow::Result<conway::Tx> {
     let signed_tx_hex = Decode!(&response, anyhow::Result<String, String>)
         .context("Failed to decode signature from canister response")?
         .map_err(|e| anyhow!("Canister returned error: {}", e))?;
+    dbg!(&signed_tx_hex);
 
     // Parse the signed transaction back to pallas
     let signed_tx_bytes = hex::decode(&signed_tx_hex)?;
