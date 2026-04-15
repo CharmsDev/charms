@@ -39,9 +39,9 @@ type PallasMultiasset = pallas_primitives::conway::Multiasset<u64>;
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-const V13_NFT_TX_HASH: [u8; 32] =
-    hex!("a8039f4f572d39bfc6a410e531f62a09874dbb49dcdc25dbbe4d7f969cce9cf8");
-const V13_NFT_OUTPUT_INDEX: u64 = 0;
+const V14_NFT_TX_HASH: [u8; 32] =
+    hex!("c51ff980a4f5cb969d8c198720bc8e1d74cca2bbeab86dbea4107726dd71e1ab");
+const V14_NFT_OUTPUT_INDEX: u64 = 0;
 
 const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
@@ -467,8 +467,8 @@ pub fn from_spell(
 
     // Add reference input (V10 NFT with script)
     let ref_input = Input::new(
-        pallas_crypto::hash::Hash::new(V13_NFT_TX_HASH),
-        V13_NFT_OUTPUT_INDEX,
+        pallas_crypto::hash::Hash::new(V14_NFT_TX_HASH),
+        V14_NFT_OUTPUT_INDEX,
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
