@@ -1,6 +1,7 @@
 use charms_client::tx::Tx;
 pub use charms_client::{
-    NormalizedCharms, NormalizedSpell, NormalizedTransaction, bitcoin_tx, cardano_tx, tx,
+    CURRENT_VERSION, NormalizedCharms, NormalizedSpell, NormalizedTransaction, bitcoin_tx,
+    cardano_tx, tx,
 };
 #[cfg(feature = "wasm")]
 use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
