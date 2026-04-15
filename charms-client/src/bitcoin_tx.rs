@@ -174,7 +174,7 @@ impl EnchantedTx for BitcoinTx {
     }
 }
 
-const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bits (6 blocks)
+pub const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bits (~6 blocks)
 
 fn verify_finality_proof(
     tx: &Transaction,
