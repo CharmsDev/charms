@@ -1,0 +1,5 @@
+fee_address:
+  mainnet: addr1qyp2t40fprytezw5nnlj6qjxn82ck3yhkvdy3ze9muqzvj2x2862gdndh8y3vc3yja94sf98cyyu2qsjhy8y5949w37qyt3lnt
+  preprod: addr_test1qza679y6l43vv9scdarr9upkwzdprdh84jtmqjmrs82hhzk2j46uwjd8ttv9cls23rtauaqefxn9lu7zrjjt865m5faqtnpjg2
+
+fixed_cost: 420000

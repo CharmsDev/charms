@@ -1,0 +1,6 @@
+name = "scrolls-api"
+main = "build/index.js"
+compatibility_date = "2025-10-21"
+
+[build]
+command = "cargo install -q worker-build && RUSTFLAGS='--cfg getrandom_backend=\"wasm_js\"' worker-build --release"

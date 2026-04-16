@@ -1,0 +1,22 @@
+{
+  "canisters": {
+    "scrolls_bitcoin": {
+      "candid": "src/scrolls_bitcoin/scrolls_bitcoin.did",
+      "package": "scrolls_bitcoin",
+      "type": "rust"
+    },
+    "scrolls_cardano": {
+      "candid": "src/scrolls_cardano/scrolls_cardano.did",
+      "package": "scrolls_cardano",
+      "type": "rust"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

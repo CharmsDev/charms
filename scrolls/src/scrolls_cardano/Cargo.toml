@@ -1,0 +1,32 @@
+[package]
+name = "scrolls_cardano"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { version = "1.0.102" }
+candid = { version = "0.10.26" }
+charms-lib = { version = "14.0.0", path = "../../../charms-lib" }
+cml-chain = { version = "6.2.0", default-features = false }
+cml-core = { version = "6.2.0" }
+getrandom = { version = "0.2", features = ["custom"] }
+hex = { version = "0.4.3" }
+hex-literal = { version = "1.1.0" }
+ic-cdk = { version = "0.19.0" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = { version = "0.9.34" }
+async-trait = "0.1"
+slog = "2.8"
+mithril-client = { version = "0.13", default-features = false, features = ["num-integer-backend"] }
+
+[dev-dependencies]
+cml-chain = { version = "6.2.0" }
+cml-core = { version = "6.2.0" }
+cml-crypto = "6.2.0"
+ed25519-dalek = { version = "2" }
+hex = { version = "0.4.3" }

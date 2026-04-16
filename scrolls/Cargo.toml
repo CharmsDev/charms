@@ -1,0 +1,18 @@
+[workspace]
+members = [
+    "src/scrolls_bitcoin",
+    "src/scrolls_cardano",
+]
+resolver = "2"
+
+[profile.test]
+lto = "off"
+opt-level = 3
+
+[patch.crates-io]
+getrandom = { git = "https://github.com/CharmsDev/getrandom.git", branch = "v0.2.16-nojs" }
+chrono = { git = "https://github.com/CharmsDev/chrono.git", branch = "v0.4.42-nojs" }
+wasm-bindgen = { path = "stubs/wasm-bindgen" }
+wasm-bindgen-macro = { path = "stubs/wasm-bindgen-macro" }
+reqwest = { path = "stubs/reqwest" }
+uuid = { path = "stubs/uuid" }

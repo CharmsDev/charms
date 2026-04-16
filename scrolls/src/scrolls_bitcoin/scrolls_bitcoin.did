@@ -1,0 +1,18 @@
+type Config = record {
+  fee_per_input : nat64;
+  fee_address : vec record { text; text };
+  fixed_cost : nat64;
+  fee_basis_points : nat64;
+};
+type Result = variant { Ok : text; Err : text };
+type SignInput = record { nonce : nat64; index : nat64 };
+type SignRequest = record {
+  prev_txs : vec text;
+  sign_inputs : vec SignInput;
+  tx_to_sign : text;
+};
+service : () -> {
+  address : (text, nat64) -> (Result);
+  config : () -> (Config) query;
+  sign : (text, SignRequest) -> (Result);
+}

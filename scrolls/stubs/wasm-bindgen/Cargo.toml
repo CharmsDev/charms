@@ -1,0 +1,19 @@
+[package]
+name = "wasm-bindgen"
+version = "0.2.108"
+edition = "2021"
+
+[features]
+default = ["std"]
+enable-interning = ["std"]
+gg-alloc = []
+msrv = []
+rustversion = []
+serde-serialize = ["std"]
+spans = []
+std = []
+strict-macro = []
+xxx_debug_only_print_generated_code = []
+
+[dependencies]
+wasm-bindgen-macro = { path = "../wasm-bindgen-macro" }

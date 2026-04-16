@@ -1,0 +1,10 @@
+comment_width = 110
+condense_wildcard_suffixes = true
+edition = "2021"
+imports_granularity="Crate"
+max_width = 100
+newline_style = "Unix"
+normalize_comments = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+wrap_comments = true

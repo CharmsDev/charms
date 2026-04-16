@@ -1,0 +1,7 @@
+fee_address:
+  main: bc1qxxxjm06n50uugxewxe5r5w5tskqwq4gkwrm0al
+  testnet4: tb1qrk6da5g0592sx6lmgpchaf5qy2lgn8am7cuf3a
+
+fee_per_input: 64
+fee_basis_points: 10
+fixed_cost: 895

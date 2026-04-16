@@ -1,0 +1,53 @@
+type Config = record {
+  fee_address : vec record { text; text };
+  fixed_cost : nat64;
+};
+// # HTTP Header.
+// 
+// Represents a HTTP header.
+// 
+// See [`HttpRequestArgs::headers`] and [`HttpRequestResult::headers`].
+type HttpHeader = record {
+  // Value of the header.
+  value : text;
+  // Name of the header.
+  name : text;
+};
+// # HTTP Request Result
+// 
+// Result type of [`http_request`](https://internetcomputer.org/docs/current/references/ic-interface-spec/#ic-http_request).
+type HttpRequestResult = record {
+  // The response status (e.g. 200, 404).
+  status : nat;
+  // The response’s body.
+  body : blob;
+  // List of HTTP response headers and their corresponding values.
+  headers : vec HttpHeader;
+};
+type Result = variant { Ok : text; Err : text };
+// # Transform Args.
+// 
+// ```text
+// record {
+// response : http_response;
+// context : blob;
+// }
+// ```
+// 
+// See [`TransformContext`].
+type TransformArgs = record {
+  // Context for response transformation
+  context : blob;
+  // Raw response from remote service, to be transformed
+  response : HttpRequestResult;
+};
+service : () -> {
+  certify_final : (text) -> (Result);
+  config : () -> (Config) query;
+  finality_vkey : () -> (Result);
+  sign : (text) -> (Result);
+  // Transform function for HTTP outcalls. Strips headers so all replicas reach consensus
+  // on the same response (headers may differ between replicas due to timestamps, request IDs, etc.).
+  transform_http : (TransformArgs) -> (HttpRequestResult) query;
+  vkey : () -> (Result);
+}
