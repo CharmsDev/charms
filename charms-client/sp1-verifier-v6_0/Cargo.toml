@@ -1,8 +1,0 @@
-[package]
-name = "sp1-verifier-v6_0"
-version = "6.0.2"
-edition = "2024"
-publish = false
-
-[dependencies]
-sp1-verifier = { git = "https://github.com/succinctlabs/sp1", tag = "v6.0.2", default-features = false }
