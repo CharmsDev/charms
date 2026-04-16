@@ -187,15 +187,21 @@ pub fn verify_snark_proof(
 ) -> anyhow::Result<()> {
     let groth16_vk = groth16_vk(spell_version, mock)?;
     match mock {
-        false => {
-            if spell_version <= V11 {
+        false => match spell_version {
+            v if v <= V11 => {
                 sp1_verifier_5::Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
                     .map_err(|e| anyhow!("could not verify spell proof: {}", e))
-            } else {
-                Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
-                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
             }
-        }
+            v if v <= V13 => sp1_verifier_v6_0::Groth16Verifier::verify(
+                proof,
+                public_inputs,
+                vk_hash,
+                groth16_vk,
+            )
+            .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
+            _ => Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
+                .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
+        },
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
 }
