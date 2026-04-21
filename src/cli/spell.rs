@@ -115,12 +115,12 @@ impl Prove for SpellCli {
             collateral_utxo,
         };
 
-        // Normalize the prove request so that the emitted payload matches what
-        // would actually be sent to the proving API (e.g., adjust coin contents
-        // based on the selected chain).
-        adjust_coin_contents(&mut prove_request.spell, chain)?;
-
         if payload {
+            // Normalize the prove request so that the emitted payload matches what
+            // would actually be sent to the proving API (e.g., adjust coin contents
+            // based on the selected chain).
+            adjust_coin_contents(&mut prove_request.spell, chain)?;
+
             ensure!(
                 charms_client::is_correct(
                     &prove_request.spell,
