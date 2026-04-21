@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = { version = "1.0.102" }
 candid = { version = "0.10.26" }
-charms-lib = { version = "14.0.0", path = "../../../charms-lib" }
+charms-lib = { version = "14.1.0", path = "../../../charms-lib" }
 cml-chain = { version = "6.2.0", default-features = false }
 cml-core = { version = "6.2.0" }
 getrandom = { version = "0.2", features = ["custom"] }

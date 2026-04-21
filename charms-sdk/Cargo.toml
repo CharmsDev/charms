@@ -10,4 +10,4 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
-charms-data = { path = "../charms-data", version = "14.0.0" }
+charms-data = { path = "../charms-data", version = "14.1.0" }

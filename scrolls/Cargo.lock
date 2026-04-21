@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "charms-app-runner"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "anyhow",
  "charms-data",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "charms-client"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "charms-data"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "anyhow",
  "ark-std 0.5.0",
@@ -852,7 +852,7 @@ dependencies = [
 
 [[package]]
 name = "charms-lib"
-version = "14.0.0"
+version = "14.1.0"
 dependencies = [
  "charms-client",
 ]
