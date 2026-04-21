@@ -2263,8 +2263,6 @@ dependencies = [
  "serde_with",
  "serde_yaml",
  "sha2 0.10.9",
- "sp1-core-machine",
- "sp1-cuda",
  "sp1-prover",
  "sp1-sdk",
  "tokio",
@@ -8397,27 +8395,6 @@ dependencies = [
  "tracing-forest 0.1.6",
  "tracing-subscriber 0.3.23",
  "typenum",
-]
-
-[[package]]
-name = "sp1-cuda"
-version = "6.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d59fee6cc9cd3a9aedf0dfb79b157ea1e4597b4448bb2f40a549fdde16b2eaa"
-dependencies = [
- "bincode",
- "bytes",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sp1-core-executor",
- "sp1-core-machine",
- "sp1-primitives 6.1.0",
- "sp1-prover",
- "sp1-prover-types",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
 ]
 
 [[package]]
