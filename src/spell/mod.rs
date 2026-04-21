@@ -13,11 +13,11 @@ pub use validate::{
 
 pub use charms_client::{
     BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, Proof, SpellProverInput, to_tx,
+    tx::{Chain, Tx},
 };
 
 use anyhow::Context;
 use bitcoin::Amount;
-use charms_client::tx::Tx;
 use charms_data::{App, Data};
 use serde::Deserialize;
 use serde_with::{DisplayFromStr, serde_as};
