@@ -1,7 +1,8 @@
 pub mod prove;
 pub mod prove_spell_tx;
-pub mod request;
 mod validate;
+
+pub use charms_client::request;
 
 // Re-export public API to preserve existing `crate::spell::*` imports.
 pub use prove::{MockProver, Prove, Prover};

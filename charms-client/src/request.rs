@@ -1,4 +1,4 @@
-use charms_client::{
+use crate::{
     BeamSource, NormalizedSpell,
     tx::{Chain, Tx},
 };

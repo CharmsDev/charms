@@ -10,11 +10,10 @@ use crate::{
 };
 use anyhow::bail;
 use charms_client::{
-    CURRENT_VERSION, NormalizedSpell,
+    NormalizedSpell,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::util;
-use const_format::formatcp;
 #[cfg(feature = "prover")]
 use redis::AsyncCommands;
 #[cfg(feature = "prover")]
@@ -27,6 +26,8 @@ use sha2::{Digest, Sha256};
 use std::future::Future;
 #[cfg(feature = "prover")]
 use std::time::Duration;
+
+pub use charms_client::CHARMS_PROVE_API_URL;
 
 pub trait ProveSpellTx: Send + Sync {
     fn new(mock: bool) -> Self;
@@ -50,9 +51,6 @@ pub struct ProveSpellTxImpl {
     #[cfg(not(feature = "prover"))]
     pub client: Client,
 }
-
-const CHARMS_PROVE_API_URL: &'static str =
-    formatcp!("https://v{CURRENT_VERSION}.charms.dev/spells/prove");
 
 #[cfg(feature = "prover")]
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,8 +245,7 @@ impl ProveSpellTx for ProveSpellTxImpl {
                             )
                             .await?;
 
-                        let r: Vec<Tx> =
-                            self.do_prove_spell_tx(prove_request, app_cycles).await?;
+                        let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles).await?;
 
                         let _: () = con
                             .set(

@@ -5,6 +5,7 @@ use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
     is_simple_transfer,
 };
+use const_format::formatcp;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, IfIsHumanReadable, serde_as};
 use sha2::{Digest, Sha256};
@@ -13,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod ark;
 pub mod bitcoin_tx;
 pub mod cardano_tx;
+pub mod request;
 pub mod sorted_app_map;
 pub mod tx;
 
@@ -80,6 +82,9 @@ pub const V14: u32 = 14;
 
 /// Current version of the protocol.
 pub const CURRENT_VERSION: u32 = V14;
+
+pub const CHARMS_PROVE_API_URL: &'static str =
+    formatcp!("https://v{CURRENT_VERSION}.charms.dev/spells/prove");
 
 /// Source of a beamed input: the UTXO that beamed the charms, with an optional nonce.
 ///
