@@ -21,7 +21,7 @@ export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
 In this directory:
 
 ```sh
-cargo build --release --features wasm --target wasm32-unknown-unknown
+cargo build --release --locked --features wasm --target wasm32-unknown-unknown
 
 wasm-bindgen --out-dir target/wasm-bindgen-nodejs --target nodejs ../target/wasm32-unknown-unknown/release/charms_lib.wasm
 ```
@@ -45,7 +45,7 @@ cargo install wasm-pack
 Pack charms-lib for NPM:
 
 ```bash
-wasm-pack build --release --features wasm
+wasm-pack build --locked --release --features wasm
 ```
 
 The NPM package will be in `./pkg` dir.
