@@ -1,5 +1,5 @@
 use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
-use anyhow::{anyhow, ensure};
+use anyhow::{Context, anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
@@ -391,12 +391,10 @@ pub fn is_correct(
     let apps = apps(spell);
 
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
-    let tx_is_simple_transfer_or_app_contracts_satisfied =
-        apps.iter().all(|app| is_simple_transfer(app, &charms_tx)) && app_input.is_none()
-            || app_input.is_some_and(|app_input| {
-                apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)
-            });
-    ensure!(tx_is_simple_transfer_or_app_contracts_satisfied);
+    match app_input {
+        None => ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx))),
+        Some(app_input) => apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)?,
+    }
 
     Ok(true)
 }
@@ -421,7 +419,7 @@ fn apps_satisfied(
     app_input: &AppInput,
     app_public_inputs: &BTreeMap<App, Data>,
     tx: &Transaction,
-) -> bool {
+) -> anyhow::Result<()> {
     let app_runner = AppRunner::new(false);
     app_runner
         .run_all(
@@ -430,8 +428,8 @@ fn apps_satisfied(
             app_public_inputs,
             &app_input.app_private_inputs,
         )
-        .expect("all apps should run successfully");
-    true
+        .context("all apps should run successfully")?;
+    Ok(())
 }
 
 pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
