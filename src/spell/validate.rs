@@ -281,10 +281,14 @@ impl ProveSpellTxImpl {
                             })
                             .ok_or(anyhow!("utxo not found in prev_txs: {}", utxo_id))
                     })
-                    .collect::<anyhow::Result<Vec<_>>>()?
-                    .iter()
-                    .sum();
-                let total_sats_out: u64 = coin_outs.iter().map(|o| o.amount).sum();
+                    .try_fold(0u64, |acc, v| {
+                        acc.checked_add(v?)
+                            .ok_or_else(|| anyhow!("total input sats overflow u64"))
+                    })?;
+                let total_sats_out: u64 = coin_outs.iter().try_fold(0u64, |acc, o| {
+                    acc.checked_add(o.amount)
+                        .ok_or_else(|| anyhow!("total output sats overflow u64"))
+                })?;
 
                 let bitcoin_tx = from_spell(&norm_spell)?;
                 let tx_size = bitcoin_tx.inner().vsize();
@@ -306,8 +310,15 @@ impl ProveSpellTxImpl {
                     estimated_bitcoin_fee
                 );
 
+                let total_sats_required = total_sats_out
+                    .checked_add(charms_fee)
+                    .and_then(|s| s.checked_add(estimated_bitcoin_fee))
+                    .ok_or_else(|| {
+                        anyhow!("total required sats (outputs + fees) overflow u64")
+                    })?;
+
                 ensure!(
-                    total_sats_in > total_sats_out + charms_fee + estimated_bitcoin_fee,
+                    total_sats_in > total_sats_required,
                     "spell inputs must have sufficient value to cover outputs and fees"
                 );
                 Ok(total_cycles)
