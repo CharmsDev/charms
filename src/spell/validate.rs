@@ -50,6 +50,23 @@ pub fn ensure_exact_app_binaries(
     Ok(())
 }
 
+pub fn ensure_unique_spell_inputs(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let spell_ins = spell
+        .tx
+        .ins
+        .as_ref()
+        .ok_or_else(|| anyhow!("spell.tx.ins must be present"))?;
+    let mut seen = BTreeSet::new();
+    for utxo_id in spell_ins {
+        ensure!(
+            seen.insert(utxo_id),
+            "spell.tx.ins contains duplicate UTXO: {}",
+            utxo_id
+        );
+    }
+    Ok(())
+}
+
 pub fn ensure_all_prev_txs_are_present(
     spell: &NormalizedSpell,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
@@ -180,6 +197,7 @@ impl ProveSpellTxImpl {
         let tx_ins_beamed_source_utxos = &prove_request.tx_ins_beamed_source_utxos;
 
         ensure_all_prev_txs_are_present(&norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
+        ensure_unique_spell_inputs(&norm_spell)?;
 
         let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, &norm_spell)?;
 
