@@ -23,13 +23,13 @@ charms-app-runner = { path = "../charms-app-runner", version = "15.0.0" }
 charms-data = { path = "../charms-data", version = "15.0.0" }
 cml-chain = { workspace = true, default-features = false }
 cml-core = { workspace = true, default-features = false }
-const_format = { version = "0.2.35" }
+const_format = { version = "0.2.36" }
 enum_dispatch = { version = "0.3.13" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
 pallas-crypto = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_with = { version = "3.18.0", features = ["hex", "base64"] }
+serde_with = { version = "3.20.0", features = ["hex", "base64"] }
 sha2 = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true, default-features = false }
