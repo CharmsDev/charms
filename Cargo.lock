@@ -2217,7 +2217,7 @@ dependencies = [
 
 [[package]]
 name = "charms"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "charms-app-runner"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "anyhow",
  "charms-data",
@@ -2285,7 +2285,7 @@ dependencies = [
 
 [[package]]
 name = "charms-client"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -2323,7 +2323,7 @@ dependencies = [
 
 [[package]]
 name = "charms-data"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "anyhow",
  "ark-std 0.5.0",
@@ -2341,7 +2341,7 @@ dependencies = [
 
 [[package]]
 name = "charms-lib"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "charms-client",
  "getrandom 0.4.2",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "charms-proof-wrapper"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "sp1-primitives 6.1.0",
  "sp1-sdk",
@@ -2362,7 +2362,7 @@ dependencies = [
 
 [[package]]
 name = "charms-sdk"
-version = "14.1.0"
+version = "15.0.0"
 dependencies = [
  "charms-data",
 ]
