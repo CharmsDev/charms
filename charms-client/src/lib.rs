@@ -395,6 +395,8 @@ pub fn is_correct(
         .collect();
     ensure!(all_prev_txids == prev_spells.keys().collect());
 
+    check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
+
     let apps = apps(spell);
 
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
@@ -415,6 +417,97 @@ pub fn is_correct(
     }
 
     Ok(true)
+}
+
+/// Enforce versioned-app continuity from spent charms to the spending spell:
+///
+/// 1. If the app version stays the same, the Wasm binary hash MUST stay the same.
+/// 2. The app version in the spending spell MUST be the same, higher, or `0`.
+/// 3. If the spent charm's app version is `0`, the spending spell's version MUST also be `0`.
+///
+/// The check is per-input-UTXO, per-app-vk. For beamed inputs, the "previous" spell is the
+/// beam source's spell (since that is where the spent charm's metadata lives).
+pub fn check_app_version_continuity(
+    spell: &NormalizedSpell,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+) -> anyhow::Result<()> {
+    let Some(tx_ins) = &spell.tx.ins else {
+        unreachable!("called after well_formed");
+    };
+
+    for (i, input_utxo_id) in tx_ins.iter().enumerate() {
+        // Resolve which prev spell + utxo carries the spent charms (handling beaming).
+        let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
+            Some(beam_source) => {
+                let beam_source_utxo_id = &beam_source.0;
+                let (prev_spell, _) = &prev_spells[&beam_source_utxo_id.0];
+                (prev_spell, beam_source_utxo_id)
+            }
+            None => {
+                let (prev_spell, _) = &prev_spells[&input_utxo_id.0];
+                (prev_spell, input_utxo_id)
+            }
+        };
+
+        let Some(prev_charms) = charms_in_utxo(source_spell, source_utxo_id) else {
+            continue;
+        };
+
+        for app in prev_charms.keys() {
+            let Some(prev_ver) = source_spell.versioned_apps.get(&app.vk) else {
+                continue;
+            };
+
+            // Only enforce when the spending spell also references this vk.
+            let referenced = spell.app_public_inputs.keys().any(|a| a.vk == app.vk);
+            if !referenced {
+                continue;
+            }
+
+            let cur_ver = spell.versioned_apps.get(&app.vk).ok_or_else(|| {
+                anyhow!(
+                    "spent charm with versioned app {} is referenced in the spending spell, but \
+                     the spending spell does not declare it in `versioned_apps`",
+                    app
+                )
+            })?;
+
+            // Rule 3: prev version 0 is sticky.
+            if prev_ver.version == 0 {
+                ensure!(
+                    cur_ver.version == 0,
+                    "app {}: spent version is 0, spending spell version must also be 0 (got {})",
+                    app,
+                    cur_ver.version
+                );
+            } else {
+                // Rule 2: spending version must be same, higher, or 0.
+                ensure!(
+                    cur_ver.version == 0 || cur_ver.version >= prev_ver.version,
+                    "app {}: spending version ({}) must be 0, equal to, or higher than the \
+                     spent version ({})",
+                    app,
+                    cur_ver.version,
+                    prev_ver.version
+                );
+            }
+
+            // Rule 1: same version implies same Wasm binary hash.
+            if cur_ver.version == prev_ver.version {
+                ensure!(
+                    cur_ver.wasm_hash == prev_ver.wasm_hash,
+                    "app {}: spending and spent versions are both {}, but Wasm hashes differ \
+                     (spent: {}, spending: {})",
+                    app,
+                    cur_ver.version,
+                    prev_ver.wasm_hash,
+                    cur_ver.wasm_hash
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn beaming_txs_have_finality_proofs(
@@ -480,12 +573,234 @@ pub fn beamed_out_to_hash(spell: &NormalizedSpell, i: u32) -> Option<&B32> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use crate::{BeamSource, NormalizedSpell};
-    use charms_data::{UtxoId, util};
+    use charms_data::{App, Data, NativeOutput, UtxoId, VersionedApp, util};
+    use std::str::FromStr;
     use test_strategy::proptest;
 
     #[test]
     fn dummy() {}
+
+    fn b32(hex: &str) -> B32 {
+        B32::from_str(hex).unwrap()
+    }
+
+    /// Build a `(spell, prev_spells)` pair where the spending spell has a single input UTXO
+    /// pointing at a previous spell whose output 0 carries one charm for `app`.
+    fn build_continuity_fixture(
+        app: App,
+        prev_ver: Option<VersionedApp>,
+        cur_ver: Option<VersionedApp>,
+        reference_in_spending: bool,
+    ) -> (NormalizedSpell, BTreeMap<TxId, (NormalizedSpell, usize)>) {
+        let prev_tx_id =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let prev_utxo = UtxoId(prev_tx_id, 0);
+
+        let mut prev_spell = NormalizedSpell::default();
+        prev_spell.tx.ins = Some(vec![]);
+        prev_spell.tx.refs = Some(vec![]);
+        prev_spell.tx.outs = vec![{
+            let mut c = NormalizedCharms::new();
+            c.insert(0, Data::empty());
+            c
+        }];
+        prev_spell.tx.coins.get_or_insert_with(Vec::new).push(NativeOutput {
+            amount: 0,
+            dest: vec![],
+            content: None,
+        });
+        prev_spell.app_public_inputs.insert(app.clone(), Data::empty());
+        if let Some(v) = prev_ver {
+            prev_spell.versioned_apps.insert(app.vk.clone(), v);
+        }
+
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![prev_utxo.clone()]);
+        spell.tx.outs = vec![];
+        if reference_in_spending {
+            spell.app_public_inputs.insert(app.clone(), Data::empty());
+        }
+        if let Some(v) = cur_ver {
+            spell.versioned_apps.insert(app.vk.clone(), v);
+        }
+
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(prev_tx_id, (prev_spell, 1usize));
+        (spell, prev_spells)
+    }
+
+    fn versioned(version: u32, hash_hex: &str) -> VersionedApp {
+        VersionedApp {
+            version,
+            wasm_hash: b32(hash_hex),
+        }
+    }
+
+    fn an_app() -> App {
+        App::from_str(
+            "t/2222222222222222222222222222222222222222222222222222222222222222/\
+             3333333333333333333333333333333333333333333333333333333333333333",
+        )
+        .unwrap()
+    }
+
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn continuity_same_version_same_hash_ok() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            Some(versioned(3, HASH_A)),
+            true,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn continuity_same_version_different_hash_rejected() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            Some(versioned(3, HASH_B)),
+            true,
+        );
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Wasm hashes differ"), "got: {err}");
+    }
+
+    #[test]
+    fn continuity_higher_version_ok() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            Some(versioned(7, HASH_B)),
+            true,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn continuity_lower_version_rejected() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(7, HASH_A)),
+            Some(versioned(3, HASH_B)),
+            true,
+        );
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must be 0, equal to, or higher"), "got: {err}");
+    }
+
+    #[test]
+    fn continuity_drop_to_zero_from_positive_ok() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(5, HASH_A)),
+            Some(versioned(0, HASH_B)),
+            true,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn continuity_zero_to_nonzero_rejected() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(0, HASH_A)),
+            Some(versioned(1, HASH_A)),
+            true,
+        );
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("spent version is 0"), "got: {err}");
+    }
+
+    #[test]
+    fn continuity_zero_to_zero_same_hash_ok() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(0, HASH_A)),
+            Some(versioned(0, HASH_A)),
+            true,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn continuity_zero_to_zero_different_hash_rejected() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(0, HASH_A)),
+            Some(versioned(0, HASH_B)),
+            true,
+        );
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Wasm hashes differ"), "got: {err}");
+    }
+
+    #[test]
+    fn continuity_versioned_in_prev_missing_in_spending_rejected() {
+        let app = an_app();
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            None,
+            true,
+        );
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not declare it in `versioned_apps`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn continuity_skipped_when_spending_does_not_reference_vk() {
+        let app = an_app();
+        // Prev declares versioned, spending doesn't reference the app at all (e.g. burn).
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            None,
+            false,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn continuity_skipped_when_prev_is_not_versioned() {
+        let app = an_app();
+        // Prev treats it as a simple app (no entry in versioned_apps).
+        let (spell, prev_spells) = build_continuity_fixture(
+            app,
+            None,
+            Some(versioned(2, HASH_A)),
+            true,
+        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
 
     #[test]
     fn decode_cbor() {
