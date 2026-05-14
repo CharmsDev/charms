@@ -395,6 +395,7 @@ pub fn is_correct(
         .collect();
     ensure!(all_prev_txids == prev_spells.keys().collect());
 
+    check_prev_versioned_apps_consistency(&prev_spells)?;
     check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
 
     let apps = apps(spell);
@@ -419,11 +420,45 @@ pub fn is_correct(
     Ok(true)
 }
 
+/// Enforce that all `prev_spells` agree on the Wasm binary hash for any `(vk, version)`
+/// pair they share. A spending spell references several previous transactions and each one
+/// independently declares `versioned_apps`; this check rejects the case where two of them
+/// claim the same vk + version but bind it to different binaries.
+pub fn check_prev_versioned_apps_consistency(
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+) -> anyhow::Result<()> {
+    let mut seen: BTreeMap<(&B32, u32), (&B32, &TxId)> = BTreeMap::new();
+    for (tx_id, (prev_spell, _)) in prev_spells {
+        for (vk, va) in &prev_spell.versioned_apps {
+            let key = (vk, va.version);
+            match seen.get(&key) {
+                Some((prev_hash, prev_source)) => {
+                    ensure!(
+                        *prev_hash == &va.wasm_hash,
+                        "inconsistent Wasm hash for versioned app (vk={}, version={}): {} (in tx {}) vs {} (in tx {})",
+                        vk,
+                        va.version,
+                        prev_hash,
+                        prev_source,
+                        va.wasm_hash,
+                        tx_id
+                    );
+                }
+                None => {
+                    seen.insert(key, (&va.wasm_hash, tx_id));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Enforce versioned-app continuity from spent charms to the spending spell:
 ///
 /// 1. If the app version stays the same, the Wasm binary hash MUST stay the same.
 /// 2. The app version in the spending spell MUST be the same, higher, or `0`.
-/// 3. If the spent charm's app version is `0`, the spending spell's version MUST also be `0`.
+/// 3. Version `0` is immutable: if the spent charm's app version is `0`, the spending spell's
+///    version MUST also be `0`.
 ///
 /// The check is per-input-UTXO, per-app-vk. For beamed inputs, the "previous" spell is the
 /// beam source's spell (since that is where the spent charm's metadata lives).
@@ -473,7 +508,7 @@ pub fn check_app_version_continuity(
                 )
             })?;
 
-            // Rule 3: prev version 0 is sticky.
+            // Rule 3: version 0 is immutable.
             if prev_ver.version == 0 {
                 ensure!(
                     cur_ver.version == 0,
@@ -794,6 +829,87 @@ mod test {
         let (spell, prev_spells) =
             build_continuity_fixture(app, None, Some(versioned(2, HASH_A)), true);
         check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    fn prev_spell_with_versioned(vk: &B32, va: VersionedApp) -> NormalizedSpell {
+        let mut s = NormalizedSpell::default();
+        s.tx.ins = Some(vec![]);
+        s.tx.outs = vec![];
+        s.versioned_apps.insert(vk.clone(), va);
+        s
+    }
+
+    #[test]
+    fn prev_versioned_apps_consistent_same_hash_ok() {
+        let app = an_app();
+        let tx1 = TxId::from_str(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let tx2 = TxId::from_str(
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(
+            tx1,
+            (prev_spell_with_versioned(&app.vk, versioned(3, HASH_A)), 1),
+        );
+        prev_spells.insert(
+            tx2,
+            (prev_spell_with_versioned(&app.vk, versioned(3, HASH_A)), 1),
+        );
+        check_prev_versioned_apps_consistency(&prev_spells).unwrap();
+    }
+
+    #[test]
+    fn prev_versioned_apps_different_hash_same_version_rejected() {
+        let app = an_app();
+        let tx1 = TxId::from_str(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let tx2 = TxId::from_str(
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(
+            tx1,
+            (prev_spell_with_versioned(&app.vk, versioned(3, HASH_A)), 1),
+        );
+        prev_spells.insert(
+            tx2,
+            (prev_spell_with_versioned(&app.vk, versioned(3, HASH_B)), 1),
+        );
+        let err = check_prev_versioned_apps_consistency(&prev_spells)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("inconsistent Wasm hash"), "got: {err}");
+    }
+
+    #[test]
+    fn prev_versioned_apps_different_versions_ok() {
+        // Same vk, different versions, different hashes — fine, they're different versions.
+        let app = an_app();
+        let tx1 = TxId::from_str(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let tx2 = TxId::from_str(
+            "2222222222222222222222222222222222222222222222222222222222222222",
+        )
+        .unwrap();
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(
+            tx1,
+            (prev_spell_with_versioned(&app.vk, versioned(3, HASH_A)), 1),
+        );
+        prev_spells.insert(
+            tx2,
+            (prev_spell_with_versioned(&app.vk, versioned(4, HASH_B)), 1),
+        );
+        check_prev_versioned_apps_consistency(&prev_spells).unwrap();
     }
 
     #[test]
