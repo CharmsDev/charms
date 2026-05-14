@@ -601,6 +601,9 @@ impl fmt::Debug for Data {
 pub const TOKEN: char = 't';
 /// Special `App.tag` value for non-fungible tokens (NFTs). See [`App`] for more details.
 pub const NFT: char = 'n';
+/// Special `App.tag` value for scrolls: Bitcoin outputs with such charms can only be created at
+/// Scrolls addresses. It works as any other non-token app for Cardano.
+pub const SCROLL: char = 's';
 
 /// Check if the transaction is a simple transfer of assets specified by `app`.
 pub fn is_simple_transfer(app: &App, tx: &Transaction) -> bool {
