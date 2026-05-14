@@ -372,10 +372,10 @@ impl AppRunner {
 
         if let Some(versioned_app) = versioned_apps.get(&app.vk) {
             let version_func = instance
-                .get_func(&store, "__charms_version")
+                .get_func(&store, "__app_version")
                 .ok_or_else(|| {
                     anyhow::anyhow!(
-                        "versioned app {} does not export `__charms_version`",
+                        "versioned app {} does not export `__app_version`",
                         app
                     )
                 })?;
@@ -383,7 +383,7 @@ impl AppRunner {
             let exported_version = typed.call(&mut store, ())?;
             ensure!(
                 exported_version == versioned_app.version,
-                "Wasm `__charms_version` ({}) does not match spell version ({}) for app {}",
+                "Wasm `__app_version` ({}) does not match spell version ({}) for app {}",
                 exported_version,
                 versioned_app.version,
                 app

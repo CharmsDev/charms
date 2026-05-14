@@ -801,7 +801,7 @@ pub struct AppInput {
 /// binary as the given `version` of the app.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VersionedApp {
-    /// Version number, as exposed by the `__charms_version` export of the Wasm binary.
+    /// Version number, as exposed by the `__app_version` export of the Wasm binary.
     pub version: u32,
     /// SHA256 hash of the Wasm binary that implements this version of the app.
     pub wasm_hash: B32,

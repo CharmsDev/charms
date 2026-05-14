@@ -18,7 +18,7 @@ macro_rules! main {
 ///
 /// Expands to:
 /// - `pub const VERSION: u32 = $version;` for use in the app's Rust code, and
-/// - a `#[no_mangle] extern "C" fn __charms_version() -> u32` export so the version is
+/// - a `#[no_mangle] extern "C" fn __app_version() -> u32` export so the version is
 ///   readable from the compiled Wasm binary.
 ///
 /// Use exactly once at the top of an app's `lib.rs`/`main.rs`. Spell prove and check will
@@ -32,7 +32,7 @@ macro_rules! app_version {
     ($version:expr) => {
         pub const VERSION: u32 = $version;
         #[unsafe(no_mangle)]
-        pub extern "C" fn __charms_version() -> u32 {
+        pub extern "C" fn __app_version() -> u32 {
             VERSION
         }
     };
