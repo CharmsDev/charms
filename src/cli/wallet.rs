@@ -63,7 +63,7 @@ impl List for WalletCli {
                 None => continue,
             };
 
-            let apps: Vec<App> = spell.apps.keys().cloned().collect();
+            let apps: Vec<App> = spell.app_public_inputs.keys().cloned().collect();
 
             for utxo in utxos {
                 if !utxo.solvable {

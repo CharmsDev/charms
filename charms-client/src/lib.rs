@@ -152,11 +152,8 @@ pub struct NormalizedSpell {
     /// Transaction data.
     pub tx: NormalizedTransaction,
     /// Maps all `App`s in the transaction to (potentially empty) public input data.
-    #[serde(
-        alias = "app_public_inputs",
-        deserialize_with = "sorted_app_map::deserialize"
-    )]
-    pub apps: BTreeMap<App, Data>,
+    #[serde(deserialize_with = "sorted_app_map::deserialize")]
+    pub app_public_inputs: BTreeMap<App, Data>,
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub mock: bool,
@@ -167,7 +164,7 @@ impl Default for NormalizedSpell {
         Self {
             version: CURRENT_VERSION,
             tx: Default::default(),
-            apps: Default::default(),
+            app_public_inputs: Default::default(),
             mock: false,
         }
     }
@@ -230,11 +227,11 @@ pub fn well_formed(
             })
     };
     check!({
-        spell
-            .tx
-            .outs
-            .iter()
-            .all(|n_charm| n_charm.keys().all(|&i| i < spell.apps.len() as u32))
+        spell.tx.outs.iter().all(|n_charm| {
+            n_charm
+                .keys()
+                .all(|&i| i < spell.app_public_inputs.len() as u32)
+        })
     });
     // check that UTXOs we're spending or referencing in this tx
     // are created by pre-req transactions
@@ -281,7 +278,7 @@ pub fn well_formed(
 
 /// Return the list of apps in the spell.
 pub fn apps(spell: &NormalizedSpell) -> Vec<App> {
-    spell.apps.keys().cloned().collect()
+    spell.app_public_inputs.keys().cloned().collect()
 }
 
 /// Convert normalized spell to [`charms_data::Transaction`].
@@ -335,7 +332,7 @@ pub fn to_tx(
         coin_ins: Some(tx_ins.iter().map(coin_from_input).collect()),
         coin_outs: spell.tx.coins.clone(),
         prev_txs,
-        app_public_inputs: spell.apps.clone(),
+        app_public_inputs: spell.app_public_inputs.clone(),
     }
 }
 
@@ -396,7 +393,7 @@ pub fn is_correct(
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
     match app_input {
         None => ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx))),
-        Some(app_input) => apps_satisfied(&app_input, &spell.apps, &charms_tx)?,
+        Some(app_input) => apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)?,
     }
 
     Ok(true)
