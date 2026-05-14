@@ -20,10 +20,10 @@ use hex_literal::hex;
 use ic_agent::Agent;
 use pallas_codec::minicbor;
 use pallas_primitives::conway::{
-    self, BoundedBytes, ExUnits, MaybeIndefArray, NonEmptyKeyValuePairs, PlutusData, PlutusScript,
-    PostAlonzoTransactionOutput, PseudoTransactionOutput, Redeemer, RedeemerTag, Redeemers, Value,
-    WitnessSet,
+    self, BoundedBytes, ExUnits, PlutusData, PlutusScript, PostAlonzoTransactionOutput, Redeemer,
+    RedeemerTag, Redeemers, Value, WitnessSet,
 };
+use pallas_primitives::KeepRaw;
 use pallas_txbuilder::{BuildConway, Input, Output, ScriptKind, StagingTransaction};
 use serde::{Deserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
@@ -34,7 +34,7 @@ pub use charms_data::UtxoId;
 type PallasPolicyId = pallas_crypto::hash::Hash<28>;
 type PallasAssetName = pallas_primitives::conway::Bytes;
 type PallasPlutusV3Script = PlutusScript<3>;
-type PallasMultiasset = pallas_primitives::conway::Multiasset<u64>;
+type PallasMultiasset = BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>;
 
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
@@ -70,16 +70,14 @@ fn load_protocol_params() -> ProtocolParams {
     serde_json::from_slice(PROTOCOL_JSON).expect("valid protocol.json")
 }
 
-/// Call ICP canister to sign the transaction
-async fn call_scrolls_sign(tx: &conway::Tx) -> anyhow::Result<conway::Tx> {
+/// Call ICP canister to sign the transaction (CBOR-encoded bytes in/out)
+async fn call_scrolls_sign(tx_cbor: &[u8]) -> anyhow::Result<Vec<u8>> {
     let agent = Agent::builder()
         .with_url("https://ic0.app")
         .build()
         .context("Failed to create ICP agent")?;
 
-    let mut tx_cbor = Vec::new();
-    minicbor::encode(tx, &mut tx_cbor).expect("CBOR encoding should not fail");
-    let tx_hex = hex::encode(&tx_cbor);
+    let tx_hex = hex::encode(tx_cbor);
     dbg!(&tx_hex);
 
     let canister_id =
@@ -99,18 +97,13 @@ async fn call_scrolls_sign(tx: &conway::Tx) -> anyhow::Result<conway::Tx> {
         .map_err(|e| anyhow!("Canister returned error: {}", e))?;
     dbg!(&signed_tx_hex);
 
-    // Parse the signed transaction back to pallas
     let signed_tx_bytes = hex::decode(&signed_tx_hex)?;
-    let signed_tx: conway::Tx = minicbor::decode(&signed_tx_bytes)
-        .map_err(|e| anyhow!("failed to decode signed tx: {}", e))?;
-    Ok(signed_tx)
+    Ok(signed_tx_bytes)
 }
 
-/// Convert pallas Tx to cml-chain Transaction via CBOR
-fn pallas_to_cml_tx(pallas_tx: &conway::Tx) -> anyhow::Result<CmlTransaction> {
-    let mut cbor_bytes = Vec::new();
-    minicbor::encode(pallas_tx, &mut cbor_bytes).expect("CBOR encoding should not fail");
-    CmlTransaction::from_cbor_bytes(&cbor_bytes)
+/// Convert pallas CBOR bytes to cml-chain Transaction
+fn pallas_bytes_to_cml_tx(cbor_bytes: &[u8]) -> anyhow::Result<CmlTransaction> {
+    CmlTransaction::from_cbor_bytes(cbor_bytes)
         .map_err(|e| anyhow!("failed to decode as cml tx: {:?}", e))
 }
 
@@ -125,32 +118,32 @@ fn txbuilder_input(utxo_id: &UtxoId) -> Input {
     Input::new(pallas_tx_hash(utxo_id.0), utxo_id.1 as u64)
 }
 
-/// Convert cml-chain CardanoTx to pallas Tx via CBOR
-fn cml_to_pallas_tx(cardano_tx: &CardanoTx) -> anyhow::Result<conway::Tx> {
-    let cbor_bytes = cardano_tx.inner().to_cbor_bytes();
-    let pallas_tx: conway::Tx = minicbor::decode(&cbor_bytes)
-        .map_err(|e| anyhow!("failed to decode as pallas tx: {}", e))?;
-    Ok(pallas_tx)
-}
-
-fn get_prev_output(
+/// Extracts owned info from a previous tx output. The `TransactionOutput<'_>` value
+/// is bound to the lifetime of internally-decoded CBOR bytes, so we must consume it
+/// inside a closure rather than returning it.
+fn with_prev_output<F, R>(
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     utxo_id: &UtxoId,
-) -> anyhow::Result<conway::TransactionOutput> {
+    f: F,
+) -> anyhow::Result<R>
+where
+    F: FnOnce(&conway::TransactionOutput<'_>) -> R,
+{
     let tx = prev_txs_by_id
         .get(&utxo_id.0)
         .ok_or_else(|| anyhow!("could not find prev_tx by id {}", utxo_id.0))?;
     let Tx::Cardano(cardano_tx) = tx else {
         bail!("expected CardanoTx, got {:?}", tx);
     };
-    let pallas_tx = cml_to_pallas_tx(cardano_tx)?;
+    let cbor_bytes = cardano_tx.inner().to_cbor_bytes();
+    let pallas_tx: conway::Tx = minicbor::decode(&cbor_bytes)
+        .map_err(|e| anyhow!("failed to decode as pallas tx: {}", e))?;
     let output = pallas_tx
         .transaction_body
         .outputs
         .get(utxo_id.1 as usize)
-        .cloned()
         .ok_or_else(|| anyhow!("could not find output by index {}", utxo_id.1))?;
-    Ok(output)
+    Ok(f(output))
 }
 
 fn txbuilder_output(
@@ -223,27 +216,23 @@ fn min_ada_for_output(output_size_bytes: usize, utxo_cost_per_byte: u64) -> u64 
 
 /// Convert cml-chain MultiAsset to pallas Multiasset
 fn cml_to_pallas_multiasset(cml_ma: &MultiAsset) -> PallasMultiasset {
-    let pairs: Vec<_> = cml_ma
-        .iter()
-        .filter_map(|(policy, assets)| {
-            let policy_bytes: [u8; 28] = policy
-                .to_raw_bytes()
-                .try_into()
-                .expect("policy id is 28 bytes");
-            let pallas_policy = PallasPolicyId::new(policy_bytes);
-            let asset_pairs: Vec<_> = assets
-                .iter()
-                .map(|(name, amount)| {
-                    let pallas_name = PallasAssetName::from(name.inner.clone());
-                    (pallas_name, *amount)
-                })
-                .collect();
-            NonEmptyKeyValuePairs::from_vec(asset_pairs)
-                .map(|assets_kvp| (pallas_policy, assets_kvp))
-        })
-        .collect();
-
-    NonEmptyKeyValuePairs::from_vec(pairs).unwrap_or_else(|| NonEmptyKeyValuePairs::Def(vec![]))
+    let mut result: PallasMultiasset = BTreeMap::new();
+    for (policy, assets) in cml_ma.iter() {
+        let policy_bytes: [u8; 28] = policy
+            .to_raw_bytes()
+            .try_into()
+            .expect("policy id is 28 bytes");
+        let pallas_policy = PallasPolicyId::new(policy_bytes);
+        let mut inner: BTreeMap<PallasAssetName, u64> = BTreeMap::new();
+        for (name, amount) in assets.iter() {
+            let pallas_name = PallasAssetName::from(name.inner.clone());
+            inner.insert(pallas_name, *amount);
+        }
+        if !inner.is_empty() {
+            result.insert(pallas_policy, inner);
+        }
+    }
+    result
 }
 
 /// Convert cml-chain PlutusV3Script to pallas PlutusScript<3>
@@ -316,7 +305,7 @@ const SCROLLS_VKEY_HASH: [u8; 28] =
 
 const DEFAULT_FEE_ADDR: &str = "addr1qyp2t40fprytezw5nnlj6qjxn82ck3yhkvdy3ze9muqzvj2x2862gdndh8y3vc3yja94sf98cyyu2qsjhy8y5949w37qyt3lnt";
 
-/// Build a transaction using pallas
+/// Build a transaction using pallas. Returns CBOR-encoded Conway-era tx bytes.
 pub fn from_spell(
     spell: &NormalizedSpell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
@@ -324,7 +313,7 @@ pub fn from_spell(
     spell_data: &[u8],
     collateral_utxo: Option<UtxoId>,
     charms_fee: Option<CharmsFee>,
-) -> anyhow::Result<conway::Tx> {
+) -> anyhow::Result<Vec<u8>> {
     let fee_addr_bytes = fee_addr_bytes(charms_fee)?;
 
     let protocol_params = load_protocol_params();
@@ -358,15 +347,17 @@ pub fn from_spell(
 
     // Collect input assets and spending scripts
     for utxo_id in spell_ins {
-        let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
-        if let Some(ma) = get_output_multiasset(&prev_output) {
+        let prev_ma = with_prev_output(prev_txs_by_id, utxo_id, |output| {
+            get_output_multiasset_owned(output)
+        })?;
+        if let Some(ma) = prev_ma {
             for (policy, assets) in ma.iter() {
                 for (name, amount) in assets.iter() {
                     *input_assets
                         .entry(*policy)
                         .or_default()
                         .entry(name.clone())
-                        .or_default() += u64::from(*amount);
+                        .or_default() += *amount;
                 }
             }
         }
@@ -472,7 +463,7 @@ pub fn from_spell(
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
-    let mint_map = compute_mint_map(&mut input_assets, &mut output_assets);
+    let mint_map = compute_mint_map(&input_assets, &output_assets);
 
     // Add mint assets
     for (policy, assets) in &mint_map {
@@ -507,8 +498,9 @@ pub fn from_spell(
     // Add spend scripts and redeemers for inputs at proxy script addresses
     if !spending_scripts.is_empty() {
         for utxo_id in spell_ins {
-            let prev_output = get_prev_output(prev_txs_by_id, utxo_id)?;
-            let address_bytes = get_output_address_bytes(&prev_output);
+            let address_bytes = with_prev_output(prev_txs_by_id, utxo_id, |output| {
+                get_output_address_bytes(output)
+            })?;
             if let Some(script_hash) = get_script_payment_hash(&address_bytes) {
                 if let Some(script) = spending_scripts.get(&script_hash) {
                     let script_bytes = script.0.to_vec();
@@ -538,7 +530,7 @@ pub fn from_spell(
     // Set language view for PlutusV3 cost model (only if there are scripts)
     if !mint_map.is_empty() || !spending_scripts.is_empty() {
         if let Some(v3_costs) = protocol_params.cost_models.get("PlutusV3") {
-            staging_tx = staging_tx.language_view(ScriptKind::PlutusV3, v3_costs.clone());
+            staging_tx = staging_tx.add_language(ScriptKind::PlutusV3, v3_costs.clone());
         }
     }
 
@@ -558,114 +550,115 @@ pub fn from_spell(
         .build_conway_raw()
         .map_err(|e| anyhow!("build error: {:?}", e))?;
 
-    // Decode the built transaction bytes back to conway::Tx so we can modify it
-    let mut tx: conway::Tx = minicbor::decode(&built_tx.tx_bytes.0)
-        .map_err(|e| anyhow!("failed to decode built tx: {}", e))?;
-
-    // Add Scrolls withdraw-0 redeemer for the reference script
-    // The Scrolls validator just checks that the required vkey is in extra_signatories
-    let scrolls_reward_account = create_reward_account(&SCROLLS_WITHDRAW_SCRIPT_HASH, network_id);
-    tx.transaction_body.withdrawals = Some(
-        NonEmptyKeyValuePairs::from_vec(vec![(
-            scrolls_reward_account,
-            0, // withdraw 0 coins
-        )])
-        .expect("non-empty withdrawals"),
-    );
-
-    // Compute input permutation and store in the withdraw redeemer
-    let permutation = compute_input_permutation(spell_ins);
-    let permutation_bytes = util::write(&permutation)?;
-    let withdraw_redeemer_data = PlutusData::BoundedBytes(BoundedBytes::from(permutation_bytes));
-    let withdraw_redeemer = Redeemer {
-        tag: RedeemerTag::Reward,
-        index: 0, // First (and only) withdrawal
-        data: withdraw_redeemer_data,
-        ex_units: ExUnits {
-            mem: 50000,
-            steps: 30000000,
-        },
-    };
-
-    // Add the withdraw redeemer to the existing redeemers
-    match &mut tx.transaction_witness_set.redeemer {
-        Some(Redeemers::List(MaybeIndefArray::Def(list))) => {
-            list.push(withdraw_redeemer);
-        }
-        Some(Redeemers::List(MaybeIndefArray::Indef(list))) => {
-            list.push(withdraw_redeemer);
-        }
-        None => {
-            tx.transaction_witness_set.redeemer =
-                Some(Redeemers::List(MaybeIndefArray::Def(vec![
-                    withdraw_redeemer,
-                ])));
-        }
-        _ => bail!("Unexpected redeemer format"),
-    }
-
-    // Recompute script_data_hash since we added a redeemer
-    let new_script_data_hash =
-        compute_script_data_hash(&tx.transaction_witness_set, &protocol_params)?;
-    tx.transaction_body.script_data_hash = Some(new_script_data_hash);
-
-    // Calculate total input value from spell inputs
+    // Calculate total input value from spell inputs (independent of the tx, so do it before the
+    // borrowing-scoped decode below).
     let total_input: u64 = spell_ins
         .iter()
         .map(|id| {
-            get_prev_output(prev_txs_by_id, id)
-                .map(|o| get_output_coin(&o))
-                .unwrap_or(0)
+            with_prev_output(prev_txs_by_id, id, |o| get_output_coin(o)).unwrap_or(0)
         })
         .sum();
 
-    // Calculate fee
-    // The base fee formula is: txFeeFixed + txFeePerByte * tx_size
-    // Plus reference script fee which follows a tiered formula based on script size
-    // The Scrolls V10 reference script is ~4700 bytes on-chain (the full PlutusV3 script),
-    // which results in approximately 70000 lovelace of reference script fees.
-    const REF_SCRIPT_FEE_ESTIMATE: u64 = 75000; // Conservative estimate for V10 ref script
+    // Decode-modify-encode within a scope so the borrowed Tx<'_> lifetime is contained.
+    let initial_bytes = built_tx.tx_bytes.0;
+    let final_bytes = {
+        let mut tx: conway::Tx = minicbor::decode(&initial_bytes)
+            .map_err(|e| anyhow!("failed to decode built tx: {}", e))?;
 
-    // Signature overhead: payment key vkeywitness (~102 bytes)
-    const SIGNATURE_OVERHEAD: u64 = 110;
+        // Add Scrolls withdraw-0 redeemer for the reference script
+        // The Scrolls validator just checks that the required vkey is in extra_signatories
+        let scrolls_reward_account =
+            create_reward_account(&SCROLLS_WITHDRAW_SCRIPT_HASH, network_id);
+        let mut withdrawals: BTreeMap<pallas_primitives::conway::Bytes, u64> = BTreeMap::new();
+        withdrawals.insert(scrolls_reward_account, 0);
+        tx.transaction_body.withdrawals = Some(withdrawals);
 
-    // Calculate current tx size
-    let tx_size = {
+        // Compute input permutation and store in the withdraw redeemer
+        let permutation = compute_input_permutation(spell_ins);
+        let permutation_bytes = util::write(&permutation)?;
+        let withdraw_redeemer_data =
+            PlutusData::BoundedBytes(BoundedBytes::from(permutation_bytes));
+        let withdraw_redeemer = Redeemer {
+            tag: RedeemerTag::Reward,
+            index: 0, // First (and only) withdrawal
+            data: withdraw_redeemer_data,
+            ex_units: ExUnits {
+                mem: 50000,
+                steps: 30000000,
+            },
+        };
+
+        // Add the withdraw redeemer to the existing redeemers
+        match tx.transaction_witness_set.redeemer.as_mut() {
+            Some(keep_raw) => match &mut **keep_raw {
+                Redeemers::List(list) => list.push(withdraw_redeemer),
+                _ => bail!("Unexpected redeemer format"),
+            },
+            None => {
+                tx.transaction_witness_set.redeemer =
+                    Some(KeepRaw::from(Redeemers::List(vec![withdraw_redeemer])));
+            }
+        }
+
+        // Recompute script_data_hash since we added a redeemer
+        let new_script_data_hash =
+            compute_script_data_hash(&tx.transaction_witness_set, &protocol_params)?;
+        tx.transaction_body.script_data_hash = Some(new_script_data_hash);
+
+        // Calculate fee
+        // The base fee formula is: txFeeFixed + txFeePerByte * tx_size
+        // Plus reference script fee which follows a tiered formula based on script size
+        // The Scrolls V10 reference script is ~4700 bytes on-chain (the full PlutusV3 script),
+        // which results in approximately 70000 lovelace of reference script fees.
+        const REF_SCRIPT_FEE_ESTIMATE: u64 = 75000; // Conservative estimate for V10 ref script
+
+        // Signature overhead: payment key vkeywitness (~102 bytes)
+        const SIGNATURE_OVERHEAD: u64 = 110;
+
+        // Calculate current tx size
+        let tx_size = {
+            let mut buf = Vec::new();
+            minicbor::encode(&tx, &mut buf).expect("CBOR encoding should not fail");
+            buf.len() as u64
+        };
+
+        // Base fee for tx body + signature overhead + change output overhead
+        let base_fee = protocol_params.tx_fee_fixed
+            + (protocol_params.tx_fee_per_byte * (tx_size + SIGNATURE_OVERHEAD + 70));
+
+        // Total fee including reference script
+        let fee = base_fee + REF_SCRIPT_FEE_ESTIMATE;
+
+        tx.transaction_body.fee = fee;
+
+        // Calculate outputs total
+        let total_output: u64 = tx
+            .transaction_body
+            .outputs
+            .iter()
+            .map(|o| get_output_coin(o))
+            .sum();
+
+        // Add change output if needed
+        if total_input > total_output + fee {
+            let change_amount = total_input - total_output - fee;
+            let change_output = conway::TransactionOutput::PostAlonzo(KeepRaw::from(
+                PostAlonzoTransactionOutput {
+                    address: pallas_primitives::conway::Bytes::from(change_address.to_vec()),
+                    value: Value::Coin(change_amount),
+                    datum_option: None,
+                    script_ref: None,
+                },
+            ));
+            tx.transaction_body.outputs.push(change_output);
+        }
+
         let mut buf = Vec::new();
         minicbor::encode(&tx, &mut buf).expect("CBOR encoding should not fail");
-        buf.len() as u64
+        buf
     };
 
-    // Base fee for tx body + signature overhead + change output overhead
-    let base_fee = protocol_params.tx_fee_fixed
-        + (protocol_params.tx_fee_per_byte * (tx_size + SIGNATURE_OVERHEAD + 70));
-
-    // Total fee including reference script
-    let fee = base_fee + REF_SCRIPT_FEE_ESTIMATE;
-
-    tx.transaction_body.fee = fee;
-
-    // Calculate outputs total
-    let total_output: u64 = tx
-        .transaction_body
-        .outputs
-        .iter()
-        .map(|o| get_output_coin(o))
-        .sum();
-
-    // Add change output if needed
-    if total_input > total_output + fee {
-        let change_amount = total_input - total_output - fee;
-        let change_output = PseudoTransactionOutput::PostAlonzo(PostAlonzoTransactionOutput {
-            address: pallas_primitives::conway::Bytes::from(change_address.to_vec()),
-            value: Value::Coin(change_amount),
-            datum_option: None,
-            script_ref: None,
-        });
-        tx.transaction_body.outputs.push(change_output);
-    }
-
-    Ok(tx)
+    Ok(final_bytes)
 }
 
 fn fee_addr_bytes(charms_fee: Option<CharmsFee>) -> anyhow::Result<Vec<u8>> {
@@ -725,55 +718,61 @@ fn compute_mint_map(
     mint_map
 }
 
-fn get_output_coin(output: &conway::TransactionOutput) -> u64 {
+fn get_output_coin(output: &conway::TransactionOutput<'_>) -> u64 {
     match output {
-        PseudoTransactionOutput::Legacy(legacy) => match &legacy.amount {
+        conway::TransactionOutput::Legacy(legacy) => match &legacy.amount {
             pallas_primitives::alonzo::Value::Coin(c) => *c,
             pallas_primitives::alonzo::Value::Multiasset(c, _) => *c,
         },
-        PseudoTransactionOutput::PostAlonzo(post) => match &post.value {
+        conway::TransactionOutput::PostAlonzo(post) => match &post.value {
             Value::Coin(c) => *c,
             Value::Multiasset(c, _) => *c,
         },
     }
 }
 
-fn get_output_multiasset(
-    output: &conway::TransactionOutput,
-) -> Option<conway::Multiasset<pallas_primitives::conway::PositiveCoin>> {
+/// Returns the multiasset content of the output as an owned BTreeMap of u64 amounts.
+fn get_output_multiasset_owned(output: &conway::TransactionOutput<'_>) -> Option<PallasMultiasset> {
     match output {
-        PseudoTransactionOutput::Legacy(legacy) => match &legacy.amount {
+        conway::TransactionOutput::Legacy(legacy) => match &legacy.amount {
             pallas_primitives::alonzo::Value::Coin(_) => None,
             pallas_primitives::alonzo::Value::Multiasset(_, ma) => {
-                // Convert alonzo to conway format
-                let pairs: Vec<_> = ma
-                    .iter()
-                    .filter_map(|(p, assets)| {
-                        let converted: Vec<_> = assets
-                            .iter()
-                            .filter_map(|(n, a)| {
-                                pallas_primitives::conway::PositiveCoin::try_from(*a)
-                                    .ok()
-                                    .map(|pc| (n.clone(), pc))
-                            })
-                            .collect();
-                        NonEmptyKeyValuePairs::from_vec(converted).map(|kvp| (*p, kvp))
-                    })
-                    .collect();
-                NonEmptyKeyValuePairs::from_vec(pairs)
+                let mut result: PallasMultiasset = BTreeMap::new();
+                for (p, assets) in ma.iter() {
+                    let inner: BTreeMap<PallasAssetName, u64> = assets
+                        .iter()
+                        .map(|(n, a)| (n.clone(), *a))
+                        .collect();
+                    if !inner.is_empty() {
+                        result.insert(*p, inner);
+                    }
+                }
+                if result.is_empty() { None } else { Some(result) }
             }
         },
-        PseudoTransactionOutput::PostAlonzo(post) => match &post.value {
+        conway::TransactionOutput::PostAlonzo(post) => match &post.value {
             Value::Coin(_) => None,
-            Value::Multiasset(_, ma) => Some(ma.clone()),
+            Value::Multiasset(_, ma) => {
+                let mut result: PallasMultiasset = BTreeMap::new();
+                for (p, assets) in ma.iter() {
+                    let inner: BTreeMap<PallasAssetName, u64> = assets
+                        .iter()
+                        .map(|(n, a)| (n.clone(), u64::from(*a)))
+                        .collect();
+                    if !inner.is_empty() {
+                        result.insert(*p, inner);
+                    }
+                }
+                if result.is_empty() { None } else { Some(result) }
+            }
         },
     }
 }
 
-fn get_output_address_bytes(output: &conway::TransactionOutput) -> Vec<u8> {
+fn get_output_address_bytes(output: &conway::TransactionOutput<'_>) -> Vec<u8> {
     match output {
-        PseudoTransactionOutput::Legacy(legacy) => legacy.address.to_vec(),
-        PseudoTransactionOutput::PostAlonzo(post) => post.address.to_vec(),
+        conway::TransactionOutput::Legacy(legacy) => legacy.address.to_vec(),
+        conway::TransactionOutput::PostAlonzo(post) => post.address.to_vec(),
     }
 }
 
@@ -821,7 +820,7 @@ fn raw_redeemer_bytes(protocol_version: u32) -> Vec<u8> {
 }
 
 fn compute_script_data_hash(
-    witness_set: &WitnessSet,
+    witness_set: &WitnessSet<'_>,
     protocol_params: &ProtocolParams,
 ) -> anyhow::Result<pallas_crypto::hash::Hash<32>> {
     // script_data_hash = hash(redeemers || datums || language_views)
@@ -864,12 +863,12 @@ pub async fn make_transactions(
     _total_cycles: u64,
     collateral_utxo: Option<UtxoId>,
 ) -> Result<Vec<Tx>, Error> {
-    let underlying_tx = underlying_tx
+    let underlying_tx_bytes = underlying_tx
         .map(|tx| {
             let Tx::Cardano(cardano_tx) = tx else {
                 bail!("not a Cardano transaction");
             };
-            Ok(cardano_tx.inner().clone())
+            Ok(cardano_tx.inner().to_cbor_bytes())
         })
         .transpose()?;
 
@@ -878,7 +877,7 @@ pub async fn make_transactions(
         .map_err(|e| anyhow!("invalid bech32 address: {:?}", e))?;
     let change_address_bytes = change_address_parsed.to_vec();
 
-    let tx = from_spell(
+    let tx_bytes = from_spell(
         spell,
         prev_txs_by_id,
         &change_address_bytes,
@@ -887,27 +886,23 @@ pub async fn make_transactions(
         charms_fee,
     )?;
 
-    let tx = match underlying_tx {
-        Some(u_tx) => {
-            // Convert cml-chain Transaction to pallas Tx for combining
-            let pallas_u_tx = cml_to_pallas_tx(&CardanoTx::Simple(u_tx))?;
-            combine(pallas_u_tx, tx)
-        }
-        None => tx,
+    let tx_bytes = match underlying_tx_bytes {
+        Some(u_tx_bytes) => combine(&u_tx_bytes, &tx_bytes),
+        None => tx_bytes,
     };
 
     // Get the real Schnorr signature from ICP canister.
     // The canister signs tx_body.hash() BEFORE replacing the redeemer, then replaces
     // the dummy redeemer with the actual signature.
-    let signed_tx = call_scrolls_sign(&tx).await?;
+    let signed_tx_bytes = call_scrolls_sign(&tx_bytes).await?;
 
-    // Convert pallas Tx back to cml-chain Transaction for CardanoTx
-    let cml_tx = pallas_to_cml_tx(&signed_tx)?;
+    // Convert pallas Tx CBOR back to cml-chain Transaction for CardanoTx
+    let cml_tx = pallas_bytes_to_cml_tx(&signed_tx_bytes)?;
 
     Ok(vec![Tx::Cardano(CardanoTx::Simple(cml_tx))])
 }
 
-fn combine(_base_tx: conway::Tx, _tx: conway::Tx) -> conway::Tx {
+fn combine(_base_tx_bytes: &[u8], _tx_bytes: &[u8]) -> Vec<u8> {
     todo!()
 }
 
@@ -985,7 +980,7 @@ mod tests {
         }
 
         if let Some(ref redeemers) = tx.transaction_witness_set.redeemer {
-            match redeemers {
+            match &**redeemers {
                 Redeemers::List(list) => {
                     eprintln!("\nRedeemers (List): {} redeemers", list.len());
                     for r in list.iter() {
@@ -1108,7 +1103,7 @@ mod tests {
         // Print redeemer details
         if let Some(ref redeemers) = tx.transaction_witness_set.redeemer {
             eprintln!("\nRedeemer details:");
-            match redeemers {
+            match &**redeemers {
                 Redeemers::List(list) => {
                     for (i, r) in list.iter().enumerate() {
                         let mut data_cbor = Vec::new();
@@ -1142,7 +1137,14 @@ mod tests {
         // Now simulate what the canister saw:
         // Replace the signature with dummy (64 bytes of zeros) and recompute
         let mut tx_with_dummy = tx.clone();
-        if let Some(Redeemers::List(ref list)) = tx_with_dummy.transaction_witness_set.redeemer {
+        let redeemer_list_clone = match tx_with_dummy.transaction_witness_set.redeemer.as_ref() {
+            Some(kr) => match &**kr {
+                Redeemers::List(list) => Some(list.clone()),
+                _ => None,
+            },
+            None => None,
+        };
+        if let Some(list) = redeemer_list_clone {
             let mut new_redeemers: Vec<Redeemer> = Vec::new();
             for r in list.iter() {
                 let mut new_r = r.clone();
@@ -1152,7 +1154,7 @@ mod tests {
                 new_redeemers.push(new_r);
             }
             tx_with_dummy.transaction_witness_set.redeemer =
-                Some(Redeemers::List(MaybeIndefArray::Def(new_redeemers)));
+                Some(KeepRaw::from(Redeemers::List(new_redeemers)));
         }
 
         // Compute script_data_hash with dummy redeemer
