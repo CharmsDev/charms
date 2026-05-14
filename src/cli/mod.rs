@@ -180,6 +180,12 @@ pub struct SpellProveParams {
     #[arg(long)]
     app_bins: Vec<PathBuf>,
 
+    /// Path to a YAML/JSON file mapping a versioned app's `vk` (hex) to its
+    /// `{public_key, signature}` (hex). Required for versioned apps; omitted for simple
+    /// (immutable) apps.
+    #[arg(long)]
+    app_signatures: Option<PathBuf>,
+
     /// Bitcoin or Cardano address to send the change to.
     #[arg(long)]
     change_address: String,
@@ -218,6 +224,12 @@ pub struct SpellCheckParams {
     /// Paths to app Wasm binaries (.wasm files).
     #[arg(long)]
     app_bins: Vec<PathBuf>,
+
+    /// Path to a YAML/JSON file mapping a versioned app's `vk` (hex) to its
+    /// `{public_key, signature}` (hex). Required for versioned apps; omitted for simple
+    /// (immutable) apps.
+    #[arg(long)]
+    app_signatures: Option<PathBuf>,
 
     /// Hex-encoded pre-requisite transactions.
     /// Must include the transactions that create the UTXOs spent by the spell.
@@ -338,12 +350,47 @@ pub enum AppCommands {
     /// Prints the path to the built .wasm binary to stdout.
     Build,
 
-    /// Show verification key (SHA-256 of Wasm binary) for an app.
+    /// Show verification key (VK) for an app.
     ///
+    /// For a simple (immutable) app the VK is SHA-256 of the Wasm binary.
+    /// For a versioned app, pass `--pubkey` to compute SHA-256 of the signing public key.
     /// Prints the hex-encoded VK to stdout.
     Vk {
-        /// Path to app Wasm binary (builds the app if omitted).
+        /// Path to app Wasm binary (builds the app if omitted, ignored when --pubkey is set).
         path: Option<PathBuf>,
+
+        /// Path to a 32-byte raw Ed25519 public key (or app keypair JSON). When set, prints
+        /// the VK of the corresponding versioned app (SHA-256 of the public key).
+        #[arg(long)]
+        pubkey: Option<PathBuf>,
+    },
+
+    /// Generate a new Ed25519 signing keypair for a versioned app.
+    ///
+    /// Writes a JSON object with hex-encoded `public_key`, `secret_key`, and computed `vk`
+    /// (SHA-256 of public key) to `--out` (or stdout if omitted).
+    Keygen {
+        /// Path to write the keypair JSON to. Prints to stdout if omitted.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+
+    /// Sign a Wasm binary's SHA-256 hash with an app signing key.
+    ///
+    /// Writes a JSON `{public_key, signature}` (hex) to `--out` (or stdout). The signature
+    /// is an Ed25519 signature over the binary's SHA-256 hash.
+    Sign {
+        /// Path to the keypair JSON produced by `app keygen`.
+        #[arg(long)]
+        key: PathBuf,
+
+        /// Path to the Wasm binary to sign (builds the app if omitted).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+
+        /// Path to write the signature JSON to. Prints to stdout if omitted.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -418,8 +465,10 @@ pub async fn run() -> anyhow::Result<()> {
         },
         Commands::App { command } => match command {
             AppCommands::New { name } => app::new(&name),
-            AppCommands::Vk { path } => app::vk(path),
+            AppCommands::Vk { path, pubkey } => app::vk(path, pubkey),
             AppCommands::Build => app::build(),
+            AppCommands::Keygen { out } => app::keygen(out),
+            AppCommands::Sign { key, bin, out } => app::sign(key, bin, out),
         },
         Commands::Wallet { command } => {
             let wallet_cli = wallet_cli();

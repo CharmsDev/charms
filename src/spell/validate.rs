@@ -8,7 +8,7 @@ use charms_client::{
     cardano_tx::OutputContent,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::{App, AppInput, B32, Data, TxId, util};
+use charms_data::{App, AppInput, AppSignature, B32, Data, TxId, util};
 use charms_lib::SPELL_VK;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -23,7 +23,7 @@ pub fn ensure_exact_app_binaries(
     tx: &charms_data::Transaction,
     binaries: &BTreeMap<B32, Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let required_vks: BTreeSet<_> = norm_spell
+    let required_binary_hashes: BTreeSet<B32> = norm_spell
         .app_public_inputs
         .iter()
         .filter(|(app, data)| {
@@ -33,20 +33,57 @@ pub fn ensure_exact_app_binaries(
                     .is_none_or(|data| data.is_empty())
                 || !charms_data::is_simple_transfer(app, tx)
         })
-        .map(|(app, _)| &app.vk)
+        .map(|(app, _)| match norm_spell.versioned_apps.get(&app.vk) {
+            Some(va) => va.wasm_hash.clone(),
+            None => app.vk.clone(),
+        })
         .collect();
 
-    let provided_vks: BTreeSet<_> = binaries.keys().collect();
+    let provided_binary_hashes: BTreeSet<B32> = binaries.keys().cloned().collect();
 
     ensure!(
-        required_vks == provided_vks,
+        required_binary_hashes == provided_binary_hashes,
         "binaries must contain exactly the required app binaries.\n\
-         Required VKs: {:?}\n\
-         Provided VKs: {:?}",
+         Required binary hashes: {:?}\n\
+         Provided binary hashes: {:?}",
+        required_binary_hashes,
+        provided_binary_hashes
+    );
+
+    Ok(())
+}
+
+/// For every versioned app referenced in the spell (whose `vk` appears in
+/// [`NormalizedSpell::versioned_apps`]), `app_signatures` must provide a matching
+/// [`AppSignature`]. Conversely, no extraneous signatures may be present.
+pub fn ensure_versioned_apps_have_signatures(
+    norm_spell: &NormalizedSpell,
+    app_signatures: &BTreeMap<B32, AppSignature>,
+) -> anyhow::Result<()> {
+    let required_vks: BTreeSet<&B32> = norm_spell
+        .app_public_inputs
+        .keys()
+        .filter(|app| norm_spell.versioned_apps.contains_key(&app.vk))
+        .map(|app| &app.vk)
+        .collect();
+    let provided_vks: BTreeSet<&B32> = app_signatures.keys().collect();
+    ensure!(
+        required_vks == provided_vks,
+        "app_signatures must contain exactly one entry per versioned app referenced in the spell.\n\
+         Required app vks: {:?}\n\
+         Provided app vks: {:?}",
         required_vks,
         provided_vks
     );
-
+    // Each versioned_apps entry must correspond to at least one referenced app.
+    let app_vks: BTreeSet<&B32> = norm_spell.app_public_inputs.keys().map(|app| &app.vk).collect();
+    for vk in norm_spell.versioned_apps.keys() {
+        ensure!(
+            app_vks.contains(vk),
+            "versioned_apps contains unused vk: {}",
+            vk
+        );
+    }
     Ok(())
 }
 
@@ -215,11 +252,15 @@ impl ProveSpellTxImpl {
             &prove_request.binaries,
         )?;
 
+        let app_signatures = prove_request.app_signatures.clone();
+        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
+
         let app_input = match prove_request.binaries.is_empty() {
             true => None,
             false => Some(AppInput {
                 app_binaries: prove_request.binaries.clone(),
                 app_private_inputs: app_private_inputs.clone(),
+                app_signatures: app_signatures.clone(),
             }),
         };
 
@@ -238,6 +279,8 @@ impl ProveSpellTxImpl {
         let total_cycles = if let Some(app_input) = &app_input {
             let cycles = AppRunner::new(true).run_all(
                 &app_input.app_binaries,
+                &norm_spell.versioned_apps,
+                &app_input.app_signatures,
                 &tx,
                 &norm_spell.app_public_inputs,
                 &app_input.app_private_inputs,

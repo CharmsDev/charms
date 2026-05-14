@@ -19,7 +19,7 @@ use ark_std::{
     test_rng,
 };
 use charms_client::{BeamSource, MOCK_SPELL_VK, NormalizedSpell, Proof, SpellProverInput};
-use charms_data::{App, AppInput, B32, Data, util};
+use charms_data::{App, AppInput, AppSignature, B32, Data, util};
 use charms_lib::SPELL_VK;
 use sha2::{Digest, Sha256};
 use sp1_prover::HashableKey;
@@ -72,6 +72,7 @@ pub trait Prove: Send + Sync {
         &self,
         norm_spell: NormalizedSpell,
         app_binaries: BTreeMap<B32, Vec<u8>>,
+        app_signatures: BTreeMap<B32, AppSignature>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
@@ -107,6 +108,7 @@ impl Prove for Prover {
         &self,
         norm_spell: NormalizedSpell,
         app_binaries: BTreeMap<B32, Vec<u8>>,
+        app_signatures: BTreeMap<B32, AppSignature>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
@@ -121,6 +123,7 @@ impl Prove for Prover {
             false => Some(AppInput {
                 app_binaries,
                 app_private_inputs,
+                app_signatures,
             }),
         };
 
@@ -171,6 +174,7 @@ impl Prove for MockProver {
         &self,
         norm_spell: NormalizedSpell,
         app_binaries: BTreeMap<B32, Vec<u8>>,
+        app_signatures: BTreeMap<B32, AppSignature>,
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
@@ -182,6 +186,7 @@ impl Prove for MockProver {
             false => Some(AppInput {
                 app_binaries,
                 app_private_inputs,
+                app_signatures,
             }),
         };
 

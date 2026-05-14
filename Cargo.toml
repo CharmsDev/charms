@@ -104,9 +104,11 @@ clap = { version = "4.6.1", features = ["derive"] }
 clap_complete = { version = "4.6.5", features = ["unstable-dynamic"] }
 cml-chain = { workspace = true }
 cml-core = { workspace = true }
+getrandom = { version = "0.2" }
 hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
 ic-agent = { version = "0.47" }
+secp256k1 = { version = "0.29", features = ["std"] }
 pallas-addresses = { workspace = true }
 pallas-codec = { workspace = true }
 pallas-crypto = { workspace = true }

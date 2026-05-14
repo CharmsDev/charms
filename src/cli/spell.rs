@@ -3,8 +3,8 @@ use crate::{
     cli::{Output, SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
-        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
-        read_private_inputs,
+        ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
+        ensure_versioned_apps_have_signatures, from_strings, read_private_inputs,
     },
 };
 use anyhow::{Result, ensure};
@@ -13,10 +13,10 @@ use charms_client::{
     CURRENT_VERSION,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::{UtxoId, util};
+use charms_data::{AppSignature, B32, UtxoId, util};
 use charms_lib::SPELL_VK;
 use serde_json::json;
-use std::{future::Future, io::Write, str::FromStr};
+use std::{collections::BTreeMap, future::Future, io::Write, str::FromStr};
 
 pub trait Check {
     fn check(&self, params: SpellCheckParams) -> Result<()>;
@@ -65,6 +65,7 @@ impl Prove for SpellCli {
             beamed_from,
             prev_txs,
             app_bins,
+            app_signatures,
             change_address,
             fee_rate,
             chain,
@@ -95,11 +96,17 @@ impl Prove for SpellCli {
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+        let app_signatures: BTreeMap<B32, AppSignature> = app_signatures
+            .map(|p| cli::app::read_app_signatures(&p))
+            .transpose()?
+            .unwrap_or_default();
+        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
         let app_input = match binaries.is_empty() {
             true => None,
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),
                 app_private_inputs: app_private_inputs.clone(),
+                app_signatures: app_signatures.clone(),
             }),
         };
 
@@ -108,6 +115,7 @@ impl Prove for SpellCli {
             app_private_inputs,
             tx_ins_beamed_source_utxos,
             binaries,
+            app_signatures,
             prev_txs,
             change_address,
             fee_rate,
@@ -178,6 +186,7 @@ impl Check for SpellCli {
             private_inputs,
             beamed_from,
             app_bins,
+            app_signatures,
             prev_txs,
             chain,
             mock,
@@ -207,6 +216,11 @@ impl Check for SpellCli {
         )?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+        let app_signatures: BTreeMap<B32, AppSignature> = app_signatures
+            .map(|p| cli::app::read_app_signatures(&p))
+            .transpose()?
+            .unwrap_or_default();
+        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
 
@@ -224,6 +238,7 @@ impl Check for SpellCli {
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),
                 app_private_inputs: app_private_inputs.clone(),
+                app_signatures: app_signatures.clone(),
             }),
         };
 
@@ -240,6 +255,8 @@ impl Check for SpellCli {
 
         let cycles_spent = self.app_runner.run_all(
             &binaries,
+            &norm_spell.versioned_apps,
+            &app_signatures,
             &charms_tx,
             &norm_spell.app_public_inputs,
             &app_private_inputs,

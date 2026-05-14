@@ -2,8 +2,8 @@ use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
 use anyhow::{Context, anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, check,
-    is_simple_transfer,
+    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, VersionedApp,
+    check, is_simple_transfer,
 };
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
@@ -154,6 +154,12 @@ pub struct NormalizedSpell {
     /// Maps all `App`s in the transaction to (potentially empty) public input data.
     #[serde(deserialize_with = "sorted_app_map::deserialize")]
     pub app_public_inputs: BTreeMap<App, Data>,
+    /// For versioned app modules: maps an app's `vk` (SHA256 of its signing public key) to the
+    /// `version` number and Wasm `wasm_hash` that this spell binds the app to. Apps whose `vk`
+    /// is absent from this map are simple (immutable): their `vk` is the SHA256 of their Wasm
+    /// binary directly.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub versioned_apps: BTreeMap<B32, VersionedApp>,
     /// Is this a mock spell?
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub mock: bool,
@@ -165,6 +171,7 @@ impl Default for NormalizedSpell {
             version: CURRENT_VERSION,
             tx: Default::default(),
             app_public_inputs: Default::default(),
+            versioned_apps: Default::default(),
             mock: false,
         }
     }
@@ -392,8 +399,19 @@ pub fn is_correct(
 
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
     match app_input {
-        None => ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx))),
-        Some(app_input) => apps_satisfied(&app_input, &spell.app_public_inputs, &charms_tx)?,
+        None => {
+            ensure!(
+                spell.versioned_apps.is_empty(),
+                "versioned apps require signatures and binaries"
+            );
+            ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx)));
+        }
+        Some(app_input) => apps_satisfied(
+            &app_input,
+            &spell.versioned_apps,
+            &spell.app_public_inputs,
+            &charms_tx,
+        )?,
     }
 
     Ok(true)
@@ -417,6 +435,7 @@ fn beaming_txs_have_finality_proofs(
 
 fn apps_satisfied(
     app_input: &AppInput,
+    versioned_apps: &BTreeMap<B32, VersionedApp>,
     app_public_inputs: &BTreeMap<App, Data>,
     tx: &Transaction,
 ) -> anyhow::Result<()> {
@@ -424,6 +443,8 @@ fn apps_satisfied(
     app_runner
         .run_all(
             &app_input.app_binaries,
+            versioned_apps,
+            &app_input.app_signatures,
             &tx,
             app_public_inputs,
             &app_input.app_private_inputs,

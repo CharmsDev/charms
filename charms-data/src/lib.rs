@@ -788,4 +788,36 @@ mod tests {
 pub struct AppInput {
     pub app_binaries: BTreeMap<B32, Vec<u8>>,
     pub app_private_inputs: BTreeMap<App, Data>,
+    /// Signatures of Wasm binary hashes for versioned app modules, keyed by app `vk` (which is
+    /// the SHA256 of the signing public key).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub app_signatures: BTreeMap<B32, AppSignature>,
+}
+
+/// Identifies a specific version of an app's Wasm binary, signed by the app's owning key.
+///
+/// For a versioned app, the app's `vk` is the SHA256 of a public key. The corresponding
+/// [`AppSignature`] proves that the holder of that key has authorized this particular Wasm
+/// binary as the given `version` of the app.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionedApp {
+    /// Version number, as exposed by the `__charms_version` export of the Wasm binary.
+    pub version: u32,
+    /// SHA256 hash of the Wasm binary that implements this version of the app.
+    pub wasm_hash: B32,
+}
+
+/// Signature on a Wasm binary hash, together with the x-only public key it was produced with.
+///
+/// The signature scheme is BIP-340 Schnorr over secp256k1. `public_key` is the 32-byte x-only
+/// verifying key (BIP-340); `signature` is the 64-byte Schnorr signature over the SHA256 hash
+/// of the Wasm binary (i.e. over the corresponding [`VersionedApp::wasm_hash`]).
+#[serde_as]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSignature {
+    /// BIP-340 x-only public key (32 bytes).
+    pub public_key: B32,
+    /// BIP-340 Schnorr signature over the Wasm binary's SHA256 hash (64 bytes).
+    #[serde_as(as = "IfIsHumanReadable<Hex>")]
+    pub signature: Vec<u8>,
 }
