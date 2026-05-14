@@ -8,8 +8,9 @@ use ark_ec::pairing::Pairing;
 use ark_ff::{Field, ToConstraintField};
 use ark_groth16::{Groth16, ProvingKey};
 use ark_relations::{
-    lc, r1cs,
-    r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable::One},
+    gr1cs,
+    gr1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable},
+    lc,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_snark::SNARK;
@@ -260,9 +261,9 @@ impl<ConstraintF> ConstraintSynthesizer<ConstraintF> for DummyCircuit<Constraint
 where
     ConstraintF: Field,
 {
-    fn generate_constraints(self, cs: ConstraintSystemRef<ConstraintF>) -> r1cs::Result<()> {
+    fn generate_constraints(self, cs: ConstraintSystemRef<ConstraintF>) -> gr1cs::Result<()> {
         let a = cs.new_witness_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
         let c = cs.new_input_variable(|| self.a.ok_or(SynthesisError::AssignmentMissing))?;
-        cs.enforce_constraint(lc!() + a, lc!() + One, lc!() + c)
+        cs.enforce_r1cs_constraint(|| lc!() + a, || lc!() + Variable::One, || lc!() + c)
     }
 }
