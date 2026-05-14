@@ -24,7 +24,7 @@ pub fn ensure_exact_app_binaries(
     binaries: &BTreeMap<B32, Vec<u8>>,
 ) -> anyhow::Result<()> {
     let required_vks: BTreeSet<_> = norm_spell
-        .app_public_inputs
+        .apps
         .iter()
         .filter(|(app, data)| {
             !data.is_empty()
@@ -239,7 +239,7 @@ impl ProveSpellTxImpl {
             let cycles = AppRunner::new(true).run_all(
                 &app_input.app_binaries,
                 &tx,
-                &norm_spell.app_public_inputs,
+                &norm_spell.apps,
                 &app_input.app_private_inputs,
             )?;
             cycles.iter().sum()
@@ -331,9 +331,7 @@ impl ProveSpellTxImpl {
                 let total_sats_required = total_sats_out
                     .checked_add(charms_fee)
                     .and_then(|s| s.checked_add(estimated_bitcoin_fee))
-                    .ok_or_else(|| {
-                        anyhow!("total required sats (outputs + fees) overflow u64")
-                    })?;
+                    .ok_or_else(|| anyhow!("total required sats (outputs + fees) overflow u64"))?;
 
                 ensure!(
                     total_sats_in > total_sats_required,

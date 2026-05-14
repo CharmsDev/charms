@@ -185,7 +185,7 @@ impl EnchantedTx for CardanoTx {
                     })
                     .collect();
 
-                spell.app_public_inputs = apps
+                spell.apps = apps
                     .iter()
                     .map(|app| (app.clone(), Data::empty()))
                     .collect();

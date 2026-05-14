@@ -85,13 +85,7 @@ mod tests {
             true => {
                 assert!(deserialized.is_ok());
                 let norm_spell = deserialized.unwrap();
-                assert_eq!(
-                    (norm_spell.app_public_inputs)
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>(),
-                    apps
-                );
+                assert_eq!((norm_spell.apps).keys().cloned().collect::<Vec<_>>(), apps);
             }
             false => {
                 assert!(deserialized.is_err())
@@ -123,9 +117,7 @@ mod tests {
     #[proptest]
     fn sorted_app_public_inputs_yaml_roundtrip(app: App) {
         let mut spell = NormalizedSpell::default();
-        spell
-            .app_public_inputs
-            .insert(app.clone(), Default::default());
+        spell.apps.insert(app.clone(), Default::default());
 
         // Serialize to YAML
         let yaml = serde_yaml::to_string(&spell).unwrap();
@@ -133,6 +125,6 @@ mod tests {
         // Deserialize back
         let deserialized: NormalizedSpell = serde_yaml::from_str(&yaml).unwrap();
 
-        assert_eq!(deserialized.app_public_inputs, spell.app_public_inputs);
+        assert_eq!(deserialized.apps, spell.apps);
     }
 }

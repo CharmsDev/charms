@@ -241,7 +241,7 @@ impl Check for SpellCli {
         let cycles_spent = self.app_runner.run_all(
             &binaries,
             &charms_tx,
-            &norm_spell.app_public_inputs,
+            &norm_spell.apps,
             &app_private_inputs,
         )?;
 
