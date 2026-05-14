@@ -1,5 +1,7 @@
 use anyhow::{Result, bail, ensure};
-use charms_data::{App, AppSignature, B32, Data, Transaction, VersionedApp, is_simple_transfer, util};
+use charms_data::{
+    App, AppSignature, B32, Data, Transaction, VersionedApp, is_simple_transfer, util,
+};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr};
 use sha2::{Digest, Sha256};
@@ -8,7 +10,9 @@ use std::{
     io::Write,
     sync::{Arc, Mutex},
 };
-use wasmi::{Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc};
+use wasmi::{
+    Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc,
+};
 
 #[derive(Clone)]
 pub struct AppRunner {
@@ -312,13 +316,14 @@ impl AppRunner {
                 })?;
                 let msg = Message::from_digest(binary_hash.0);
                 let secp = Secp256k1::verification_only();
-                secp.verify_schnorr(&signature, &msg, &xonly_pk).map_err(|e| {
-                    anyhow::anyhow!(
-                        "BIP-340 Schnorr signature verification failed for {}: {}",
-                        app,
-                        e
-                    )
-                })?;
+                secp.verify_schnorr(&signature, &msg, &xonly_pk)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "BIP-340 Schnorr signature verification failed for {}: {}",
+                            app,
+                            e
+                        )
+                    })?;
             }
         }
         Ok(binary_hash)
@@ -371,14 +376,9 @@ impl AppRunner {
         let instance = linker.instantiate_and_start(&mut store, &module)?;
 
         if let Some(versioned_app) = versioned_apps.get(&app.vk) {
-            let version_func = instance
-                .get_func(&store, "__app_version")
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "versioned app {} does not export `__app_version`",
-                        app
-                    )
-                })?;
+            let version_func = instance.get_func(&store, "__app_version").ok_or_else(|| {
+                anyhow::anyhow!("versioned app {} does not export `__app_version`", app)
+            })?;
             let typed: TypedFunc<(), u32> = version_func.typed(&store)?;
             let exported_version = typed.call(&mut store, ())?;
             ensure!(

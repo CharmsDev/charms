@@ -167,10 +167,7 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
     Ok(())
 }
 
-fn load_keypair<C: secp256k1::Signing>(
-    secp: &Secp256k1<C>,
-    path: &Path,
-) -> Result<Keypair> {
+fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Result<Keypair> {
     let s = fs::read_to_string(path)
         .with_context(|| format!("failed to read keypair file: {}", path.display()))?;
     let kp: AppKeypair = serde_json::from_str(&s)

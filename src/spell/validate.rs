@@ -76,7 +76,11 @@ pub fn ensure_versioned_apps_have_signatures(
         provided_vks
     );
     // Each versioned_apps entry must correspond to at least one referenced app.
-    let app_vks: BTreeSet<&B32> = norm_spell.app_public_inputs.keys().map(|app| &app.vk).collect();
+    let app_vks: BTreeSet<&B32> = norm_spell
+        .app_public_inputs
+        .keys()
+        .map(|app| &app.vk)
+        .collect();
     for vk in norm_spell.versioned_apps.keys() {
         ensure!(
             app_vks.contains(vk),
@@ -374,9 +378,7 @@ impl ProveSpellTxImpl {
                 let total_sats_required = total_sats_out
                     .checked_add(charms_fee)
                     .and_then(|s| s.checked_add(estimated_bitcoin_fee))
-                    .ok_or_else(|| {
-                        anyhow!("total required sats (outputs + fees) overflow u64")
-                    })?;
+                    .ok_or_else(|| anyhow!("total required sats (outputs + fees) overflow u64"))?;
 
                 ensure!(
                     total_sats_in > total_sats_required,

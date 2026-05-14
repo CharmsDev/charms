@@ -607,12 +607,18 @@ mod test {
             c.insert(0, Data::empty());
             c
         }];
-        prev_spell.tx.coins.get_or_insert_with(Vec::new).push(NativeOutput {
-            amount: 0,
-            dest: vec![],
-            content: None,
-        });
-        prev_spell.app_public_inputs.insert(app.clone(), Data::empty());
+        prev_spell
+            .tx
+            .coins
+            .get_or_insert_with(Vec::new)
+            .push(NativeOutput {
+                amount: 0,
+                dest: vec![],
+                content: None,
+            });
+        prev_spell
+            .app_public_inputs
+            .insert(app.clone(), Data::empty());
         if let Some(v) = prev_ver {
             prev_spell.versioned_apps.insert(app.vk.clone(), v);
         }
@@ -761,12 +767,8 @@ mod test {
     #[test]
     fn continuity_versioned_in_prev_missing_in_spending_rejected() {
         let app = an_app();
-        let (spell, prev_spells) = build_continuity_fixture(
-            app,
-            Some(versioned(3, HASH_A)),
-            None,
-            true,
-        );
+        let (spell, prev_spells) =
+            build_continuity_fixture(app, Some(versioned(3, HASH_A)), None, true);
         let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
@@ -780,12 +782,8 @@ mod test {
     fn continuity_skipped_when_spending_does_not_reference_vk() {
         let app = an_app();
         // Prev declares versioned, spending doesn't reference the app at all (e.g. burn).
-        let (spell, prev_spells) = build_continuity_fixture(
-            app,
-            Some(versioned(3, HASH_A)),
-            None,
-            false,
-        );
+        let (spell, prev_spells) =
+            build_continuity_fixture(app, Some(versioned(3, HASH_A)), None, false);
         check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
@@ -793,12 +791,8 @@ mod test {
     fn continuity_skipped_when_prev_is_not_versioned() {
         let app = an_app();
         // Prev treats it as a simple app (no entry in versioned_apps).
-        let (spell, prev_spells) = build_continuity_fixture(
-            app,
-            None,
-            Some(versioned(2, HASH_A)),
-            true,
-        );
+        let (spell, prev_spells) =
+            build_continuity_fixture(app, None, Some(versioned(2, HASH_A)), true);
         check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
