@@ -3,16 +3,24 @@ use charms_data::{
     App, AppSignature, B32, Data, Transaction, VersionedApp, is_simple_transfer, util,
 };
 use rand::{RngExt, SeedableRng, rngs::StdRng};
-use secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr};
+use secp256k1::{Message, Secp256k1, VerifyOnly, XOnlyPublicKey, schnorr};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::Write,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
 use wasmi::{
     Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc,
 };
+
+/// Single shared verification-only secp256k1 context. The context owns precomputed tables
+/// (~1 MB) and is expensive to allocate; `verify_app_binary` may be called many times per
+/// spell, so we build it once and reuse.
+fn secp_verifier() -> &'static Secp256k1<VerifyOnly> {
+    static CTX: OnceLock<Secp256k1<VerifyOnly>> = OnceLock::new();
+    CTX.get_or_init(Secp256k1::verification_only)
+}
 
 #[derive(Clone)]
 pub struct AppRunner {
@@ -315,8 +323,8 @@ impl AppRunner {
                     anyhow::anyhow!("invalid BIP-340 Schnorr signature for {}: {}", app, e)
                 })?;
                 let msg = Message::from_digest(binary_hash.0);
-                let secp = Secp256k1::verification_only();
-                secp.verify_schnorr(&signature, &msg, &xonly_pk)
+                secp_verifier()
+                    .verify_schnorr(&signature, &msg, &xonly_pk)
                     .map_err(|e| {
                         anyhow::anyhow!(
                             "BIP-340 Schnorr signature verification failed for {}: {}",

@@ -359,16 +359,20 @@ pub enum AppCommands {
         /// Path to app Wasm binary (builds the app if omitted, ignored when --pubkey is set).
         path: Option<PathBuf>,
 
-        /// Path to a 32-byte raw Ed25519 public key (or app keypair JSON). When set, prints
-        /// the VK of the corresponding versioned app (SHA-256 of the public key).
+        /// Path to a BIP-340 x-only public key (secp256k1) in hex, or app keypair JSON.
+        /// When set, prints the VK of the corresponding versioned app
+        /// (SHA-256 of the public key).
         #[arg(long)]
         pubkey: Option<PathBuf>,
     },
 
-    /// Generate a new Ed25519 signing keypair for a versioned app.
+    /// Generate a new BIP-340 Schnorr signing keypair (secp256k1) for a versioned app.
     ///
     /// Writes a JSON object with hex-encoded `public_key`, `secret_key`, and computed `vk`
     /// (SHA-256 of public key) to `--out` (or stdout if omitted).
+    ///
+    /// **Security:** the `secret_key` field is sensitive. Prefer `--out` to a file you
+    /// trust; do not commit it to source control or paste it into chats/logs.
     Keygen {
         /// Path to write the keypair JSON to. Prints to stdout if omitted.
         #[arg(long)]
@@ -378,7 +382,7 @@ pub enum AppCommands {
     /// Sign a Wasm binary's SHA-256 hash with an app signing key.
     ///
     /// Writes a JSON `{public_key, signature}` (hex) to `--out` (or stdout). The signature
-    /// is an Ed25519 signature over the binary's SHA-256 hash.
+    /// is a BIP-340 Schnorr signature (over secp256k1) of the binary's SHA-256 hash.
     Sign {
         /// Path to the keypair JSON produced by `app keygen`.
         #[arg(long)]

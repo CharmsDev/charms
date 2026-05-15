@@ -476,11 +476,25 @@ pub fn check_app_version_continuity(
         let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
             Some(beam_source) => {
                 let beam_source_utxo_id = &beam_source.0;
-                let (prev_spell, _) = &prev_spells[&beam_source_utxo_id.0];
+                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(
+                    || {
+                        anyhow!(
+                            "missing prev spell for beam source utxo {} (input #{})",
+                            beam_source_utxo_id,
+                            i
+                        )
+                    },
+                )?;
                 (prev_spell, beam_source_utxo_id)
             }
             None => {
-                let (prev_spell, _) = &prev_spells[&input_utxo_id.0];
+                let (prev_spell, _) = prev_spells.get(&input_utxo_id.0).ok_or_else(|| {
+                    anyhow!(
+                        "missing prev spell for input utxo {} (input #{})",
+                        input_utxo_id,
+                        i
+                    )
+                })?;
                 (prev_spell, input_utxo_id)
             }
         };

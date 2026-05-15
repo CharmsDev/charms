@@ -10,7 +10,7 @@ pub use prove_spell_tx::{ProveSpellTx, ProveSpellTxImpl, committed_data_hash};
 pub use request::{CharmsFee, FeeAddressForNetwork, ProveRequest};
 pub use validate::{
     adjust_coin_contents, ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
-    ensure_versioned_apps_have_signatures,
+    ensure_no_orphan_versioned_apps, ensure_versioned_apps_have_signatures,
 };
 
 pub use charms_client::{

@@ -4,7 +4,8 @@ use crate::{
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
         ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
-        ensure_versioned_apps_have_signatures, from_strings, read_private_inputs,
+        ensure_no_orphan_versioned_apps, ensure_versioned_apps_have_signatures, from_strings,
+        read_private_inputs,
     },
 };
 use anyhow::{Result, ensure};
@@ -100,6 +101,7 @@ impl Prove for SpellCli {
             .map(|p| cli::app::read_app_signatures(&p))
             .transpose()?
             .unwrap_or_default();
+        ensure_no_orphan_versioned_apps(&norm_spell)?;
         ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
         let app_input = match binaries.is_empty() {
             true => None,
@@ -220,6 +222,7 @@ impl Check for SpellCli {
             .map(|p| cli::app::read_app_signatures(&p))
             .transpose()?
             .unwrap_or_default();
+        ensure_no_orphan_versioned_apps(&norm_spell)?;
         ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;

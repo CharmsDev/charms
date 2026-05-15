@@ -75,7 +75,13 @@ pub fn ensure_versioned_apps_have_signatures(
         required_vks,
         provided_vks
     );
-    // Each versioned_apps entry must correspond to at least one referenced app.
+    Ok(())
+}
+
+/// Each entry in `norm_spell.versioned_apps` must correspond to at least one app in
+/// `app_public_inputs`. Rejects "orphan" version pins that don't bind any app referenced
+/// by the spell.
+pub fn ensure_no_orphan_versioned_apps(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
     let app_vks: BTreeSet<&B32> = norm_spell
         .app_public_inputs
         .keys()
@@ -257,6 +263,7 @@ impl ProveSpellTxImpl {
         )?;
 
         let app_signatures = prove_request.app_signatures.clone();
+        ensure_no_orphan_versioned_apps(&norm_spell)?;
         ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
 
         let app_input = match prove_request.binaries.is_empty() {

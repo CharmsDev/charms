@@ -66,6 +66,11 @@ pub fn build() -> Result<()> {
 }
 
 pub fn vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<()> {
+    ensure!(
+        !(path.is_some() && pubkey.is_some()),
+        "pass at most one of <PATH> or --pubkey: <PATH> computes SHA-256 of a Wasm binary \
+         (simple app VK), --pubkey computes SHA-256 of a signing public key (versioned app VK)"
+    );
     let vk = match pubkey {
         Some(pubkey_path) => {
             let pk_bytes = read_public_key(&pubkey_path)?;
@@ -136,9 +141,39 @@ pub fn keygen(out: Option<PathBuf>) -> Result<()> {
 
     let s = serde_json::to_string_pretty(&keypair)?;
     match out {
-        Some(p) => fs::write(p, s.as_bytes())?,
-        None => println!("{}", s),
+        Some(p) => write_secret_file(&p, s.as_bytes())?,
+        None => {
+            eprintln!(
+                "WARNING: writing the secret key to stdout. Capture it directly (e.g. \
+                 `... > key.json`) and protect the file; do not paste into chats or logs. \
+                 Prefer `--out <FILE>` (which writes with mode 0600 on Unix)."
+            );
+            println!("{}", s);
+        }
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("failed to open {} for writing", path.display()))?;
+    use std::io::Write as _;
+    file.write_all(contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
+    fs::write(path, contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -153,7 +188,12 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
     };
     let binary_hash: [u8; 32] = Sha256::digest(&binary).into();
     let msg = Message::from_digest(binary_hash);
-    let signature = secp.sign_schnorr_no_aux_rand(&msg, &keypair);
+
+    // BIP-340 recommends fresh auxiliary randomness for each signature to defend
+    // against fault attacks; pull 32 bytes from the OS.
+    let mut aux_rand = [0u8; 32];
+    getrandom::getrandom(&mut aux_rand).context("failed to obtain OS randomness")?;
+    let signature = secp.sign_schnorr_with_aux_rand(&msg, &keypair, &aux_rand);
 
     let app_sig = AppSignature {
         public_key: B32(xonly_pk.serialize()),
@@ -167,6 +207,9 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
     Ok(())
 }
 
+/// Load a keypair, deriving the verifying key from the on-disk secret key and rejecting
+/// inconsistent `public_key` / `vk` fields. Catches accidental edits or swaps in the file
+/// before any signed material is produced.
 fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Result<Keypair> {
     let s = fs::read_to_string(path)
         .with_context(|| format!("failed to read keypair file: {}", path.display()))?;
@@ -175,33 +218,53 @@ fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Resu
     let secret_bytes = hex::decode(&kp.secret_key).context("invalid hex in secret_key")?;
     let sk = SecretKey::from_slice(&secret_bytes)
         .map_err(|e| anyhow!("invalid secp256k1 secret key: {}", e))?;
-    Ok(Keypair::from_secret_key(secp, &sk))
+    let keypair = Keypair::from_secret_key(secp, &sk);
+
+    let (derived_xonly, _parity) = keypair.x_only_public_key();
+    let derived_pk = derived_xonly.serialize();
+    let declared_pk = hex::decode(&kp.public_key).context("invalid hex in public_key")?;
+    ensure!(
+        declared_pk.as_slice() == derived_pk.as_slice(),
+        "keypair file is corrupt: public_key does not match the x-only public key derived \
+         from secret_key (declared {}, derived {})",
+        kp.public_key,
+        hex::encode(derived_pk)
+    );
+
+    let derived_vk: [u8; 32] = Sha256::digest(&derived_pk).into();
+    let declared_vk = hex::decode(&kp.vk).context("invalid hex in vk")?;
+    ensure!(
+        declared_vk.as_slice() == &derived_vk,
+        "keypair file is corrupt: vk does not match SHA-256 of public_key \
+         (declared {}, derived {})",
+        kp.vk,
+        hex::encode(derived_vk)
+    );
+
+    Ok(keypair)
 }
 
+/// Read a BIP-340 x-only public key from `path`. Accepts either:
+/// - a hex string (with optional `0x` prefix), or
+/// - an [`AppKeypair`] JSON document (the file produced by `app keygen`).
+///
+/// Raw binary input is rejected to avoid ambiguity (a 32-byte file could plausibly be a
+/// raw key, a hex string of a 16-byte key, or truncated text).
 fn read_public_key(path: &Path) -> Result<[u8; 32]> {
-    let bytes = fs::read(path)
+    let s = fs::read_to_string(path)
         .with_context(|| format!("failed to read public key file: {}", path.display()))?;
-    // Accept either: raw 32 bytes; a hex string (64 chars); or an AppKeypair JSON.
-    if bytes.len() == 32 {
-        return Ok(bytes.as_slice().try_into().unwrap());
-    }
-    if let Ok(s) = std::str::from_utf8(&bytes) {
-        let s = s.trim();
-        if s.starts_with('{') {
-            let kp: AppKeypair = serde_json::from_str(s)?;
-            let pk = hex::decode(&kp.public_key)?;
-            return pk
-                .try_into()
-                .map_err(|_| anyhow!("public_key must be 32 bytes"));
-        }
-        let pk = hex::decode(s.trim_start_matches("0x")).context("invalid hex public key")?;
-        return pk
-            .try_into()
-            .map_err(|_| anyhow!("public key must be 32 bytes"));
-    }
-    Err(anyhow!(
-        "unrecognized public key file format: expected raw 32 bytes, hex, or AppKeypair JSON"
-    ))
+    let s = s.trim();
+    let pk_hex = if s.starts_with('{') {
+        let kp: AppKeypair = serde_json::from_str(s).with_context(|| {
+            format!("failed to parse keypair JSON: {}", path.display())
+        })?;
+        kp.public_key
+    } else {
+        s.trim_start_matches("0x").to_string()
+    };
+    let pk = hex::decode(&pk_hex).context("invalid hex public key")?;
+    pk.try_into()
+        .map_err(|_| anyhow!("public key must be 32 bytes (hex-encoded as 64 characters)"))
 }
 
 pub fn read_app_signatures(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
