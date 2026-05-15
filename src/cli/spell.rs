@@ -102,8 +102,11 @@ impl Prove for SpellCli {
             .transpose()?
             .unwrap_or_default();
         ensure_no_orphan_versioned_apps(&norm_spell)?;
-        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
-        let app_input = match binaries.is_empty() {
+        // Note: `ensure_versioned_apps_have_signatures` needs the resolved tx (to know
+        // which apps are simple transfers and thus skip the signature requirement). The
+        // server-side `validate_prove_request` runs that check authoritatively; we don't
+        // duplicate it here because building the tx requires loading prev spells.
+        let app_input = match binaries.is_empty() && app_signatures.is_empty() {
             true => None,
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),
@@ -223,7 +226,6 @@ impl Check for SpellCli {
             .transpose()?
             .unwrap_or_default();
         ensure_no_orphan_versioned_apps(&norm_spell)?;
-        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
 
@@ -235,8 +237,14 @@ impl Check for SpellCli {
         );
 
         ensure_exact_app_binaries(&norm_spell, &app_private_inputs, &charms_tx, &binaries)?;
+        ensure_versioned_apps_have_signatures(
+            &norm_spell,
+            &app_private_inputs,
+            &charms_tx,
+            &app_signatures,
+        )?;
 
-        let app_input = match binaries.is_empty() {
+        let app_input = match binaries.is_empty() && app_signatures.is_empty() {
             true => None,
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),

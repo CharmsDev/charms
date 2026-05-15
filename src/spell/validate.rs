@@ -53,23 +53,38 @@ pub fn ensure_exact_app_binaries(
     Ok(())
 }
 
-/// For every versioned app referenced in the spell (whose `vk` appears in
-/// [`NormalizedSpell::versioned_apps`]), `app_signatures` must provide a matching
-/// [`AppSignature`]. Conversely, no extraneous signatures may be present.
+/// `app_signatures` must contain exactly one entry per **non-simple-transfer** versioned
+/// app referenced in the spell. Simple-transfer versioned apps are intentionally excluded:
+/// the spell-level continuity check pins their `(version, wasm_hash)` to whatever the
+/// previous spell already authenticated, so no fresh binary or signature is needed.
+///
+/// "Simple transfer" here matches [`charms_data::is_simple_transfer`] AND has no public or
+/// private input — exactly the condition under which [`AppRunner::run_all`] skips the
+/// binary entirely.
 pub fn ensure_versioned_apps_have_signatures(
     norm_spell: &NormalizedSpell,
+    app_private_inputs: &BTreeMap<App, Data>,
+    tx: &charms_data::Transaction,
     app_signatures: &BTreeMap<B32, AppSignature>,
 ) -> anyhow::Result<()> {
     let required_vks: BTreeSet<&B32> = norm_spell
         .app_public_inputs
-        .keys()
-        .filter(|app| norm_spell.versioned_apps.contains_key(&app.vk))
-        .map(|app| &app.vk)
+        .iter()
+        .filter(|(app, _)| norm_spell.versioned_apps.contains_key(&app.vk))
+        .filter(|(app, data)| {
+            !data.is_empty()
+                || !app_private_inputs
+                    .get(app)
+                    .is_none_or(|w| w.is_empty())
+                || !charms_data::is_simple_transfer(app, tx)
+        })
+        .map(|(app, _)| &app.vk)
         .collect();
     let provided_vks: BTreeSet<&B32> = app_signatures.keys().collect();
     ensure!(
         required_vks == provided_vks,
-        "app_signatures must contain exactly one entry per versioned app referenced in the spell.\n\
+        "app_signatures must contain exactly one entry per non-simple-transfer versioned app \
+         referenced in the spell.\n\
          Required app vks: {:?}\n\
          Provided app vks: {:?}",
         required_vks,
@@ -264,7 +279,12 @@ impl ProveSpellTxImpl {
 
         let app_signatures = prove_request.app_signatures.clone();
         ensure_no_orphan_versioned_apps(&norm_spell)?;
-        ensure_versioned_apps_have_signatures(&norm_spell, &app_signatures)?;
+        ensure_versioned_apps_have_signatures(
+            &norm_spell,
+            &app_private_inputs,
+            &tx,
+            &app_signatures,
+        )?;
 
         let app_input = match prove_request.binaries.is_empty() {
             true => None,

@@ -429,11 +429,11 @@ impl AppRunner {
             .map(|(app, x)| {
                 let w = app_private_inputs.get(app).unwrap_or(&empty);
                 if x.is_empty() && w.is_empty() && is_simple_transfer(app, tx) {
-                    ensure!(
-                        !versioned_apps.contains_key(&app.vk),
-                        "versioned app cannot be skipped as a simple transfer: {}",
-                        app
-                    );
+                    // Versioned simple transfers are allowed: the spell-level
+                    // `check_app_version_continuity` has already verified that the
+                    // version (and therefore the Wasm hash) stays unchanged, and the
+                    // previous spell already authenticated `(vk, version, wasm_hash)` --
+                    // so no fresh binary or signature is needed here.
                     eprintln!("➡️  simple transfer w.r.t. app: {}", app);
                     return Ok(0);
                 }
