@@ -3,7 +3,8 @@ use crate::{
     cli::{Output, SpellCheckParams, SpellProveParams},
     spell::{
         NormalizedSpell, ProveRequest, ProveSpellTx, ProveSpellTxImpl, adjust_coin_contents,
-        ensure_all_prev_txs_are_present, ensure_exact_app_binaries, from_strings,
+        ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
+        ensure_no_orphan_versioned_apps, ensure_versioned_apps_have_signatures, from_strings,
         read_private_inputs,
     },
 };
@@ -13,10 +14,10 @@ use charms_client::{
     CURRENT_VERSION,
     tx::{Chain, Tx, by_txid},
 };
-use charms_data::{UtxoId, util};
+use charms_data::{AppSignature, B32, UtxoId, util};
 use charms_lib::SPELL_VK;
 use serde_json::json;
-use std::{future::Future, io::Write, str::FromStr};
+use std::{collections::BTreeMap, future::Future, io::Write, str::FromStr};
 
 pub trait Check {
     fn check(&self, params: SpellCheckParams) -> Result<()>;
@@ -65,6 +66,7 @@ impl Prove for SpellCli {
             beamed_from,
             prev_txs,
             app_bins,
+            app_signatures,
             change_address,
             fee_rate,
             chain,
@@ -95,11 +97,21 @@ impl Prove for SpellCli {
         let prev_txs = from_strings(&prev_txs)?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
-        let app_input = match binaries.is_empty() {
+        let app_signatures: BTreeMap<B32, AppSignature> = app_signatures
+            .map(|p| cli::app::read_app_signatures(&p))
+            .transpose()?
+            .unwrap_or_default();
+        ensure_no_orphan_versioned_apps(&norm_spell)?;
+        // Note: `ensure_versioned_apps_have_signatures` needs the resolved tx (to know
+        // which apps are simple transfers and thus skip the signature requirement). The
+        // server-side `validate_prove_request` runs that check authoritatively; we don't
+        // duplicate it here because building the tx requires loading prev spells.
+        let app_input = match binaries.is_empty() && app_signatures.is_empty() {
             true => None,
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),
                 app_private_inputs: app_private_inputs.clone(),
+                app_signatures: app_signatures.clone(),
             }),
         };
 
@@ -108,6 +120,7 @@ impl Prove for SpellCli {
             app_private_inputs,
             tx_ins_beamed_source_utxos,
             binaries,
+            app_signatures,
             prev_txs,
             change_address,
             fee_rate,
@@ -178,6 +191,7 @@ impl Check for SpellCli {
             private_inputs,
             beamed_from,
             app_bins,
+            app_signatures,
             prev_txs,
             chain,
             mock,
@@ -207,6 +221,11 @@ impl Check for SpellCli {
         )?;
 
         let binaries = cli::app::binaries_by_vk(&self.app_runner, app_bins)?;
+        let app_signatures: BTreeMap<B32, AppSignature> = app_signatures
+            .map(|p| cli::app::read_app_signatures(&p))
+            .transpose()?
+            .unwrap_or_default();
+        ensure_no_orphan_versioned_apps(&norm_spell)?;
 
         let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
 
@@ -218,12 +237,19 @@ impl Check for SpellCli {
         );
 
         ensure_exact_app_binaries(&norm_spell, &app_private_inputs, &charms_tx, &binaries)?;
+        ensure_versioned_apps_have_signatures(
+            &norm_spell,
+            &app_private_inputs,
+            &charms_tx,
+            &app_signatures,
+        )?;
 
-        let app_input = match binaries.is_empty() {
+        let app_input = match binaries.is_empty() && app_signatures.is_empty() {
             true => None,
             false => Some(charms_data::AppInput {
                 app_binaries: binaries.clone(),
                 app_private_inputs: app_private_inputs.clone(),
+                app_signatures: app_signatures.clone(),
             }),
         };
 
@@ -240,6 +266,8 @@ impl Check for SpellCli {
 
         let cycles_spent = self.app_runner.run_all(
             &binaries,
+            &norm_spell.versioned_apps,
+            &app_signatures,
             &charms_tx,
             &norm_spell.app_public_inputs,
             &app_private_inputs,

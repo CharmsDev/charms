@@ -19,11 +19,13 @@ use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
 use ic_agent::Agent;
 use pallas_codec::minicbor;
-use pallas_primitives::conway::{
-    self, BoundedBytes, ExUnits, PlutusData, PlutusScript, PostAlonzoTransactionOutput, Redeemer,
-    RedeemerTag, Redeemers, Value, WitnessSet,
+use pallas_primitives::{
+    KeepRaw,
+    conway::{
+        self, BoundedBytes, ExUnits, PlutusData, PlutusScript, PostAlonzoTransactionOutput,
+        Redeemer, RedeemerTag, Redeemers, Value, WitnessSet,
+    },
 };
-use pallas_primitives::KeepRaw;
 use pallas_txbuilder::{BuildConway, Input, Output, ScriptKind, StagingTransaction};
 use serde::{Deserialize, Serialize as SerdeSerialize};
 use std::collections::BTreeMap;
@@ -554,9 +556,7 @@ pub fn from_spell(
     // borrowing-scoped decode below).
     let total_input: u64 = spell_ins
         .iter()
-        .map(|id| {
-            with_prev_output(prev_txs_by_id, id, |o| get_output_coin(o)).unwrap_or(0)
-        })
+        .map(|id| with_prev_output(prev_txs_by_id, id, |o| get_output_coin(o)).unwrap_or(0))
         .sum();
 
     // Decode-modify-encode within a scope so the borrowed Tx<'_> lifetime is contained.
@@ -642,14 +642,13 @@ pub fn from_spell(
         // Add change output if needed
         if total_input > total_output + fee {
             let change_amount = total_input - total_output - fee;
-            let change_output = conway::TransactionOutput::PostAlonzo(KeepRaw::from(
-                PostAlonzoTransactionOutput {
+            let change_output =
+                conway::TransactionOutput::PostAlonzo(KeepRaw::from(PostAlonzoTransactionOutput {
                     address: pallas_primitives::conway::Bytes::from(change_address.to_vec()),
                     value: Value::Coin(change_amount),
                     datum_option: None,
                     script_ref: None,
-                },
-            ));
+                }));
             tx.transaction_body.outputs.push(change_output);
         }
 
@@ -739,15 +738,17 @@ fn get_output_multiasset_owned(output: &conway::TransactionOutput<'_>) -> Option
             pallas_primitives::alonzo::Value::Multiasset(_, ma) => {
                 let mut result: PallasMultiasset = BTreeMap::new();
                 for (p, assets) in ma.iter() {
-                    let inner: BTreeMap<PallasAssetName, u64> = assets
-                        .iter()
-                        .map(|(n, a)| (n.clone(), *a))
-                        .collect();
+                    let inner: BTreeMap<PallasAssetName, u64> =
+                        assets.iter().map(|(n, a)| (n.clone(), *a)).collect();
                     if !inner.is_empty() {
                         result.insert(*p, inner);
                     }
                 }
-                if result.is_empty() { None } else { Some(result) }
+                if result.is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
             }
         },
         conway::TransactionOutput::PostAlonzo(post) => match &post.value {
@@ -763,7 +764,11 @@ fn get_output_multiasset_owned(output: &conway::TransactionOutput<'_>) -> Option
                         result.insert(*p, inner);
                     }
                 }
-                if result.is_empty() { None } else { Some(result) }
+                if result.is_empty() {
+                    None
+                } else {
+                    Some(result)
+                }
             }
         },
     }

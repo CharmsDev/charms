@@ -90,6 +90,7 @@ impl ProveSpellTxImpl {
             app_private_inputs,
             tx_ins_beamed_source_utxos,
             binaries,
+            app_signatures,
             prev_txs,
             change_address,
             fee_rate,
@@ -106,6 +107,7 @@ impl ProveSpellTxImpl {
         let (truncated_norm_spell, proof, proof_app_cycles) = self.prover.prove(
             norm_spell.clone(),
             binaries,
+            app_signatures,
             app_private_inputs,
             prev_txs,
             tx_ins_beamed_source_utxos,

@@ -2,7 +2,7 @@ use crate::{
     BeamSource, NormalizedSpell,
     tx::{Chain, Tx},
 };
-use charms_data::{App, B32, Data, UtxoId, util};
+use charms_data::{App, AppSignature, B32, Data, UtxoId, util};
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, IfIsHumanReadable, base64::Base64, serde_as};
 use std::collections::BTreeMap;
@@ -58,6 +58,11 @@ pub struct ProveRequest {
     #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, Base64>>")]
     #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub binaries: BTreeMap<B32, Vec<u8>>,
+    /// Signatures over Wasm binary hashes, for versioned app modules. Keyed by app `vk`
+    /// (which is the SHA256 of the signing public key).
+    #[serde_as(as = "IfIsHumanReadable<BTreeMap<DisplayFromStr, _>>")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub app_signatures: BTreeMap<B32, AppSignature>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub prev_txs: Vec<Tx>,
     pub change_address: String,

@@ -1,13 +1,26 @@
 use anyhow::{Result, bail, ensure};
-use charms_data::{App, B32, Data, Transaction, is_simple_transfer, util};
+use charms_data::{
+    App, AppSignature, B32, Data, Transaction, VersionedApp, is_simple_transfer, util,
+};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
+use secp256k1::{Message, Secp256k1, VerifyOnly, XOnlyPublicKey, schnorr};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::Write,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
 };
-use wasmi::{Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store};
+use wasmi::{
+    Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc,
+};
+
+/// Single shared verification-only secp256k1 context. The context owns precomputed tables
+/// (~1 MB) and is expensive to allocate; `verify_app_binary` may be called many times per
+/// spell, so we build it once and reuse.
+fn secp_verifier() -> &'static Secp256k1<VerifyOnly> {
+    static CTX: OnceLock<Secp256k1<VerifyOnly>> = OnceLock::new();
+    CTX.get_or_init(Secp256k1::verification_only)
+}
 
 #[derive(Clone)]
 pub struct AppRunner {
@@ -263,6 +276,67 @@ impl AppRunner {
         B32(hash.into())
     }
 
+    /// Verify that `app_binary` is the correct binary for `app`, either as a simple (immutable)
+    /// app where `app.vk == SHA256(binary)`, or as a versioned app where the binary hash matches
+    /// the spell's [`VersionedApp::wasm_hash`] and is signed by a key whose SHA256 equals
+    /// `app.vk`. Returns the SHA256 hash of the binary.
+    fn verify_app_binary(
+        &self,
+        app: &App,
+        app_binary: &[u8],
+        versioned_apps: &BTreeMap<B32, VersionedApp>,
+        app_signatures: &BTreeMap<B32, AppSignature>,
+    ) -> Result<B32> {
+        let binary_hash = self.vk(app_binary);
+        match versioned_apps.get(&app.vk) {
+            None => {
+                ensure!(
+                    !app_signatures.contains_key(&app.vk),
+                    "signature provided for non-versioned app: {}",
+                    app
+                );
+                ensure!(
+                    app.vk == binary_hash,
+                    "app.vk mismatch (binary hash) for app: {}",
+                    app
+                );
+            }
+            Some(versioned_app) => {
+                ensure!(
+                    versioned_app.wasm_hash == binary_hash,
+                    "Wasm hash mismatch for versioned app: {}",
+                    app
+                );
+                let sig = app_signatures.get(&app.vk).ok_or_else(|| {
+                    anyhow::anyhow!("missing signature for versioned app: {}", app)
+                })?;
+                let pk_hash = self.vk(&sig.public_key.0);
+                ensure!(
+                    pk_hash == app.vk,
+                    "public key hash does not match app.vk: {}",
+                    app
+                );
+                let xonly_pk = XOnlyPublicKey::from_slice(&sig.public_key.0).map_err(|e| {
+                    anyhow::anyhow!("invalid BIP-340 x-only public key for {}: {}", app, e)
+                })?;
+                let signature = schnorr::Signature::from_slice(&sig.signature).map_err(|e| {
+                    anyhow::anyhow!("invalid BIP-340 Schnorr signature for {}: {}", app, e)
+                })?;
+                let msg = Message::from_digest(binary_hash.0);
+                secp_verifier()
+                    .verify_schnorr(&signature, &msg, &xonly_pk)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "BIP-340 Schnorr signature verification failed for {}: {}",
+                            app,
+                            e
+                        )
+                    })?;
+            }
+        }
+        Ok(binary_hash)
+    }
+
     pub fn run(
         &self,
         app_binary: &[u8],
@@ -270,9 +344,10 @@ impl AppRunner {
         tx: &Transaction,
         x: &Data,
         w: &Data,
+        versioned_apps: &BTreeMap<B32, VersionedApp>,
+        app_signatures: &BTreeMap<B32, AppSignature>,
     ) -> Result<u64> {
-        let vk = self.vk(app_binary);
-        ensure!(app.vk == vk, "app.vk mismatch");
+        self.verify_app_binary(app, app_binary, versioned_apps, app_signatures)?;
 
         let stdin_content = util::write(&(app, tx, x, w))?;
 
@@ -308,6 +383,21 @@ impl AppRunner {
 
         let instance = linker.instantiate_and_start(&mut store, &module)?;
 
+        if let Some(versioned_app) = versioned_apps.get(&app.vk) {
+            let version_func = instance.get_func(&store, "__app_version").ok_or_else(|| {
+                anyhow::anyhow!("versioned app {} does not export `__app_version`", app)
+            })?;
+            let typed: TypedFunc<(), u32> = version_func.typed(&store)?;
+            let exported_version = typed.call(&mut store, ())?;
+            ensure!(
+                exported_version == versioned_app.version,
+                "Wasm `__app_version` ({}) does not match spell version ({}) for app {}",
+                exported_version,
+                versioned_app.version,
+                app
+            );
+        }
+
         let Some(main_func) = instance.get_func(&store, "_start") else {
             bail!("we should have a main function")
         };
@@ -327,6 +417,8 @@ impl AppRunner {
     pub fn run_all(
         &self,
         app_binaries: &BTreeMap<B32, Vec<u8>>,
+        versioned_apps: &BTreeMap<B32, VersionedApp>,
+        app_signatures: &BTreeMap<B32, AppSignature>,
         tx: &Transaction,
         app_public_inputs: &BTreeMap<App, Data>,
         app_private_inputs: &BTreeMap<App, Data>,
@@ -337,12 +429,22 @@ impl AppRunner {
             .map(|(app, x)| {
                 let w = app_private_inputs.get(app).unwrap_or(&empty);
                 if x.is_empty() && w.is_empty() && is_simple_transfer(app, tx) {
+                    // Versioned simple transfers are allowed: the spell-level
+                    // `check_app_version_continuity` has already verified that the
+                    // version (and therefore the Wasm hash) stays unchanged, and the
+                    // previous spell already authenticated `(vk, version, wasm_hash)` --
+                    // so no fresh binary or signature is needed here.
                     eprintln!("➡️  simple transfer w.r.t. app: {}", app);
                     return Ok(0);
                 }
-                match app_binaries.get(&app.vk) {
+                let binary_lookup_key = versioned_apps
+                    .get(&app.vk)
+                    .map(|va| &va.wasm_hash)
+                    .unwrap_or(&app.vk);
+                match app_binaries.get(binary_lookup_key) {
                     Some(app_binary) => {
-                        let cycles = self.run(app_binary, app, tx, x, w)?;
+                        let cycles =
+                            self.run(app_binary, app, tx, x, w, versioned_apps, app_signatures)?;
                         eprintln!("✅  app contract satisfied: {}", app);
                         Ok(cycles)
                     }

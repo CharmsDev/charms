@@ -714,6 +714,7 @@ dependencies = [
  "anyhow",
  "charms-data",
  "rand 0.10.1",
+ "secp256k1 0.29.1",
  "sha2 0.10.9",
  "wasmi",
 ]
