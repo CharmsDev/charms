@@ -410,43 +410,29 @@ pub fn is_correct(
     let version_changed_apps =
         collect_version_changed_apps(spell, &prev_spells, tx_ins_beamed_source_utxos);
 
+    authorize_version_changes(spell, &version_changed_apps, app_input.as_ref())?;
+
     match app_input {
         None => {
-            // No binaries / signatures supplied -> nothing can authorize a version change,
-            // and every app must be a simple transfer (the previous spell's authentication
-            // of `(vk, version, wasm_hash)` is the only authorization available).
+            // Every app must be a simple transfer; the previous spell's authentication of
+            // `(vk, version, wasm_hash)` is the only authorization available.
+            let non_simple_transfer_apps: Vec<_> = apps
+                .iter()
+                .filter(|app| !is_simple_transfer(app, &charms_tx))
+                .map(|app| app.to_string())
+                .collect();
             ensure!(
-                version_changed_apps.is_empty(),
-                "no app binaries provided, but versioned-app version changes were declared \
-                 for: {:?}. A version change requires running the new app binary to authorize \
-                 the transition.",
-                version_changed_apps
-                    .iter()
-                    .map(|a| a.to_string())
-                    .collect::<Vec<_>>()
+                non_simple_transfer_apps.is_empty(),
+                "no app binaries provided, but the spell is not a simple transfer for: {:?}. \
+                 Provide the app binaries so the contracts can run, or restructure the spell \
+                 to preserve balances/state.",
+                non_simple_transfer_apps
             );
-            ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx)));
         }
         Some(app_input) => {
-            // For every app whose version is changing, the new binary MUST be supplied so
-            // `run_all` can execute the new contract and authorize the transition. The
-            // set is also passed through to `run_all`, which uses it to bypass the
-            // simple-transfer fast path for these apps -- so `is_simple_transfer` is
-            // called at most once per app (inside `run_all`).
-            for app in &version_changed_apps {
-                let cur_va = spell
-                    .versioned_apps
-                    .get(&app.vk)
-                    .expect("version change implies a current versioned_apps entry");
-                ensure!(
-                    app_input.app_binaries.contains_key(&cur_va.wasm_hash),
-                    "app {}: version is changing to {}; its new binary (wasm_hash {}) must \
-                     be supplied so the new contract can run and authorize the transition",
-                    app,
-                    cur_va.version,
-                    cur_va.wasm_hash
-                );
-            }
+            // `version_changed_apps` is passed through to `run_all`, which uses it to
+            // bypass the simple-transfer fast path for these apps -- so `is_simple_transfer`
+            // is called at most once per app (inside `run_all`).
             apps_satisfied(
                 &app_input,
                 &spell.versioned_apps,
@@ -458,6 +444,49 @@ pub fn is_correct(
     }
 
     Ok(true)
+}
+
+/// Gate on which a version change must hand off to the new app's contract: when any spent
+/// charm's app version differs from the spending spell's, `app_input` MUST supply the new
+/// Wasm binary so `run_all` can execute it and authorize the transition. Without binaries
+/// (the `None` branch of `is_correct`), no version change is permitted at all.
+fn authorize_version_changes(
+    spell: &NormalizedSpell,
+    version_changed_apps: &BTreeSet<App>,
+    app_input: Option<&AppInput>,
+) -> anyhow::Result<()> {
+    if version_changed_apps.is_empty() {
+        return Ok(());
+    }
+    let Some(app_input) = app_input else {
+        return Err(anyhow!(
+            "no app binaries provided, but versioned-app version changes were declared \
+             for: {:?}. A version change requires running the new app binary to authorize \
+             the transition.",
+            version_changed_apps
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+        ));
+    };
+    for app in version_changed_apps {
+        let cur_va = spell.versioned_apps.get(&app.vk).ok_or_else(|| {
+            anyhow!(
+                "internal: app {} is in version_changed_apps but has no versioned_apps \
+                 entry in the spending spell",
+                app
+            )
+        })?;
+        ensure!(
+            app_input.app_binaries.contains_key(&cur_va.wasm_hash),
+            "app {}: version is changing to {}; its new binary (wasm_hash {}) must be \
+             supplied so the new contract can run and authorize the transition",
+            app,
+            cur_va.version,
+            cur_va.wasm_hash
+        );
+    }
+    Ok(())
 }
 
 /// Collect the set of apps whose version differs between a spent charm's source spell and
@@ -1206,6 +1235,89 @@ mod test {
         );
         let changed = collect_version_changed_apps(&spell, &prev_spells, &BTreeMap::new());
         assert!(changed.is_empty());
+    }
+
+    fn app_input_with(
+        binaries: BTreeMap<B32, Vec<u8>>,
+        private_inputs: BTreeMap<App, Data>,
+    ) -> charms_data::AppInput {
+        charms_data::AppInput {
+            app_binaries: binaries,
+            app_private_inputs: private_inputs,
+            app_signatures: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn authorize_version_changes_no_changes_ok_in_either_branch() {
+        // Empty change set is always OK, regardless of whether app_input is provided.
+        let spell = NormalizedSpell::default();
+        let empty: BTreeSet<App> = BTreeSet::new();
+        authorize_version_changes(&spell, &empty, None).unwrap();
+        let input = app_input_with(BTreeMap::new(), BTreeMap::new());
+        authorize_version_changes(&spell, &empty, Some(&input)).unwrap();
+    }
+
+    #[test]
+    fn authorize_version_changes_without_app_input_rejected() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        let err = authorize_version_changes(&spell, &changed, None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no app binaries provided"),
+            "got: {err}"
+        );
+        assert!(
+            err.contains("A version change requires running the new app binary"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn authorize_version_changes_without_new_binary_rejected() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        // app_input is provided but lacks the new wasm binary (HASH_B).
+        let input = app_input_with(BTreeMap::new(), BTreeMap::new());
+        let err = authorize_version_changes(&spell, &changed, Some(&input))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("its new binary (wasm_hash")
+                && err.contains(HASH_B)
+                && err.contains("must be"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn authorize_version_changes_with_new_binary_ok() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        let mut binaries = BTreeMap::new();
+        binaries.insert(b32(HASH_B), b"any-bytes".to_vec());
+        let input = app_input_with(binaries, BTreeMap::new());
+        authorize_version_changes(&spell, &changed, Some(&input)).unwrap();
     }
 
     #[test]

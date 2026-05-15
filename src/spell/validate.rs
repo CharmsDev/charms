@@ -290,7 +290,6 @@ impl ProveSpellTxImpl {
 
         // Calculate cycles for fee estimation
         let total_cycles = if let Some(app_input) = &app_input {
-            let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
             let version_changed_apps = charms_client::collect_version_changed_apps(
                 &norm_spell,
                 &prev_spells,
