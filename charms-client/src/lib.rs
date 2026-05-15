@@ -581,6 +581,19 @@ pub fn check_app_version_continuity(
         unreachable!("called after well_formed");
     };
 
+    // Inside the zkVM, redundant work is expensive: `is_simple_transfer` does a CBOR
+    // u64 parse per TOKEN charm (or builds two state multisets per NFT) on every call,
+    // and `app_public_inputs.keys().any(...)` is linear. Without hoisting, this loop
+    // was O(inputs * apps_per_input * (ins + outs)). Compute the per-app facts that
+    // don't change across input iterations once up front:
+    let referenced_vks: BTreeSet<&B32> =
+        spell.app_public_inputs.keys().map(|a| &a.vk).collect();
+    let simple_transfer_apps: BTreeSet<&App> = spell
+        .app_public_inputs
+        .keys()
+        .filter(|a| is_simple_transfer(a, tx))
+        .collect();
+
     for (i, input_utxo_id) in tx_ins.iter().enumerate() {
         // Resolve which prev spell + utxo carries the spent charms (handling beaming).
         let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
@@ -633,10 +646,11 @@ pub fn check_app_version_continuity(
             };
 
             // Burn / drop: the spending spell doesn't reference this vk at all, so there
-            // is no successor (version, wasm_hash) to constrain. The charm is being
-            // destroyed (or transferred without invoking this app), which is allowed.
-            let referenced = spell.app_public_inputs.keys().any(|a| a.vk == app.vk);
-            if !referenced {
+            // is no successor (version, wasm_hash) to constrain. In the full `is_correct`
+            // flow this is unreachable (`check_input_apps_are_referenced` rejects it
+            // first), but the function is also called in isolation by tests, so the
+            // local tolerance stays.
+            if !referenced_vks.contains(&app.vk) {
                 continue;
             }
 
@@ -654,7 +668,7 @@ pub fn check_app_version_continuity(
             // Rule 4: a simple transfer must not change the version. If you want to
             // upgrade, do something more than a transfer (so the app contract runs and
             // authorizes the bump explicitly).
-            if is_simple_transfer(app, tx) {
+            if simple_transfer_apps.contains(app) {
                 ensure!(
                     cur_ver.version == prev_ver.version,
                     "input #{} ({}), app {}: simple transfers must keep the version \
