@@ -109,11 +109,18 @@ pub fn binaries_by_vk(
 }
 
 /// JSON-serializable BIP-340 Schnorr keypair, written by `app keygen` and read by `app sign`.
+///
+/// `secret_key` is the raw 32-byte secp256k1 secret scalar (not a BIP-340 "tweaked"
+/// secret). It's paired with `Keypair::from_secret_key`, whose `.x_only_public_key()`
+/// derivation produces `public_key`. Any third-party tool that interprets `secret_key`
+/// differently and produces a different x-only public key will be rejected by
+/// `load_keypair`, which re-derives `public_key` and `vk` from `secret_key` and
+/// requires both to match what's on disk.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AppKeypair {
-    /// Hex-encoded 32-byte BIP-340 x-only public key.
+    /// Hex-encoded 32-byte BIP-340 x-only public key (derived from `secret_key`).
     pub public_key: String,
-    /// Hex-encoded 32-byte secp256k1 secret key.
+    /// Hex-encoded 32-byte raw secp256k1 secret scalar.
     pub secret_key: String,
     /// Hex-encoded 32-byte VK (SHA-256 of `public_key`).
     pub vk: String,

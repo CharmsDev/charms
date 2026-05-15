@@ -18,11 +18,15 @@ macro_rules! main {
 ///
 /// Expands to:
 /// - `pub const VERSION: u32 = $version;` for use in the app's Rust code, and
-/// - a `#[no_mangle] extern "C" fn __app_version() -> u32` export so the version is readable from
-///   the compiled Wasm binary.
+/// - a `#[unsafe(no_mangle)] extern "C" fn __app_version() -> u32` export so the version
+///   is readable from the compiled Wasm binary.
 ///
 /// Use exactly once at the top of an app's `lib.rs`/`main.rs`. Spell prove and check will
-/// verify that this value matches the `version` declared in [`NormalizedSpell::versioned_apps`].
+/// verify that this value matches the `version` declared in `NormalizedSpell::versioned_apps`.
+///
+/// **Edition requirement:** the expansion uses the Rust 2024 spelling
+/// `#[unsafe(no_mangle)]`, which means the consuming crate must be on edition 2024 (or
+/// later). The official `charms-app` template already sets `edition = "2024"`.
 ///
 /// ```ignore
 /// charms_sdk::app_version!(1);

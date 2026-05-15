@@ -462,6 +462,15 @@ pub fn check_prev_versioned_apps_consistency(
 ///
 /// The check is per-input-UTXO, per-app-vk. For beamed inputs, the "previous" spell is the
 /// beam source's spell (since that is where the spent charm's metadata lives).
+///
+/// Scope notes:
+/// - Reference inputs (`spell.tx.refs`) are **not** consulted here: refs are read-only and
+///   don't "spend" a charm, so the version-bump rules don't apply. Cross-tx version
+///   consistency for ref-source spells is still enforced by
+///   [`check_prev_versioned_apps_consistency`], which sees every prev spell.
+/// - When a spent versioned charm's `vk` is not referenced at all by the spending spell's
+///   `app_public_inputs` (e.g. an outright burn), continuity is **skipped**: there is no
+///   successor `(version, wasm_hash)` to constrain.
 pub fn check_app_version_continuity(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
@@ -508,7 +517,9 @@ pub fn check_app_version_continuity(
                 continue;
             };
 
-            // Only enforce when the spending spell also references this vk.
+            // Burn / drop: the spending spell doesn't reference this vk at all, so there
+            // is no successor (version, wasm_hash) to constrain. The charm is being
+            // destroyed (or transferred without invoking this app), which is allowed.
             let referenced = spell.app_public_inputs.keys().any(|a| a.vk == app.vk);
             if !referenced {
                 continue;
@@ -516,8 +527,11 @@ pub fn check_app_version_continuity(
 
             let cur_ver = spell.versioned_apps.get(&app.vk).ok_or_else(|| {
                 anyhow!(
-                    "spent charm with versioned app {} is referenced in the spending spell, but \
-                     the spending spell does not declare it in `versioned_apps`",
+                    "input #{} ({}): spent charm with versioned app {} is referenced in the \
+                     spending spell, but the spending spell does not declare it in \
+                     `versioned_apps`",
+                    i,
+                    source_utxo_id,
                     app
                 )
             })?;
@@ -526,7 +540,10 @@ pub fn check_app_version_continuity(
             if prev_ver.version == 0 {
                 ensure!(
                     cur_ver.version == 0,
-                    "app {}: spent version is 0, spending spell version must also be 0 (got {})",
+                    "input #{} ({}), app {}: spent version is 0, spending spell version must \
+                     also be 0 (got {})",
+                    i,
+                    source_utxo_id,
                     app,
                     cur_ver.version
                 );
@@ -534,8 +551,10 @@ pub fn check_app_version_continuity(
                 // Rule 2: spending version must be same, higher, or 0.
                 ensure!(
                     cur_ver.version == 0 || cur_ver.version >= prev_ver.version,
-                    "app {}: spending version ({}) must be 0, equal to, or higher than the \
-                     spent version ({})",
+                    "input #{} ({}), app {}: spending version ({}) must be 0, equal to, or \
+                     higher than the spent version ({})",
+                    i,
+                    source_utxo_id,
                     app,
                     cur_ver.version,
                     prev_ver.version
@@ -546,8 +565,10 @@ pub fn check_app_version_continuity(
             if cur_ver.version == prev_ver.version {
                 ensure!(
                     cur_ver.wasm_hash == prev_ver.wasm_hash,
-                    "app {}: spending and spent versions are both {}, but Wasm hashes differ \
-                     (spent: {}, spending: {})",
+                    "input #{} ({}), app {}: spending and spent versions are both {}, but Wasm \
+                     hashes differ (spent: {}, spending: {})",
+                    i,
+                    source_utxo_id,
                     app,
                     cur_ver.version,
                     prev_ver.wasm_hash,
