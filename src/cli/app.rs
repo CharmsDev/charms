@@ -204,7 +204,7 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
 
     let app_sig = AppSignature {
         public_key: B32(xonly_pk.serialize()),
-        signature: signature.as_ref().to_vec(),
+        signature: *signature.as_ref(),
     };
     let s = serde_json::to_string_pretty(&app_sig)?;
     match out {

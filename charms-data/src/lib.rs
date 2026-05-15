@@ -14,7 +14,7 @@ use serde::{
     de::{DeserializeOwned, SeqAccess, Visitor},
     ser::SerializeTuple,
 };
-use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
+use serde_with::{Bytes, IfIsHumanReadable, hex::Hex, serde_as};
 pub mod util;
 
 /// Macro to check a condition and return false (early) if it does not hold.
@@ -811,13 +811,15 @@ pub struct VersionedApp {
 ///
 /// The signature scheme is BIP-340 Schnorr over secp256k1. `public_key` is the 32-byte x-only
 /// verifying key (BIP-340); `signature` is the 64-byte Schnorr signature over the SHA256 hash
-/// of the Wasm binary (i.e. over the corresponding [`VersionedApp::wasm_hash`]).
+/// of the Wasm binary (i.e. over the corresponding [`VersionedApp::wasm_hash`]). Both fields
+/// are typed as fixed-size byte arrays so that bad lengths are rejected at the
+/// (de)serialization boundary rather than deep inside signature verification.
 #[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSignature {
     /// BIP-340 x-only public key (32 bytes).
     pub public_key: B32,
     /// BIP-340 Schnorr signature over the Wasm binary's SHA256 hash (64 bytes).
-    #[serde_as(as = "IfIsHumanReadable<Hex>")]
-    pub signature: Vec<u8>,
+    #[serde_as(as = "IfIsHumanReadable<Hex, Bytes>")]
+    pub signature: [u8; 64],
 }
