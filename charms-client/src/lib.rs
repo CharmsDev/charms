@@ -402,28 +402,128 @@ pub fn is_correct(
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
 
-    // Continuity (incl. the simple-transfer "version unchanged" rule) needs the resolved
-    // transaction to know which apps are simple transfers in this spell.
-    check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos, &charms_tx)?;
+    check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
+
+    // Apps whose version changes between any spent charm's prev spell and this spell.
+    // Whenever the version changes, the new contract must actually run to authorize the
+    // transition -- the previous spell only signed off on `(vk, prev_version, prev_wasm)`.
+    let version_changed_apps =
+        collect_version_changed_apps(spell, &prev_spells, tx_ins_beamed_source_utxos);
+
+    authorize_version_changes(spell, &version_changed_apps, app_input.as_ref())?;
 
     match app_input {
         None => {
-            // No binaries / signatures supplied -> every app must be a simple transfer.
-            // Versioned apps are allowed here: the continuity check has just verified
-            // that for every spent versioned charm the version stays unchanged (rule 4),
-            // which by rule 1 also pins the Wasm hash. The previous spell already
-            // authenticated `(vk, version, wasm_hash)`, so no fresh signature is needed.
-            ensure!(apps.iter().all(|app| is_simple_transfer(app, &charms_tx)));
+            // Every app must be a simple transfer; the previous spell's authentication of
+            // `(vk, version, wasm_hash)` is the only authorization available.
+            let non_simple_transfer_apps: Vec<_> = apps
+                .iter()
+                .filter(|app| !is_simple_transfer(app, &charms_tx))
+                .map(|app| app.to_string())
+                .collect();
+            ensure!(
+                non_simple_transfer_apps.is_empty(),
+                "no app binaries provided, but the spell is not a simple transfer for: {:?}. \
+                 Provide the app binaries so the contracts can run, or restructure the spell \
+                 to preserve balances/state.",
+                non_simple_transfer_apps
+            );
         }
-        Some(app_input) => apps_satisfied(
-            &app_input,
-            &spell.versioned_apps,
-            &spell.app_public_inputs,
-            &charms_tx,
-        )?,
+        Some(app_input) => {
+            // `version_changed_apps` is passed through to `run_all`, which uses it to
+            // bypass the simple-transfer fast path for these apps -- so `is_simple_transfer`
+            // is called at most once per app (inside `run_all`).
+            apps_satisfied(
+                &app_input,
+                &spell.versioned_apps,
+                &spell.app_public_inputs,
+                &charms_tx,
+                &version_changed_apps,
+            )?;
+        }
     }
 
     Ok(true)
+}
+
+/// Gate on which a version change must hand off to the new app's contract: when any spent
+/// charm's app version differs from the spending spell's, `app_input` MUST supply the new
+/// Wasm binary so `run_all` can execute it and authorize the transition. Without binaries
+/// (the `None` branch of `is_correct`), no version change is permitted at all.
+fn authorize_version_changes(
+    spell: &NormalizedSpell,
+    version_changed_apps: &BTreeSet<App>,
+    app_input: Option<&AppInput>,
+) -> anyhow::Result<()> {
+    if version_changed_apps.is_empty() {
+        return Ok(());
+    }
+    let Some(app_input) = app_input else {
+        return Err(anyhow!(
+            "no app binaries provided, but versioned-app version changes were declared \
+             for: {:?}. A version change requires running the new app binary to authorize \
+             the transition.",
+            version_changed_apps
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+        ));
+    };
+    for app in version_changed_apps {
+        let cur_va = spell.versioned_apps.get(&app.vk).ok_or_else(|| {
+            anyhow!(
+                "internal: app {} is in version_changed_apps but has no versioned_apps \
+                 entry in the spending spell",
+                app
+            )
+        })?;
+        ensure!(
+            app_input.app_binaries.contains_key(&cur_va.wasm_hash),
+            "app {}: version is changing to {}; its new binary (wasm_hash {}) must be \
+             supplied so the new contract can run and authorize the transition",
+            app,
+            cur_va.version,
+            cur_va.wasm_hash
+        );
+    }
+    Ok(())
+}
+
+/// Collect the set of apps whose version differs between a spent charm's source spell and
+/// the spending spell. Beamed inputs are resolved to their beam-source spell, the same way
+/// [`check_app_version_continuity`] does.
+pub fn collect_version_changed_apps(
+    spell: &NormalizedSpell,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+) -> BTreeSet<App> {
+    let Some(tx_ins) = &spell.tx.ins else {
+        return BTreeSet::new();
+    };
+    let mut changed = BTreeSet::new();
+    for (i, input_utxo_id) in tx_ins.iter().enumerate() {
+        let source_utxo_id = tx_ins_beamed_source_utxos
+            .get(&i)
+            .map(|bs| &bs.0)
+            .unwrap_or(input_utxo_id);
+        let Some((source_spell, _)) = prev_spells.get(&source_utxo_id.0) else {
+            continue;
+        };
+        let Some(prev_charms) = charms_in_utxo(source_spell, source_utxo_id) else {
+            continue;
+        };
+        for app in prev_charms.keys() {
+            if let (Some(prev_va), Some(cur_va)) = (
+                source_spell.versioned_apps.get(&app.vk),
+                spell.versioned_apps.get(&app.vk),
+            ) {
+                if prev_va.version != cur_va.version {
+                    changed.insert(app.clone());
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// Every entry in `spell.versioned_apps` must correspond to at least one app in
@@ -549,13 +649,12 @@ pub fn check_prev_versioned_apps_consistency(
 /// 2. The app version in the spending spell MUST be the same, higher, or `0`.
 /// 3. Version `0` is immutable: if the spent charm's app version is `0`, the spending spell's
 ///    version MUST also be `0`.
-/// 4. If the spending spell is a [simple transfer][is_simple_transfer] for this app (token
-///    balance preserved / NFT state preserved), the app version MUST stay unchanged. This
-///    is strictly stronger than rule 2 for the simple-transfer case: you cannot upgrade an
-///    app via a transaction that only moves charms around. Combined with rule 1 it also
-///    pins the Wasm binary hash, which is why simple transfers don't need to supply the
-///    binary or a fresh signature at all -- the previous spell already authenticated
-///    `(vk, version, wasm_hash)`.
+///
+/// Note: when the version *changes* (rule 2's "higher" or drop-to-`0` case), the spending
+/// spell is required by [`is_correct`] to supply the new Wasm binary and actually run it,
+/// so the new contract authorizes the transition. That requirement is enforced in
+/// [`is_correct`], not here, which is why this function no longer needs to inspect whether
+/// the spell is a "simple transfer" for the app.
 ///
 /// The check is per-input-UTXO, per-app-vk. For beamed inputs, the "previous" spell is the
 /// beam source's spell (since that is where the spent charm's metadata lives).
@@ -575,24 +674,13 @@ pub fn check_app_version_continuity(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
-    tx: &Transaction,
 ) -> anyhow::Result<()> {
     let Some(tx_ins) = &spell.tx.ins else {
         unreachable!("called after well_formed");
     };
 
-    // Inside the zkVM, redundant work is expensive: `is_simple_transfer` does a CBOR
-    // u64 parse per TOKEN charm (or builds two state multisets per NFT) on every call,
-    // and `app_public_inputs.keys().any(...)` is linear. Without hoisting, this loop
-    // was O(inputs * apps_per_input * (ins + outs)). Compute the per-app facts that
-    // don't change across input iterations once up front:
     let referenced_vks: BTreeSet<&B32> =
         spell.app_public_inputs.keys().map(|a| &a.vk).collect();
-    let simple_transfer_apps: BTreeSet<&App> = spell
-        .app_public_inputs
-        .keys()
-        .filter(|a| is_simple_transfer(a, tx))
-        .collect();
 
     for (i, input_utxo_id) in tx_ins.iter().enumerate() {
         // Resolve which prev spell + utxo carries the spent charms (handling beaming).
@@ -665,21 +753,7 @@ pub fn check_app_version_continuity(
                 )
             })?;
 
-            // Rule 4: a simple transfer must not change the version. If you want to
-            // upgrade, do something more than a transfer (so the app contract runs and
-            // authorizes the bump explicitly).
-            if simple_transfer_apps.contains(app) {
-                ensure!(
-                    cur_ver.version == prev_ver.version,
-                    "input #{} ({}), app {}: simple transfers must keep the version \
-                     unchanged (spent: {}, spending: {})",
-                    i,
-                    source_utxo_id,
-                    app,
-                    prev_ver.version,
-                    cur_ver.version
-                );
-            } else if prev_ver.version == 0 {
+            if prev_ver.version == 0 {
                 // Rule 3: version 0 is immutable.
                 ensure!(
                     cur_ver.version == 0,
@@ -744,6 +818,7 @@ fn apps_satisfied(
     versioned_apps: &BTreeMap<B32, VersionedApp>,
     app_public_inputs: &BTreeMap<App, Data>,
     tx: &Transaction,
+    version_changed_apps: &BTreeSet<App>,
 ) -> anyhow::Result<()> {
     let app_runner = AppRunner::new(false);
     app_runner
@@ -754,6 +829,7 @@ fn apps_satisfied(
             &tx,
             app_public_inputs,
             &app_input.app_private_inputs,
+            version_changed_apps,
         )
         .context("all apps should run successfully")?;
     Ok(())
@@ -858,8 +934,8 @@ mod test {
         }
     }
 
-    /// Build the resolved `Transaction` for a fixture so we can pass it to
-    /// `check_app_version_continuity` (and exercise `is_simple_transfer`).
+    /// Build the resolved `Transaction` for a fixture so we can sanity-check
+    /// `is_simple_transfer` in tests.
     fn build_tx(
         spell: &NormalizedSpell,
         prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
@@ -887,7 +963,7 @@ mod test {
             Some(versioned(3, HASH_A)),
             true,
         );
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells)).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -899,7 +975,7 @@ mod test {
             Some(versioned(3, HASH_B)),
             true,
         );
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells))
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
         assert!(err.contains("Wasm hashes differ"), "got: {err}");
@@ -914,7 +990,7 @@ mod test {
             Some(versioned(7, HASH_B)),
             true,
         );
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells)).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -926,7 +1002,7 @@ mod test {
             Some(versioned(3, HASH_B)),
             true,
         );
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells))
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
         assert!(err.contains("must be 0, equal to, or higher"), "got: {err}");
@@ -941,7 +1017,7 @@ mod test {
             Some(versioned(0, HASH_B)),
             true,
         );
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells)).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -953,7 +1029,7 @@ mod test {
             Some(versioned(1, HASH_A)),
             true,
         );
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells))
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
         assert!(err.contains("spent version is 0"), "got: {err}");
@@ -968,7 +1044,7 @@ mod test {
             Some(versioned(0, HASH_A)),
             true,
         );
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells)).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -980,7 +1056,7 @@ mod test {
             Some(versioned(0, HASH_B)),
             true,
         );
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells))
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
         assert!(err.contains("Wasm hashes differ"), "got: {err}");
@@ -991,7 +1067,7 @@ mod test {
         let app = an_app();
         let (spell, prev_spells) =
             build_continuity_fixture(app, Some(versioned(3, HASH_A)), None, true);
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells))
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
             .unwrap_err()
             .to_string();
         assert!(
@@ -1006,7 +1082,7 @@ mod test {
         // Prev declares versioned, spending doesn't reference the app at all (e.g. burn).
         let (spell, prev_spells) =
             build_continuity_fixture(app, Some(versioned(3, HASH_A)), None, false);
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &build_tx(&spell, &prev_spells)).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
@@ -1018,14 +1094,9 @@ mod test {
         // without anyone ever signing it.
         let (spell, prev_spells) =
             build_continuity_fixture(app, None, Some(versioned(2, HASH_A)), true);
-        let err = check_app_version_continuity(
-            &spell,
-            &prev_spells,
-            &BTreeMap::new(),
-            &build_tx(&spell, &prev_spells),
-        )
-        .unwrap_err()
-        .to_string();
+        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("cannot retroactively declare it versioned"),
             "got: {err}"
@@ -1038,13 +1109,7 @@ mod test {
         // Both prev and current treat the app as simple. Continuity has nothing to
         // enforce; the function is a no-op for this vk.
         let (spell, prev_spells) = build_continuity_fixture(app, None, None, true);
-        check_app_version_continuity(
-            &spell,
-            &prev_spells,
-            &BTreeMap::new(),
-            &build_tx(&spell, &prev_spells),
-        )
-        .unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     fn an_nft_app() -> App {
@@ -1115,14 +1180,14 @@ mod test {
         let tx = build_tx(&spell, &prev_spells);
         // Sanity: this really is a simple transfer.
         assert!(is_simple_transfer(&app, &tx));
-        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &tx).unwrap();
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
-    fn simple_transfer_version_bump_rejected() {
+    fn simple_transfer_version_bump_allowed_in_continuity() {
         let app = an_nft_app();
-        // Without the simple-transfer rule, bumping from 3 -> 4 would pass (rule 2
-        // allows higher). Rule 4 rejects it: you can't upgrade via a pure transfer.
+        // Continuity no longer rejects version bumps in a simple transfer (rule 4 was
+        // dropped). The binary-present + must-run requirement now lives in `is_correct`.
         let (spell, prev_spells) = build_simple_nft_transfer_fixture(
             app.clone(),
             Some(versioned(3, HASH_A)),
@@ -1130,19 +1195,14 @@ mod test {
         );
         let tx = build_tx(&spell, &prev_spells);
         assert!(is_simple_transfer(&app, &tx));
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &tx)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            err.contains("simple transfers must keep the version unchanged"),
-            "got: {err}"
-        );
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     #[test]
-    fn simple_transfer_drop_to_zero_rejected() {
+    fn simple_transfer_drop_to_zero_allowed_in_continuity() {
         let app = an_nft_app();
-        // Even though rule 2 allows moving to 0, rule 4 forbids it for simple transfers.
+        // Continuity allows drop-to-0 even for simple transfers (rule 2). Authorization
+        // of the version change is enforced in `is_correct`, not here.
         let (spell, prev_spells) = build_simple_nft_transfer_fixture(
             app.clone(),
             Some(versioned(5, HASH_A)),
@@ -1150,13 +1210,114 @@ mod test {
         );
         let tx = build_tx(&spell, &prev_spells);
         assert!(is_simple_transfer(&app, &tx));
-        let err = check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new(), &tx)
+        check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn collect_version_changed_apps_detects_bump() {
+        let app = an_nft_app();
+        let (spell, prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let changed = collect_version_changed_apps(&spell, &prev_spells, &BTreeMap::new());
+        assert!(changed.contains(&app));
+    }
+
+    #[test]
+    fn collect_version_changed_apps_unchanged_is_empty() {
+        let app = an_nft_app();
+        let (spell, prev_spells) = build_simple_nft_transfer_fixture(
+            app,
+            Some(versioned(3, HASH_A)),
+            Some(versioned(3, HASH_A)),
+        );
+        let changed = collect_version_changed_apps(&spell, &prev_spells, &BTreeMap::new());
+        assert!(changed.is_empty());
+    }
+
+    fn app_input_with(
+        binaries: BTreeMap<B32, Vec<u8>>,
+        private_inputs: BTreeMap<App, Data>,
+    ) -> charms_data::AppInput {
+        charms_data::AppInput {
+            app_binaries: binaries,
+            app_private_inputs: private_inputs,
+            app_signatures: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn authorize_version_changes_no_changes_ok_in_either_branch() {
+        // Empty change set is always OK, regardless of whether app_input is provided.
+        let spell = NormalizedSpell::default();
+        let empty: BTreeSet<App> = BTreeSet::new();
+        authorize_version_changes(&spell, &empty, None).unwrap();
+        let input = app_input_with(BTreeMap::new(), BTreeMap::new());
+        authorize_version_changes(&spell, &empty, Some(&input)).unwrap();
+    }
+
+    #[test]
+    fn authorize_version_changes_without_app_input_rejected() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        let err = authorize_version_changes(&spell, &changed, None)
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("simple transfers must keep the version unchanged"),
+            err.contains("no app binaries provided"),
             "got: {err}"
         );
+        assert!(
+            err.contains("A version change requires running the new app binary"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn authorize_version_changes_without_new_binary_rejected() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        // app_input is provided but lacks the new wasm binary (HASH_B).
+        let input = app_input_with(BTreeMap::new(), BTreeMap::new());
+        let err = authorize_version_changes(&spell, &changed, Some(&input))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("its new binary (wasm_hash")
+                && err.contains(HASH_B)
+                && err.contains("must be"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn authorize_version_changes_with_new_binary_ok() {
+        let app = an_nft_app();
+        let (spell, _prev_spells) = build_simple_nft_transfer_fixture(
+            app.clone(),
+            Some(versioned(3, HASH_A)),
+            Some(versioned(4, HASH_B)),
+        );
+        let mut changed = BTreeSet::new();
+        changed.insert(app);
+        let mut binaries = BTreeMap::new();
+        binaries.insert(b32(HASH_B), b"any-bytes".to_vec());
+        let input = app_input_with(binaries, BTreeMap::new());
+        authorize_version_changes(&spell, &changed, Some(&input)).unwrap();
     }
 
     #[test]

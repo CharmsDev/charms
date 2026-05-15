@@ -6,7 +6,7 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use secp256k1::{Message, Secp256k1, VerifyOnly, XOnlyPublicKey, schnorr};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -422,18 +422,24 @@ impl AppRunner {
         tx: &Transaction,
         app_public_inputs: &BTreeMap<App, Data>,
         app_private_inputs: &BTreeMap<App, Data>,
+        version_changed_apps: &BTreeSet<App>,
     ) -> Result<Vec<u64>> {
         let empty = Data::empty();
         let app_cycles = app_public_inputs
             .iter()
             .map(|(app, x)| {
                 let w = app_private_inputs.get(app).unwrap_or(&empty);
-                if x.is_empty() && w.is_empty() && is_simple_transfer(app, tx) {
-                    // Versioned simple transfers are allowed: the spell-level
-                    // `check_app_version_continuity` has already verified that the
-                    // version (and therefore the Wasm hash) stays unchanged, and the
-                    // previous spell already authenticated `(vk, version, wasm_hash)` --
-                    // so no fresh binary or signature is needed here.
+                // Apps whose version is changing in this spell must execute so the new
+                // contract authorizes the transition (the previous spell only signed off
+                // on `(vk, prev_version, prev_wasm_hash)`). For all other apps, the
+                // simple-transfer fast path is sound: same version implies same Wasm hash
+                // (enforced by `check_app_version_continuity`), and the previous spell
+                // already authenticated `(vk, version, wasm_hash)`.
+                if !version_changed_apps.contains(app)
+                    && x.is_empty()
+                    && w.is_empty()
+                    && is_simple_transfer(app, tx)
+                {
                     eprintln!("➡️  simple transfer w.r.t. app: {}", app);
                     return Ok(0);
                 }

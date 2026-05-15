@@ -264,6 +264,11 @@ impl Check for SpellCli {
             "spell verification failed"
         );
 
+        let version_changed_apps = charms_client::collect_version_changed_apps(
+            &norm_spell,
+            &prev_spells,
+            &tx_ins_beamed_source_utxos,
+        );
         let cycles_spent = self.app_runner.run_all(
             &binaries,
             &norm_spell.versioned_apps,
@@ -271,6 +276,7 @@ impl Check for SpellCli {
             &charms_tx,
             &norm_spell.app_public_inputs,
             &app_private_inputs,
+            &version_changed_apps,
         )?;
 
         eprintln!("cycles spent: {:?}", cycles_spent);
