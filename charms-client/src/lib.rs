@@ -395,6 +395,7 @@ pub fn is_correct(
         .collect();
     ensure!(all_prev_txids == prev_spells.keys().collect());
 
+    ensure_no_orphan_versioned_apps(spell)?;
     check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
 
@@ -423,6 +424,27 @@ pub fn is_correct(
     }
 
     Ok(true)
+}
+
+/// Every entry in `spell.versioned_apps` must correspond to at least one app in
+/// `spell.app_public_inputs`. Without this, a prover bypassing the host-side validator
+/// could commit a spell carrying "orphan" version pins for vks no app references —
+/// those orphans then become part of `prev_spells` for any future spend, where
+/// [`check_prev_versioned_apps_consistency`] would happily compare them and could
+/// reject otherwise-valid spends whose other prev spell legitimately pinned the same
+/// `(vk, version)` to a different `wasm_hash`. The check therefore lives inside
+/// [`is_correct`] (the function whose output is committed to the zkVM proof), not just
+/// in host-side request validation.
+pub fn ensure_no_orphan_versioned_apps(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let app_vks: BTreeSet<&B32> = spell.app_public_inputs.keys().map(|app| &app.vk).collect();
+    for vk in spell.versioned_apps.keys() {
+        ensure!(
+            app_vks.contains(vk),
+            "versioned_apps contains unused vk: {}",
+            vk
+        );
+    }
+    Ok(())
 }
 
 /// Every app that appears in any spent input UTXO's charms MUST also appear in the
@@ -1253,6 +1275,42 @@ mod test {
             (prev_spell_with_versioned(&app.vk, versioned(4, HASH_B)), 1),
         );
         check_prev_versioned_apps_consistency(&prev_spells).unwrap();
+    }
+
+    #[test]
+    fn orphan_versioned_apps_rejected() {
+        // versioned_apps lists a vk that doesn't appear in any app in app_public_inputs.
+        // This must be rejected by `is_correct` (and so by the zkVM proof), not just by
+        // the host-side validator.
+        let app = an_app();
+        let other_vk = b32(
+            "9999999999999999999999999999999999999999999999999999999999999999",
+        );
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![]);
+        spell.tx.outs = vec![];
+        spell.app_public_inputs.insert(app, Data::empty());
+        spell
+            .versioned_apps
+            .insert(other_vk.clone(), versioned(1, HASH_A));
+        let err = ensure_no_orphan_versioned_apps(&spell)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unused vk"), "got: {err}");
+        assert!(err.contains(&other_vk.to_string()), "got: {err}");
+    }
+
+    #[test]
+    fn no_orphan_when_vk_is_referenced() {
+        let app = an_app();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![]);
+        spell.tx.outs = vec![];
+        spell.app_public_inputs.insert(app.clone(), Data::empty());
+        spell
+            .versioned_apps
+            .insert(app.vk.clone(), versioned(1, HASH_A));
+        ensure_no_orphan_versioned_apps(&spell).unwrap();
     }
 
     #[test]

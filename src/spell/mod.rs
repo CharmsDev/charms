@@ -10,11 +10,12 @@ pub use prove_spell_tx::{ProveSpellTx, ProveSpellTxImpl, committed_data_hash};
 pub use request::{CharmsFee, FeeAddressForNetwork, ProveRequest};
 pub use validate::{
     adjust_coin_contents, ensure_all_prev_txs_are_present, ensure_exact_app_binaries,
-    ensure_no_orphan_versioned_apps, ensure_versioned_apps_have_signatures,
+    ensure_versioned_apps_have_signatures,
 };
 
 pub use charms_client::{
-    BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, Proof, SpellProverInput, to_tx,
+    BeamSource, CURRENT_VERSION, NormalizedCharms, NormalizedSpell, Proof, SpellProverInput,
+    ensure_no_orphan_versioned_apps, to_tx,
     tx::{Chain, Tx},
 };
 
