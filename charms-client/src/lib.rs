@@ -395,6 +395,7 @@ pub fn is_correct(
         .collect();
     ensure!(all_prev_txids == prev_spells.keys().collect());
 
+    check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
     check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
 
@@ -418,6 +419,69 @@ pub fn is_correct(
     }
 
     Ok(true)
+}
+
+/// Every app that appears in any spent input UTXO's charms MUST also appear in the
+/// spell's `app_public_inputs`. Without this rule, a spell could spend an input carrying
+/// a charm for app `X` without listing `X` — `apps_satisfied` iterates only
+/// `app_public_inputs`, so `X`'s contract would be bypassed entirely. For a token that
+/// lets value be burned without authorization; for an NFT it lets the NFT be destroyed
+/// without the app's permission.
+///
+/// For beamed inputs the "spent charms" come from the beam source's spell, so we resolve
+/// the source spell + utxo the same way [`check_app_version_continuity`] does.
+pub fn check_input_apps_are_referenced(
+    spell: &NormalizedSpell,
+    prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+) -> anyhow::Result<()> {
+    let Some(tx_ins) = &spell.tx.ins else {
+        unreachable!("called after well_formed");
+    };
+    let referenced: BTreeSet<&App> = spell.app_public_inputs.keys().collect();
+
+    for (i, input_utxo_id) in tx_ins.iter().enumerate() {
+        let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
+            Some(beam_source) => {
+                let beam_source_utxo_id = &beam_source.0;
+                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(
+                    || {
+                        anyhow!(
+                            "missing prev spell for beam source utxo {} (input #{})",
+                            beam_source_utxo_id,
+                            i
+                        )
+                    },
+                )?;
+                (prev_spell, beam_source_utxo_id)
+            }
+            None => {
+                let (prev_spell, _) = prev_spells.get(&input_utxo_id.0).ok_or_else(|| {
+                    anyhow!(
+                        "missing prev spell for input utxo {} (input #{})",
+                        input_utxo_id,
+                        i
+                    )
+                })?;
+                (prev_spell, input_utxo_id)
+            }
+        };
+        let Some(input_charms) = charms_in_utxo(source_spell, source_utxo_id) else {
+            continue;
+        };
+        for app in input_charms.keys() {
+            ensure!(
+                referenced.contains(app),
+                "input #{} ({}) carries a charm for app {}, but the spending spell does not \
+                 list it in `app_public_inputs`. Spending (or burning) the charm requires \
+                 the app to be referenced so its contract can authorize the operation.",
+                i,
+                source_utxo_id,
+                app
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Enforce that all `prev_spells` agree on the Wasm binary hash for any `(vk, version)`
@@ -468,9 +532,12 @@ pub fn check_prev_versioned_apps_consistency(
 ///   don't "spend" a charm, so the version-bump rules don't apply. Cross-tx version
 ///   consistency for ref-source spells is still enforced by
 ///   [`check_prev_versioned_apps_consistency`], which sees every prev spell.
-/// - When a spent versioned charm's `vk` is not referenced at all by the spending spell's
-///   `app_public_inputs` (e.g. an outright burn), continuity is **skipped**: there is no
-///   successor `(version, wasm_hash)` to constrain.
+/// - This function tolerates the case where a spent charm's `vk` is not referenced by the
+///   spending spell (no successor `(version, wasm_hash)` to constrain). In the full
+///   `is_correct` flow that situation is independently rejected earlier by
+///   [`check_input_apps_are_referenced`], because allowing it would let an app's contract
+///   be bypassed entirely. Keeping the local tolerance here makes this function a pure
+///   per-input rule that can be reasoned about in isolation.
 pub fn check_app_version_continuity(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
@@ -864,6 +931,57 @@ mod test {
         let (spell, prev_spells) =
             build_continuity_fixture(app, None, Some(versioned(2, HASH_A)), true);
         check_app_version_continuity(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn input_apps_referenced_ok_when_listed() {
+        let app = an_app();
+        // Prev output 0 carries a charm for `app`; spending spell references `app`.
+        let (spell, prev_spells) = build_continuity_fixture(app, None, None, true);
+        check_input_apps_are_referenced(&spell, &prev_spells, &BTreeMap::new()).unwrap();
+    }
+
+    #[test]
+    fn input_apps_referenced_burn_without_reference_rejected() {
+        let app = an_app();
+        // Prev output 0 carries a charm for `app`; spending spell omits it entirely
+        // (the soundness-bug scenario: attempting to burn without authorizing the app).
+        let (spell, prev_spells) = build_continuity_fixture(app, None, None, false);
+        let err = check_input_apps_are_referenced(&spell, &prev_spells, &BTreeMap::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not list it in `app_public_inputs`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn input_apps_referenced_no_input_charms_ok() {
+        // Input UTXO has no charms attached -> nothing to require.
+        let prev_tx_id = TxId::from_str(
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .unwrap();
+        let prev_utxo = UtxoId(prev_tx_id, 0);
+
+        let mut prev_spell = NormalizedSpell::default();
+        prev_spell.tx.ins = Some(vec![]);
+        prev_spell.tx.refs = Some(vec![]);
+        prev_spell.tx.outs = vec![NormalizedCharms::new()]; // empty charms
+        prev_spell.tx.coins.get_or_insert_with(Vec::new).push(NativeOutput {
+            amount: 0,
+            dest: vec![],
+            content: None,
+        });
+
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![prev_utxo]);
+        spell.tx.outs = vec![];
+
+        let mut prev_spells = BTreeMap::new();
+        prev_spells.insert(prev_tx_id, (prev_spell, 1usize));
+        check_input_apps_are_referenced(&spell, &prev_spells, &BTreeMap::new()).unwrap();
     }
 
     fn prev_spell_with_versioned(vk: &B32, va: VersionedApp) -> NormalizedSpell {
