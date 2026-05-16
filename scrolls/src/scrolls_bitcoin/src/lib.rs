@@ -116,8 +116,9 @@ pub async fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
 /// `seen` is the list of canister IDs already in the delegation chain (the
 /// initiator plus every intermediate hop). On an `UnsupportedSpellVersion`
 /// error, this canister refuses to forward to `NEXT_SCROLLS_BITCOIN_CANISTER_ID`
-/// if that ID — or this canister's own ID — already appears in `seen`,
-/// preventing A → B → A and longer cycles.
+/// if that next ID equals this canister's own ID (A → A) or already appears
+/// in `seen` (A → B → ... → A). After the checks pass, this canister appends
+/// its own ID to `seen` before calling the next hop.
 #[ic_cdk::update]
 pub async fn verify_spell_delegated(
     tx: String,
