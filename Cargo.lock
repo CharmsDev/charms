@@ -2317,6 +2317,7 @@ dependencies = [
  "sp1-verifier-legacy",
  "strum 0.28.0",
  "test-strategy",
+ "thiserror 2.0.18",
  "tracing",
  "uplc",
 ]

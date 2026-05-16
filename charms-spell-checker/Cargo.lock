@@ -713,6 +713,7 @@ dependencies = [
  "sp1-verifier 6.1.0",
  "sp1-verifier-legacy",
  "strum 0.28.0",
+ "thiserror 2.0.18",
  "tracing",
  "uplc",
 ]
