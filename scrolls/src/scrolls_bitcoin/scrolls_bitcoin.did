@@ -20,8 +20,26 @@ service : () -> {
   // Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.
   // Returns an error string on failure.
   // 
+  // For higher spell versions (not supported by this canister's `charms-client`),
+  // delegates to the `verify_spell_delegated` method of the canister specified by
+  // `NEXT_SCROLLS_BITCOIN_CANISTER_ID`, threading the spell version and a list of
+  // already-visited canister IDs to prevent multi-hop delegation cycles.
+  // 
   // The `mock` parameter controls whether mock spells are accepted:
   // - `mock = true`: accepts mock spells (for testing)
   // - `mock = false`: requires real (non-mock) spells
   verify_spell : (text, bool) -> (Result);
+  // Inter-canister entry point for delegated `verify_spell` calls.
+  // 
+  // `spell_version` is the version learned from a previous hop. If it exceeds
+  // this canister's `CURRENT_VERSION`, local verification is skipped and the
+  // request is forwarded directly to the next canister.
+  // 
+  // `seen` is the list of canister IDs already in the delegation chain (the
+  // initiator plus every intermediate hop). On an `UnsupportedSpellVersion`
+  // error, this canister refuses to forward to `NEXT_SCROLLS_BITCOIN_CANISTER_ID`
+  // if that next ID equals this canister's own ID (A → A) or already appears
+  // in `seen` (A → B → ... → A). After the checks pass, this canister appends
+  // its own ID to `seen` before calling the next hop.
+  verify_spell_delegated : (text, bool, nat32, vec text) -> (Result);
 }

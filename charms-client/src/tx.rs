@@ -12,6 +12,17 @@ use sp1_primitives::io::SP1PublicValues;
 use sp1_verifier::Groth16Verifier;
 use std::collections::BTreeMap;
 use strum::{AsRefStr, EnumDiscriminants, EnumString};
+use thiserror::Error;
+
+/// Returned by [`spell_vk`] and [`groth16_vk`] when the requested spell version
+/// is not supported by this build of `charms-client`.
+///
+/// Downstream callers (e.g. ICP canisters that delegate to a newer-version
+/// canister) should detect this via `err.downcast_ref::<UnsupportedSpellVersion>()`
+/// rather than substring-matching the `Display` output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("unsupported spell version: {0}")]
+pub struct UnsupportedSpellVersion(pub u32);
 
 #[enum_dispatch]
 pub trait EnchantedTx {
@@ -115,7 +126,7 @@ pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Resul
         V2 => Ok(V2_SPELL_VK),
         V1 => Ok(V1_SPELL_VK),
         V0 => Ok(V0_SPELL_VK),
-        _ => bail!("unsupported spell version: {}", spell_version),
+        _ => Err(UnsupportedSpellVersion(spell_version).into()),
     }
 }
 
@@ -139,7 +150,7 @@ pub fn groth16_vk(spell_version: u32, mock: bool) -> anyhow::Result<&'static [u8
         V2 => Ok(V2_GROTH16_VK_BYTES),
         V1 => Ok(V1_GROTH16_VK_BYTES),
         V0 => Ok(V0_GROTH16_VK_BYTES),
-        _ => bail!("unsupported spell version: {}", spell_version),
+        _ => Err(UnsupportedSpellVersion(spell_version).into()),
     }
 }
 
@@ -217,6 +228,24 @@ pub fn by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn spell_vk_unsupported_version_typed_error() {
+        let err = spell_vk(u32::MAX, "vk", false).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<UnsupportedSpellVersion>(),
+            Some(&UnsupportedSpellVersion(u32::MAX))
+        );
+    }
+
+    #[test]
+    fn groth16_vk_unsupported_version_typed_error() {
+        let err = groth16_vk(u32::MAX, false).unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<UnsupportedSpellVersion>(),
+            Some(&UnsupportedSpellVersion(u32::MAX))
+        );
+    }
 
     #[test]
     fn chain_names() {
