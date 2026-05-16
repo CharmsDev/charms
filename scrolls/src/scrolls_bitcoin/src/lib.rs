@@ -8,10 +8,11 @@ use bitcoin::{
     secp256k1,
     sighash::SighashCache,
 };
-use candid::CandidType;
+use candid::{CandidType, Principal};
 use charms_data::util;
 use charms_lib::{bitcoin_tx::BitcoinTx, extract_and_verify_spell, tx::Tx};
 use getrandom::register_custom_getrandom;
+use ic_cdk::call::Call;
 use ic_cdk::management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
     sign_with_ecdsa,
@@ -25,6 +26,14 @@ use std::{
 };
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
+
+/// Canister ID of the `scrolls_bitcoin` canister for the *next* major Charms version.
+///
+/// `verify_spell` delegates verification of spells with versions higher than those
+/// supported by this canister's linked `charms-client` to the `verify_spell` method
+/// on that next canister. This allows older `scrolls_bitcoin` canisters to support
+/// newer spell versions by forwarding to the dedicated canister for the next major version.
+const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "";
 
 pub type BitcoinAddresses = BTreeMap<String, String>;
 
@@ -75,15 +84,28 @@ pub fn config() -> Config {
 /// Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.
 /// Returns an error string on failure.
 ///
+/// For higher spell versions (not supported by this canister's `charms-client`),
+/// delegates to the `verify_spell` method of the canister specified by
+/// `NEXT_SCROLLS_BITCOIN_CANISTER_ID`.
+///
 /// The `mock` parameter controls whether mock spells are accepted:
 /// - `mock = true`: accepts mock spells (for testing)
 /// - `mock = false`: requires real (non-mock) spells
 #[ic_cdk::update]
-pub fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
-    verify_spell_impl(&tx, mock).map_err(|e| e.to_string())
+pub async fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
+    verify_spell_impl(tx, mock).await.map_err(|e| e.to_string())
 }
 
-fn verify_spell_impl(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
+async fn verify_spell_impl(tx: String, mock: bool) -> anyhow::Result<String> {
+    // Try local verification first (supports spell versions up to this build's CURRENT_VERSION)
+    match verify_spell_locally(&tx, mock) {
+        Ok(hex) => Ok(hex),
+        Err(e) if is_unsupported_spell_version(&e) => delegate_to_next(tx, mock).await,
+        Err(e) => Err(e),
+    }
+}
+
+fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
     let tx: Tx = BitcoinTx::from_hex(tx_hex)
         .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
         .into();
@@ -95,6 +117,39 @@ fn verify_spell_impl(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
     let spell_hex = hex::encode(spell_bytes);
 
     Ok(spell_hex)
+}
+
+fn is_unsupported_spell_version(err: &anyhow::Error) -> bool {
+    err.to_string().contains("unsupported spell version")
+}
+
+async fn delegate_to_next(tx: String, mock: bool) -> anyhow::Result<String> {
+    let next_id = NEXT_SCROLLS_BITCOIN_CANISTER_ID;
+    if next_id.is_empty() {
+        bail!("Input error: unsupported spell version (NEXT_SCROLLS_BITCOIN_CANISTER_ID not set)");
+    }
+
+    let self_id = ic_cdk::api::canister_self().to_string();
+    if next_id == self_id {
+        bail!("Input error: unsupported spell version (next canister ID points to self)");
+    }
+
+    let principal = Principal::from_text(next_id)
+        .context("System error: parsing NEXT_SCROLLS_BITCOIN_CANISTER_ID")?;
+
+    let response = Call::unbounded_wait(principal, "verify_spell")
+        .with_args(&(tx, mock))
+        .await
+        .map_err(|e| anyhow!("System error: inter-canister call failed: {}", e))?;
+
+    let (inner,): (Result<String, String>,) = response
+        .candid_tuple()
+        .map_err(|e| anyhow!("System error: decoding next canister response: {}", e))?;
+
+    match inner {
+        Ok(spell_hex) => Ok(spell_hex),
+        Err(e) => bail!("Input error: next canister: {}", e),
+    }
 }
 
 #[ic_cdk::update]
