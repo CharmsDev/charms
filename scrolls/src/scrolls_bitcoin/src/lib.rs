@@ -11,14 +11,18 @@ use bitcoin::{
 use candid::{CandidType, Principal};
 use charms_data::util;
 use charms_lib::{
-    CURRENT_VERSION, SPELL_VK, bitcoin_tx::BitcoinTx, extract_and_verify_spell,
+    CURRENT_VERSION, SPELL_VK,
+    bitcoin_tx::BitcoinTx,
+    extract_and_verify_spell,
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
 };
 use getrandom::register_custom_getrandom;
-use ic_cdk::call::Call;
-use ic_cdk::management_canister::{
-    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
-    sign_with_ecdsa,
+use ic_cdk::{
+    call::Call,
+    management_canister::{
+        EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
+        sign_with_ecdsa,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -147,10 +151,7 @@ async fn verify_spell_impl(
     match verify_spell_locally(&tx, mock) {
         Ok(hex) => Ok(hex),
         Err(e) => match e.downcast_ref::<UnsupportedSpellVersion>() {
-            Some(uv) => {
-                let v = uv.0;
-                delegate_to_next(tx, mock, v, seen).await
-            }
+            Some(&UnsupportedSpellVersion(v)) => delegate_to_next(tx, mock, v, seen).await,
             None => Err(e),
         },
     }
@@ -169,7 +170,8 @@ fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
         }
     })?;
 
-    let spell_bytes = util::write(&spell).map_err(|e| anyhow!("System error: serializing spell: {}", e))?;
+    let spell_bytes =
+        util::write(&spell).map_err(|e| anyhow!("System error: serializing spell: {}", e))?;
     let spell_hex = hex::encode(spell_bytes);
 
     Ok(spell_hex)
