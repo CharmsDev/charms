@@ -78,7 +78,7 @@ pub fn config() -> Config {
 /// The `mock` parameter controls whether mock spells are accepted:
 /// - `mock = true`: accepts mock spells (for testing)
 /// - `mock = false`: requires real (non-mock) spells
-#[ic_cdk::query]
+#[ic_cdk::update]
 pub fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
     verify_spell_impl(&tx, mock).map_err(|e| e.to_string())
 }
