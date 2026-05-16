@@ -5,6 +5,7 @@ type Config = record {
   fee_basis_points : nat64;
 };
 type Result = variant { Ok : text; Err : text };
+type Result_1 = variant { Ok : nat; Err : text };
 type SignInput = record { nonce : nat64; index : nat64 };
 type SignRequest = record {
   prev_txs : vec text;
@@ -14,6 +15,16 @@ type SignRequest = record {
 service : () -> {
   address : (text, nat64) -> (Result);
   config : () -> (Config) query;
+  // Current cycle balance of this canister.
+  // 
+  // Exposed as a query so anyone can monitor the canister after blackholing —
+  // `canister_status` on the management canister is controller-only and is
+  // unreachable once the controller list is empty.
+  cycles_balance : () -> (nat) query;
+  // Accept cycles attached to this call (at least `MIN_DEPOSIT_CYCLES`) and
+  // return the new balance. If fewer cycles are attached, nothing is accepted
+  // and the system refunds the caller automatically.
+  deposit_cycles : () -> (Result_1);
   sign : (text, SignRequest) -> (Result);
   // Verify that a Bitcoin transaction carries a correct spell.
   // 

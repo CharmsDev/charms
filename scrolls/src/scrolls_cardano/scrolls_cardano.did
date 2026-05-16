@@ -25,6 +25,7 @@ type HttpRequestResult = record {
   headers : vec HttpHeader;
 };
 type Result = variant { Ok : text; Err : text };
+type Result_1 = variant { Ok : nat; Err : text };
 // # Transform Args.
 // 
 // ```text
@@ -44,6 +45,16 @@ type TransformArgs = record {
 service : () -> {
   certify_final : (text) -> (Result);
   config : () -> (Config) query;
+  // Current cycle balance of this canister.
+  // 
+  // Exposed as a query so anyone can monitor the canister after blackholing —
+  // `canister_status` on the management canister is controller-only and is
+  // unreachable once the controller list is empty.
+  cycles_balance : () -> (nat) query;
+  // Accept cycles attached to this call (at least `MIN_DEPOSIT_CYCLES`) and
+  // return the new balance. If fewer cycles are attached, nothing is accepted
+  // and the system refunds the caller automatically.
+  deposit_cycles : () -> (Result_1);
   finality_vkey : () -> (Result);
   sign : (text) -> (Result);
   // Transform function for HTTP outcalls. Strips headers so all replicas reach consensus

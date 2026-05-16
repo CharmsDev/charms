@@ -34,6 +34,12 @@ use std::{
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
 
+/// Minimum cycles accepted by `deposit_cycles`. Once the canister is blackholed
+/// it can never be topped up by its (now non-existent) controllers, so anybody
+/// must be able to add cycles to keep it alive — but a minimum keeps the
+/// endpoint from being spammed with dust.
+const MIN_DEPOSIT_CYCLES: u128 = 1_000_000_000_000;
+
 /// Canister ID of the `scrolls_bitcoin` canister for the *next* major Charms version.
 ///
 /// `verify_spell` delegates verification of spells with versions higher than those
@@ -89,6 +95,32 @@ fn do_init() {
 #[ic_cdk::query]
 pub fn config() -> Config {
     CONFIG.clone()
+}
+
+/// Current cycle balance of this canister.
+///
+/// Exposed as a query so anyone can monitor the canister after blackholing —
+/// `canister_status` on the management canister is controller-only and is
+/// unreachable once the controller list is empty.
+#[ic_cdk::query]
+pub fn cycles_balance() -> u128 {
+    ic_cdk::api::canister_cycle_balance()
+}
+
+/// Accept cycles attached to this call (at least `MIN_DEPOSIT_CYCLES`) and
+/// return the new balance. If fewer cycles are attached, nothing is accepted
+/// and the system refunds the caller automatically.
+#[ic_cdk::update]
+pub fn deposit_cycles() -> Result<u128, String> {
+    let available = ic_cdk::api::msg_cycles_available();
+    if available < MIN_DEPOSIT_CYCLES {
+        return Err(format!(
+            "Input error: insufficient cycles attached: provided {}, minimum {}",
+            available, MIN_DEPOSIT_CYCLES
+        ));
+    }
+    let _ = ic_cdk::api::msg_cycles_accept(available);
+    Ok(ic_cdk::api::canister_cycle_balance())
 }
 
 /// Verify that a Bitcoin transaction carries a correct spell.
