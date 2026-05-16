@@ -9,6 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::CandidType;
+use charms_data::util;
 use charms_lib::{bitcoin_tx::BitcoinTx, extract_and_verify_spell, tx::Tx};
 use getrandom::register_custom_getrandom;
 use ic_cdk::management_canister::{
@@ -67,6 +68,33 @@ fn do_init() {
 #[ic_cdk::query]
 pub fn config() -> Config {
     CONFIG.clone()
+}
+
+/// Verify that a Bitcoin transaction carries a correct spell.
+///
+/// Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.
+/// Returns an error string on failure.
+///
+/// The `mock` parameter controls whether mock spells are accepted:
+/// - `mock = true`: accepts mock spells (for testing)
+/// - `mock = false`: requires real (non-mock) spells
+#[ic_cdk::query]
+pub fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
+    verify_spell_impl(&tx, mock).map_err(|e| e.to_string())
+}
+
+fn verify_spell_impl(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
+    let tx: Tx = BitcoinTx::from_hex(tx_hex)
+        .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
+        .into();
+
+    let spell = extract_and_verify_spell(&tx, mock)
+        .map_err(|e| anyhow!("Input error: extracting and verifying spell: {}", e))?;
+
+    let spell_bytes = util::write(&spell).map_err(|e| anyhow!("System error: serializing spell: {}", e))?;
+    let spell_hex = hex::encode(spell_bytes);
+
+    Ok(spell_hex)
 }
 
 #[ic_cdk::update]

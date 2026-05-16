@@ -15,4 +15,13 @@ service : () -> {
   address : (text, nat64) -> (Result);
   config : () -> (Config) query;
   sign : (text, SignRequest) -> (Result);
+  // Verify that a Bitcoin transaction carries a correct spell.
+  // 
+  // Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.
+  // Returns an error string on failure.
+  // 
+  // The `mock` parameter controls whether mock spells are accepted:
+  // - `mock = true`: accepts mock spells (for testing)
+  // - `mock = false`: requires real (non-mock) spells
+  verify_spell : (text, bool) -> (Result) query;
 }
