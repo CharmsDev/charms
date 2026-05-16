@@ -36,6 +36,7 @@ sp1-verifier = { workspace = true, default-features = false }
 sp1-verifier_5 = { package = "sp1-verifier", version = "5.2.4", default-features = false }
 sp1-verifier-v6_0 = { package = "sp1-verifier-legacy", version = "6.0.2" }
 strum = { version = "0.28.0", features = ["derive"] }
+thiserror = { version = "2" }
 tracing = { workspace = true }
 uplc = { version = "1.1.21" }
 
