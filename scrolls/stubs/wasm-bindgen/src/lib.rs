@@ -34,6 +34,14 @@ pub use wasm_bindgen_macro::__wasm_bindgen_class_marker;
 pub use wasm_bindgen_macro::link_to;
 pub use wasm_bindgen_macro::wasm_bindgen;
 
+/// Implementation detail referenced by the `wasm_bindgen` proc-macro
+/// expansion. Re-exports the helper-attribute-declaring derive so field-level
+/// `#[wasm_bindgen(skip)]` etc. type-check.
+#[doc(hidden)]
+pub mod __rt {
+    pub use wasm_bindgen_macro::BindgenedStruct;
+}
+
 /// Stub JsValue type for ICP canister compatibility.
 pub struct JsValue {
     _private: (),
