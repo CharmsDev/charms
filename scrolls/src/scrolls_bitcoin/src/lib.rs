@@ -11,11 +11,10 @@ use bitcoin::{
 use candid::{CandidType, Principal};
 use charms_data::util;
 use charms_lib::{
-    CURRENT_VERSION, SPELL_VK,
+    CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
     extract_and_verify_spell,
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
-    NormalizedSpell,
 };
 use getrandom::register_custom_getrandom;
 use ic_cdk::{
@@ -186,9 +185,7 @@ async fn verify_spell_impl(
     match verify_spell_locally(&tx, mock) {
         Ok(spell) => Ok(spell),
         Err(e) => match e.downcast_ref::<UnsupportedSpellVersion>() {
-            Some(&UnsupportedSpellVersion(v)) => {
-                decode_delegated_spell(tx, mock, v, seen).await
-            }
+            Some(&UnsupportedSpellVersion(v)) => decode_delegated_spell(tx, mock, v, seen).await,
             None => Err(e),
         },
     }
@@ -265,12 +262,8 @@ async fn decode_delegated_spell(
     seen: Vec<String>,
 ) -> anyhow::Result<NormalizedSpell> {
     let spell_hex = delegate_to_next(tx, mock, spell_version, seen).await?;
-    let spell_bytes = hex::decode(&spell_hex).map_err(|e| {
-        anyhow!(
-            "System error: decoding spell hex from next canister: {}",
-            e
-        )
-    })?;
+    let spell_bytes = hex::decode(&spell_hex)
+        .map_err(|e| anyhow!("System error: decoding spell hex from next canister: {}", e))?;
     let spell: NormalizedSpell = util::read(spell_bytes.as_slice()).map_err(|e| {
         anyhow!(
             "System error: deserializing spell from next canister: {}",
