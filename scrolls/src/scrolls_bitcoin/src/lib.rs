@@ -17,12 +17,10 @@ use charms_lib::{
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
 };
 use getrandom::register_custom_getrandom;
-use ic_cdk::{
-    call::Call,
-    management_canister::{
-        EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
-        sign_with_ecdsa,
-    },
+use ic_cdk::call::Call;
+use ic_cdk_management_canister::{
+    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
+    sign_with_ecdsa,
 };
 use serde::{Deserialize, Serialize};
 use std::{
