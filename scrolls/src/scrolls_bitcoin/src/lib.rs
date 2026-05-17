@@ -15,6 +15,7 @@ use charms_lib::{
     bitcoin_tx::BitcoinTx,
     extract_and_verify_spell,
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
+    NormalizedSpell,
 };
 use getrandom::register_custom_getrandom;
 use ic_cdk::{
@@ -138,9 +139,10 @@ pub fn deposit_cycles() -> Result<u128, String> {
 /// - `mock = false`: requires real (non-mock) spells
 #[ic_cdk::update]
 pub async fn verify_spell(tx: String, mock: bool) -> Result<String, String> {
-    verify_spell_impl(tx, mock, None, Vec::new())
+    let spell = verify_spell_impl(tx, mock, None, Vec::new())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    spell_to_hex(spell)
 }
 
 /// Inter-canister entry point for delegated `verify_spell` calls.
@@ -162,9 +164,10 @@ pub async fn verify_spell_delegated(
     spell_version: u32,
     seen: Vec<String>,
 ) -> Result<String, String> {
-    verify_spell_impl(tx, mock, Some(spell_version), seen)
+    let spell = verify_spell_impl(tx, mock, Some(spell_version), seen)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    spell_to_hex(spell)
 }
 
 async fn verify_spell_impl(
@@ -172,24 +175,26 @@ async fn verify_spell_impl(
     mock: bool,
     spell_version: Option<u32>,
     seen: Vec<String>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<NormalizedSpell> {
     // If a previous hop already established the version is beyond what we support,
     // skip local verification and forward directly.
     if let Some(v) = spell_version
         && v > CURRENT_VERSION
     {
-        return delegate_to_next(tx, mock, v, seen).await;
+        return decode_delegated_spell(tx, mock, v, seen).await;
     }
     match verify_spell_locally(&tx, mock) {
-        Ok(hex) => Ok(hex),
+        Ok(spell) => Ok(spell),
         Err(e) => match e.downcast_ref::<UnsupportedSpellVersion>() {
-            Some(&UnsupportedSpellVersion(v)) => delegate_to_next(tx, mock, v, seen).await,
+            Some(&UnsupportedSpellVersion(v)) => {
+                decode_delegated_spell(tx, mock, v, seen).await
+            }
             None => Err(e),
         },
     }
 }
 
-fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
+fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<NormalizedSpell> {
     let tx: Tx = BitcoinTx::from_hex(tx_hex)
         .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
         .into();
@@ -202,11 +207,7 @@ fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<String> {
         }
     })?;
 
-    let spell_bytes =
-        util::write(&spell).map_err(|e| anyhow!("System error: serializing spell: {}", e))?;
-    let spell_hex = hex::encode(spell_bytes);
-
-    Ok(spell_hex)
+    Ok(spell)
 }
 
 async fn delegate_to_next(
@@ -255,6 +256,36 @@ async fn delegate_to_next(
         Ok(spell_hex) => Ok(spell_hex),
         Err(e) => bail!("Input error: next canister: {}", e),
     }
+}
+
+async fn decode_delegated_spell(
+    tx: String,
+    mock: bool,
+    spell_version: u32,
+    seen: Vec<String>,
+) -> anyhow::Result<NormalizedSpell> {
+    let spell_hex = delegate_to_next(tx, mock, spell_version, seen).await?;
+    let spell_bytes = hex::decode(&spell_hex).map_err(|e| {
+        anyhow!(
+            "System error: decoding spell hex from next canister: {}",
+            e
+        )
+    })?;
+    let spell: NormalizedSpell = util::read(spell_bytes.as_slice()).map_err(|e| {
+        anyhow!(
+            "System error: deserializing spell from next canister: {}",
+            e
+        )
+    })?;
+    Ok(spell)
+}
+
+/// Serialize a `NormalizedSpell` to its hex-encoded CBOR representation.
+/// Used by the public `verify_spell*` endpoints to produce their `String` return value.
+fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
+    let spell_bytes =
+        util::write(&spell).map_err(|e| format!("System error: serializing spell: {}", e))?;
+    Ok(hex::encode(spell_bytes))
 }
 
 #[ic_cdk::update]
@@ -326,7 +357,8 @@ async fn do_sign(network_str: String, sign_request: SignRequest) -> anyhow::Resu
     );
 
     let prev_txs: BTreeMap<Txid, Transaction> = txid_to_tx(&bitcoin_tx, prev_txs)?;
-    let spell = extract_and_verify_spell(&tx, true)
+    let spell = verify_spell_impl(tx_to_sign, true, None, Vec::new())
+        .await
         .map_err(|e| anyhow!("Input error: extracting and verifying spell: {}", e))?;
     check_prev_txs_mock(&prev_txs, spell.mock)?;
 
