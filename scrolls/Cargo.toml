@@ -24,3 +24,8 @@ wasm-bindgen = { path = "stubs/wasm-bindgen" }
 wasm-bindgen-macro = { path = "stubs/wasm-bindgen-macro" }
 reqwest = { path = "stubs/reqwest" }
 uuid = { path = "stubs/uuid" }
+# mithril-stm 0.10 dropped APIs that mithril-client 0.13.2 (and mithril-common
+# 0.6.43) still depend on. Pin to 0.9.5 (input-output-hk/mithril@567a8e8e,
+# upstream tag 2603.1) so `cargo update` can't bump the whole tree past
+# compatibility.
+mithril-stm = { git = "https://github.com/CharmsDev/mithril.git", branch = "pin-mithril-stm-0.9.5" }

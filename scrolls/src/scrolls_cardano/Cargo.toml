@@ -23,7 +23,19 @@ serde_json = "1.0"
 serde_yaml = { version = "0.9.34" }
 async-trait = "0.1"
 slog = "2.8"
-mithril-client = { version = "0.14.5", default-features = false, features = ["num-integer-backend", "rustls-no-provider"] }
+mithril-client = { version = "=0.13.2", default-features = false, features = ["num-integer-backend"] }
+# Pin mithril transitives so `cargo update` can't drag the tree onto a newer
+# mithril-common/mithril-aggregator-* that assumes mithril-stm 0.10+ APIs.
+# mithril-stm itself is pinned via `[patch.crates-io]` in scrolls/Cargo.toml.
+# The non-wasm pins mirror mithril-client 0.13.2's own target gating: those
+# crates aren't compiled for wasm targets (and pull in tokio features that
+# aren't supported there).
+mithril-common = { version = "=0.6.43", default-features = false }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mithril-aggregator-client = "=0.1.8"
+mithril-aggregator-discovery = "=0.1.1"
+mithril-cardano-node-internal-database = "=0.1.10"
 
 [dev-dependencies]
 cml-chain = { version = "6.2.0" }
