@@ -8,6 +8,13 @@ canisters:
         package: scrolls_bitcoin
         candid: src/scrolls_bitcoin/scrolls_bitcoin.did
 
+  - name: scrolls_bitcoin_v15
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_bitcoin
+        candid: src/scrolls_bitcoin/scrolls_bitcoin.did
+
   - name: scrolls_cardano
     recipe:
       type: "@dfinity/rust@v3.2.0"
