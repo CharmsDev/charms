@@ -49,7 +49,7 @@ const MIN_DEPOSIT_CYCLES: u128 = 1_000_000_000_000;
 /// Each hop appends its own canister ID to the `seen` list passed downstream, so a
 /// misconfigured chain (A → B → A, A → B → C → A, etc.) is detected before the
 /// forwarding inter-canister call is made.
-const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "";
+const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "rpgc6-oqaaa-aaaak-qy3uq-cai";
 
 pub type BitcoinAddresses = BTreeMap<String, String>;
 
