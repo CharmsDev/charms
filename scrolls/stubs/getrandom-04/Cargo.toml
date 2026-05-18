@@ -1,0 +1,22 @@
+[package]
+name = "getrandom"
+version = "0.4.2"
+edition = "2024"
+
+# Stub of getrandom 0.4.x for ICP/wasm32-unknown-unknown. Always returns
+# `Error::UNSUPPORTED` — RNG isn't available on ICP canisters and any caller
+# that needs randomness should fail loudly rather than silently. Exists
+# because real getrandom 0.4.2 has a cfg bug (`Error::WEB_CRYPTO` is gated by
+# `feature = "wasm_js"` in error.rs but only defined when the `wasm_js`
+# backend is actually selected) that breaks compilation when `wasm_js` is
+# enabled by an upstream crate (mithril-client does this) while the backend
+# is overridden to anything else.
+
+[features]
+default = []
+std = []
+sys_rng = ["dep:rand_core"]
+wasm_js = []
+
+[dependencies]
+rand_core = { version = "0.10.0", optional = true, default-features = false }

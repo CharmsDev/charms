@@ -9,9 +9,24 @@ resolver = "2"
 lto = "off"
 opt-level = 3
 
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+strip = "debuginfo"
+overflow-checks = true
+panic = "abort"
+
 [patch.crates-io]
 getrandom = { git = "https://github.com/CharmsDev/getrandom.git", branch = "v0.2.16-nojs" }
-chrono = { git = "https://github.com/CharmsDev/chrono.git", branch = "v0.4.42-nojs" }
+# getrandom 0.4.x has a cfg bug: `Error::WEB_CRYPTO` is gated by
+# `feature = "wasm_js"` but only defined when the `wasm_js` *backend* is
+# selected — enable the feature with a different backend and it doesn't
+# compile. mithril-client 0.14.5 unconditionally enables `wasm_js` for wasm
+# targets, so we route 0.4.x to a local stub that returns `UNSUPPORTED` for
+# every call. ICP canisters don't have a CSRNG.
+getrandom-v04 = { path = "stubs/getrandom-04", package = "getrandom" }
+chrono = { git = "https://github.com/CharmsDev/chrono.git", branch = "v0.4.44-nojs" }
 wasm-bindgen = { path = "stubs/wasm-bindgen" }
 wasm-bindgen-macro = { path = "stubs/wasm-bindgen-macro" }
 reqwest = { path = "stubs/reqwest" }
