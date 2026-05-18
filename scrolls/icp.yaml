@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v0.2.0/docs/schemas/icp-yaml-schema.json
+
+canisters:
+  - name: scrolls_bitcoin
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_bitcoin
+        candid: src/scrolls_bitcoin/scrolls_bitcoin.did
+
+  - name: scrolls_cardano
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_cardano
+        candid: src/scrolls_cardano/scrolls_cardano.did
