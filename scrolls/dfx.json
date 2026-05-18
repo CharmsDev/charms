@@ -1,6 +1,6 @@
 {
   "canisters": {
-    "scrolls_bitcoin": {
+    "scrolls_bitcoin_v14": {
       "candid": "src/scrolls_bitcoin/scrolls_bitcoin.did",
       "package": "scrolls_bitcoin",
       "type": "rust"

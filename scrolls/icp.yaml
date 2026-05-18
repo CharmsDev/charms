@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://github.com/dfinity/icp-cli/raw/refs/tags/v0.2.0/docs/schemas/icp-yaml-schema.json
 
 canisters:
-  - name: scrolls_bitcoin
+  - name: scrolls_bitcoin_v14
     recipe:
       type: "@dfinity/rust@v3.2.0"
       configuration:
