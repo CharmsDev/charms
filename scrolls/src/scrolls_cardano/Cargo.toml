@@ -16,13 +16,14 @@ cml-core = { version = "6.2.0" }
 getrandom = { version = "0.2", features = ["custom"] }
 hex = { version = "0.4.3" }
 hex-literal = { version = "1.1.0" }
-ic-cdk = { version = "0.19.0" }
+ic-cdk = { version = "0.20.1" }
+ic-cdk-management-canister = { version = "0.1" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = { version = "0.9.34" }
 async-trait = "0.1"
 slog = "2.8"
-mithril-client = { version = "0.13", default-features = false, features = ["num-integer-backend"] }
+mithril-client = { version = "0.14.5", default-features = false, features = ["num-integer-backend", "rustls-no-provider"] }
 
 [dev-dependencies]
 cml-chain = { version = "6.2.0" }

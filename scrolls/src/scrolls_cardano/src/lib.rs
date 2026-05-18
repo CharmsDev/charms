@@ -16,7 +16,7 @@ use cml_chain::{
 use cml_core::serialization::RawBytesEncoding;
 use getrandom::register_custom_getrandom;
 use hex_literal::hex;
-use ic_cdk::management_canister::{
+use ic_cdk_management_canister::{
     HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId, SignWithSchnorrArgs, TransformArgs,
     schnorr_public_key, sign_with_schnorr,
 };
@@ -119,7 +119,7 @@ pub async fn vkey() -> anyhow::Result<String, String> {
 }
 
 async fn get_vkey(path: &[&[u8]]) -> anyhow::Result<Vec<u8>> {
-    let schnorr_public_key_args = ic_cdk::management_canister::SchnorrPublicKeyArgs {
+    let schnorr_public_key_args = ic_cdk_management_canister::SchnorrPublicKeyArgs {
         canister_id: None,
         derivation_path: derivation_path(path),
         key_id: key_id(),

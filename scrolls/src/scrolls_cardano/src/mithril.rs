@@ -1,6 +1,6 @@
 use anyhow::{anyhow, ensure};
 use async_trait::async_trait;
-use ic_cdk::management_canister::{
+use ic_cdk_management_canister::{
     HttpMethod, HttpRequestArgs, HttpRequestResult, TransformArgs, http_request,
     transform_context_from_query,
 };
