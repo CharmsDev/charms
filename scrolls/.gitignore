@@ -10,6 +10,9 @@
 # dfx temporary files
 .dfx/
 
+# icp-cli cache (data/ is committed: holds mainnet canister-id mappings)
+.icp/cache/
+
 # generated files
 **/declarations/
 
