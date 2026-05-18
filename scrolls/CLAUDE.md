@@ -12,7 +12,7 @@ Scrolls is a set of Internet Computer (ICP) canisters that sign Bitcoin and Card
 
 ```bash
 # Build canisters
-dfx build scrolls_bitcoin
+dfx build scrolls_bitcoin_v14
 dfx build scrolls_cardano
 
 # Run all workspace tests
@@ -59,7 +59,7 @@ The Cargo workspace contains two crates (`scrolls-api` is excluded — it has it
 
 ### Canister IDs (IC Mainnet)
 
-- scrolls_bitcoin: `lmbwh-3qaaa-aaaak-qunha-cai`
+- scrolls_bitcoin_v14: `lmbwh-3qaaa-aaaak-qunha-cai`
 - scrolls_cardano: `tty7k-waaaa-aaaak-qvngq-cai`
 
 ### Crate-specific notes
