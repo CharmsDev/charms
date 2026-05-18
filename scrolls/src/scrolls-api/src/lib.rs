@@ -26,7 +26,7 @@ use worker::*;
 static SCROLLS_BITCOIN: LazyLock<Principal> = LazyLock::new(|| {
     let canister_ids_json = include_str!("../../../canister_ids.json");
     let canister_ids: serde_json::Value = serde_json::from_str(canister_ids_json).unwrap();
-    let canister_id = canister_ids["scrolls_bitcoin"]["ic"].as_str().unwrap();
+    let canister_id = canister_ids["scrolls_bitcoin_v14"]["ic"].as_str().unwrap();
     Principal::from_text(canister_id).unwrap()
 });
 
