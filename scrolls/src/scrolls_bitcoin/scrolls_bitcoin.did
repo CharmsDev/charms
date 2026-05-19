@@ -6,6 +6,8 @@ type Config = record {
 };
 type Result = variant { Ok : text; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
+type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
+type SignAndSubmitResult = record { txid : text; wtxid : text };
 type SignInput = record { nonce : nat64; index : nat64 };
 type SignRequest = record {
   prev_txs : vec text;
@@ -25,7 +27,7 @@ service : () -> {
   // return the new balance. If fewer cycles are attached, nothing is accepted
   // and the system refunds the caller automatically.
   deposit_cycles : () -> (Result_1);
-  sign : (text, SignRequest) -> (Result);
+  sign_and_submit : (text, SignRequest) -> (Result_2);
   // Verify that a Bitcoin transaction carries a correct spell.
   // 
   // Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.

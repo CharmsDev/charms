@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::{
     Address, CompressedPublicKey, EcdsaSighashType, Network, ScriptBuf, SegwitV0Sighash,
     Transaction, Txid,
-    consensus::encode::{deserialize_hex, serialize_hex},
+    consensus::encode::{deserialize_hex, serialize},
     ecdsa::Signature,
     hashes::Hash,
     secp256k1,
@@ -18,6 +18,9 @@ use charms_lib::{
 };
 use getrandom::register_custom_getrandom;
 use ic_cdk::call::Call;
+use ic_cdk_bitcoin_canister::{
+    Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
+};
 use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
     sign_with_ecdsa,
@@ -318,14 +321,26 @@ pub struct SignRequest {
     tx_to_sign: String,
 }
 
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+pub struct SignAndSubmitResult {
+    pub txid: String,
+    pub wtxid: String,
+}
+
 #[ic_cdk::update]
-pub async fn sign(network: String, sign_request: SignRequest) -> Result<String, String> {
+pub async fn sign_and_submit(
+    network: String,
+    sign_request: SignRequest,
+) -> Result<SignAndSubmitResult, String> {
     do_sign(network, sign_request)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn do_sign(network_str: String, sign_request: SignRequest) -> anyhow::Result<String> {
+async fn do_sign(
+    network_str: String,
+    sign_request: SignRequest,
+) -> anyhow::Result<SignAndSubmitResult> {
     let network = check_network(&network_str)?;
     let SignRequest {
         sign_inputs,
@@ -347,6 +362,8 @@ async fn do_sign(network_str: String, sign_request: SignRequest) -> anyhow::Resu
         "Input error: transaction must have at least one input"
     );
 
+    check_existing_witnesses(&bitcoin_tx, &sign_inputs)?;
+
     let prev_txs: BTreeMap<Txid, Transaction> = txid_to_tx(&bitcoin_tx, prev_txs)?;
     let spell = verify_spell_impl(tx_to_sign, true, None, Vec::new())
         .await
@@ -355,9 +372,57 @@ async fn do_sign(network_str: String, sign_request: SignRequest) -> anyhow::Resu
 
     check_fee(network, &prev_txs, &bitcoin_tx)?;
 
-    let bitcoin_tx = sign_tx(sign_inputs, prev_txs, bitcoin_tx).await?;
+    let signed_tx = sign_tx(sign_inputs, &prev_txs, bitcoin_tx).await?;
 
-    Ok(serialize_hex(&bitcoin_tx))
+    submit_tx(network, &signed_tx).await?;
+
+    Ok(SignAndSubmitResult {
+        txid: signed_tx.compute_txid().to_string(),
+        wtxid: signed_tx.compute_wtxid().to_string(),
+    })
+}
+
+/// Ensure every input that this call is NOT going to sign already carries a non-empty
+/// witness. After the call, every input must be spendable, and the only ones we will
+/// populate here are those listed in `sign_inputs` — everything else must already be
+/// signed by the caller.
+fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[SignInput]) -> anyhow::Result<()> {
+    let signing: HashSet<usize> = sign_inputs.iter().map(|s| s.index).collect();
+    for (i, input) in tx.input.iter().enumerate() {
+        if signing.contains(&i) {
+            ensure!(
+                input.witness.is_empty(),
+                "Input error: input {} already has a witness but is in sign_inputs",
+                i
+            );
+            continue;
+        }
+        ensure!(
+            !input.witness.is_empty(),
+            "Input error: input {} has no witness and is not being signed",
+            i
+        );
+    }
+    Ok(())
+}
+
+async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
+    let btc_network = match network {
+        Network::Bitcoin => BtcNetwork::Mainnet,
+        Network::Testnet4 => BtcNetwork::Testnet,
+        _ => bail!(
+            "Input error: unsupported network for submission: {}",
+            network
+        ),
+    };
+    let request = SendTransactionRequest {
+        transaction: serialize(tx),
+        network: btc_network.into(),
+    };
+    bitcoin_send_transaction(&request)
+        .await
+        .map_err(|e| anyhow!("System error: bitcoin_send_transaction failed: {}", e))?;
+    Ok(())
 }
 
 fn check_network(network: &str) -> anyhow::Result<bitcoin::Network> {
@@ -450,7 +515,7 @@ fn configured_fee_script_pubkey(network: Network) -> ScriptBuf {
 
 async fn sign_tx(
     sign_inputs: Vec<SignInput>,
-    prev_txs: BTreeMap<Txid, Transaction>,
+    prev_txs: &BTreeMap<Txid, Transaction>,
     mut bitcoin_tx: Transaction,
 ) -> anyhow::Result<Transaction> {
     // Validate input indices: must be unique and within signable range
