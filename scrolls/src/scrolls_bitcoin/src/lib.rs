@@ -282,21 +282,25 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 }
 
 #[ic_cdk::update]
-pub async fn address(network: String, tx_in_0: String, out_i: u32) -> Result<String, String> {
-    address_impl(network, tx_in_0, out_i)
+pub async fn addresses(network: String, tx_in_0: String, out_is: Vec<u32>) -> Result<Vec<String>, String> {
+    addresses_impl(network, tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn address_impl(network: String, tx_in_0: String, out_i: u32) -> anyhow::Result<String> {
+async fn addresses_impl(network: String, tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Vec<String>> {
     let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
-    let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
 
-    let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
-    Ok(address)
+    let mut addresses = Vec::with_capacity(out_is.len());
+    for out_i in out_is {
+        let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
+        let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
+        addresses.push(address);
+    }
+    Ok(addresses)
 }
 
 fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> Vec<Vec<u8>> {
