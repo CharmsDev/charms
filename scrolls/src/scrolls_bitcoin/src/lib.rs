@@ -732,10 +732,20 @@ fn txid_to_tx(
         })
         .collect::<anyhow::Result<_>>()?;
     for tx_in in tx.input[..].iter() {
+        let prev_tx = prev_txs
+            .get(&tx_in.previous_output.txid)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Input error: missing prev_tx for txid: {}",
+                    tx_in.previous_output.txid
+                )
+            })?;
+        let vout = tx_in.previous_output.vout as usize;
         ensure!(
-            prev_txs.contains_key(&tx_in.previous_output.txid),
-            "Input error: missing prev_tx for txid: {}",
-            tx_in.previous_output.txid
+            vout < prev_tx.output.len(),
+            "Input error: prev_tx for txid: {} missing output with index: {}",
+            tx_in.previous_output.txid,
+            tx_in.previous_output.vout
         );
     }
     Ok(prev_txs)
