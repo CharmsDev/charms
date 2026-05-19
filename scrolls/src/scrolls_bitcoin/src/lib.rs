@@ -378,12 +378,12 @@ fn schnorr_sign_key_id() -> SchnorrKeyId {
     }
 }
 
-fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> anyhow::Result<Vec<Vec<u8>>> {
-    let tx_in_0_bytes =
-        util::write(tx_in_0).context("System error: serializing tx_in_0 for derivation path")?;
-    let out_i_bytes =
-        util::write(&out_i).context("System error: serializing out_i for derivation path")?;
-    Ok(vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes])
+fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> Vec<Vec<u8>> {
+    vec![
+        SCROLLS.to_vec(),
+        tx_in_0.to_bytes().to_vec(),
+        out_i.to_le_bytes().to_vec(),
+    ]
 }
 
 fn key_id() -> EcdsaKeyId {
@@ -737,7 +737,7 @@ async fn sign_tx_sighash_for_output(
     out_i: u32,
     tx_sighash: &SegwitV0Sighash,
 ) -> anyhow::Result<Signature> {
-    sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i)?, tx_sighash).await
+    sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i), tx_sighash).await
 }
 
 async fn derive_public_key_with_path(
@@ -760,7 +760,7 @@ async fn derive_public_key_for_output(
     tx_in_0: &UtxoId,
     out_i: u32,
 ) -> anyhow::Result<CompressedPublicKey> {
-    derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)?).await
+    derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)).await
 }
 
 fn txid_to_tx(
