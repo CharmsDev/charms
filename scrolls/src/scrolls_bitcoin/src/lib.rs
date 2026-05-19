@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::{
     Address, CompressedPublicKey, EcdsaSighashType, Network, ScriptBuf, SegwitV0Sighash,
-    Transaction, Txid,
+    Transaction, TxIn, Txid,
     consensus::encode::{deserialize_hex, serialize},
     ecdsa::Signature,
     hashes::Hash,
@@ -9,7 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::util;
+use charms_data::{TxId, UtxoId, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
@@ -29,7 +29,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     str::FromStr,
-    string::ToString,
     sync::LazyLock,
 };
 
@@ -283,22 +282,61 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 }
 
 #[ic_cdk::update]
-pub async fn address(network: String, nonce: u64) -> Result<String, String> {
-    address_impl(network, nonce)
+/// Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+///
+/// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
+/// It identifies the unique "anchor" used for key derivation:
+///
+/// * For a normal (non-coinbase) output, this is the outpoint (`{txid}:{vout}`) of the *first
+///   input* of the transaction that created the output(s) being addressed.
+/// * For an output created by a **coinbase** transaction, use the all-zeros txid (the txid that
+///   appears as the first input's `txid` of the coinbase transaction itself) together with the
+///   block height (as a decimal integer) in place of the vout. Example:
+///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
+///
+/// `out_is` is a list of output indexes (within the creating transaction)
+/// for which addresses should be generated. At most 256 indexes are accepted
+/// per call.
+pub async fn addresses(
+    network: String,
+    tx_in_0: String,
+    out_is: Vec<u32>,
+) -> Result<Vec<String>, String> {
+    addresses_impl(network, tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn address_impl(network: String, nonce: u64) -> anyhow::Result<String> {
-    let network = check_network(&network)?;
-    let public_key = derive_public_key(nonce).await?;
+async fn addresses_impl(
+    network: String,
+    tx_in_0: String,
+    out_is: Vec<u32>,
+) -> anyhow::Result<Vec<String>> {
+    ensure!(
+        out_is.len() <= 256,
+        "Input error: too many output indexes requested (max: 256)"
+    );
 
-    let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
-    Ok(address)
+    let network = check_network(&network)?;
+    let tx_in_0: UtxoId = tx_in_0
+        .parse()
+        .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
+
+    let mut addresses = Vec::with_capacity(out_is.len());
+    for out_i in out_is {
+        let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
+        let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
+        addresses.push(address);
+    }
+    Ok(addresses)
 }
 
-fn derivation_path(nonce: u64) -> Vec<Vec<u8>> {
-    vec![SCROLLS.to_vec(), nonce.to_le_bytes().to_vec()]
+fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> anyhow::Result<Vec<Vec<u8>>> {
+    let tx_in_0_bytes =
+        util::write(tx_in_0).context("System error: serializing tx_in_0 for derivation path")?;
+    let out_i_bytes =
+        util::write(&out_i).context("System error: serializing out_i for derivation path")?;
+    Ok(vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes])
 }
 
 fn key_id() -> EcdsaKeyId {
@@ -309,14 +347,8 @@ fn key_id() -> EcdsaKeyId {
 }
 
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
-pub struct SignInput {
-    pub index: usize,
-    pub nonce: u64,
-}
-
-#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
 pub struct SignRequest {
-    sign_inputs: Vec<SignInput>,
+    sign_inputs: Vec<u32>,
     prev_txs: Vec<String>,
     tx_to_sign: String,
 }
@@ -391,19 +423,19 @@ async fn do_sign(
 /// Bounds and duplicate detection happen first so that an out-of-range or
 /// repeated `sign_inputs` index produces an accurate error message instead of
 /// a misleading "input N has no witness" report.
-fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[SignInput]) -> anyhow::Result<()> {
+fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Result<()> {
     let input_count = tx.input.len();
     let mut signing: HashSet<usize> = HashSet::new();
-    for sign_input in sign_inputs {
-        let idx = sign_input.index;
+    for &idx in sign_inputs {
+        let idx_usize = idx as usize;
         ensure!(
-            idx < input_count,
+            idx_usize < input_count,
             "Input error: input_index {} is out of range [0, {})",
             idx,
             input_count
         );
         ensure!(
-            signing.insert(idx),
+            signing.insert(idx_usize),
             "Input error: duplicate input_index: {}",
             idx
         );
@@ -526,6 +558,18 @@ fn signable_inputs(tx: &Transaction) -> usize {
     tx.input.len()
 }
 
+/// Extract the block height from a coinbase input's scriptSig.
+/// The caller must pass `&tx.input[0]` of a coinbase transaction (i.e. after checking `tx.is_coinbase()`).
+/// Returns `None` if the height could not be parsed.
+fn extract_coinbase_height(coinbase_input: &TxIn) -> Option<u32> {
+    let push = coinbase_input.script_sig.instructions_minimal().next()?.ok()?;
+    let bitcoin::script::Instruction::PushBytes(b) = push else {
+        return None;
+    };
+    let h = bitcoin::script::read_scriptint(b.as_bytes()).ok()?;
+    u32::try_from(h).ok()
+}
+
 fn configured_fee_script_pubkey(network: Network) -> ScriptBuf {
     let expected_fee_script_pubkey = Address::from_str(&CONFIG.fee_address[network.to_core_arg()])
         .unwrap()
@@ -535,54 +579,94 @@ fn configured_fee_script_pubkey(network: Network) -> ScriptBuf {
 }
 
 async fn sign_tx(
-    sign_inputs: Vec<SignInput>,
+    sign_inputs: Vec<u32>,
     prev_txs: &BTreeMap<Txid, Transaction>,
     mut bitcoin_tx: Transaction,
 ) -> anyhow::Result<Transaction> {
-    for sign_input in sign_inputs {
-        let input_index = sign_input.index;
-        let nonce = sign_input.nonce;
-
-        let public_key = derive_public_key(nonce).await?;
-
+    for input_index in sign_inputs {
+        let input_index_usize = input_index as usize;
         let out_point = bitcoin_tx
             .input
-            .get(input_index)
+            .get(input_index_usize)
             .ok_or_else(|| anyhow!("Input error: invalid input_index: {}", input_index))?
             .previous_output;
-        let tx_out = prev_txs
+
+        // The UTXO we are spending was created as output `out_point.vout` in `creating_tx`.
+        // Its controlling key was derived from (first input of that creating_tx, output index).
+        // For coinbase-created outputs we instead use (coinbase_txid, block_height).
+        let creating_tx = prev_txs
             .get(&out_point.txid)
-            .ok_or_else(|| anyhow!("Input error: missing prev_tx with txid: {}", out_point.txid))?
-            .output
-            .get(out_point.vout as usize)
-            .ok_or_else(|| {
+            .ok_or_else(|| anyhow!("Input error: missing prev_tx with txid: {}", out_point.txid))?;
+
+        let first_in = creating_tx.input.first().ok_or_else(|| {
+            anyhow!(
+                "Input error: prev_tx {} has no inputs; cannot derive address path",
+                out_point.txid
+            )
+        })?;
+
+        let second_field = if creating_tx.is_coinbase() {
+            extract_coinbase_height(first_in).ok_or_else(|| {
                 anyhow!(
-                    "Input error: prev_tx {} missing output with index: {}",
-                    out_point.txid,
-                    out_point.vout
+                    "Input error: could not extract block height from coinbase {}",
+                    out_point.txid
                 )
-            })?;
-        let script_pubkey = &tx_out.script_pubkey;
-        let value = tx_out.value;
+            })?
+        } else {
+            first_in.previous_output.vout
+        };
+        let tx_in_0 = UtxoId(
+            TxId(first_in.previous_output.txid.to_byte_array()),
+            second_field,
+        );
+        let out_i = out_point.vout;
+
+        let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
+
+        let tx_out = creating_tx.output.get(out_i as usize).ok_or_else(|| {
+            anyhow!(
+                "Input error: prev_tx {} missing output with index: {}",
+                out_point.txid,
+                out_i
+            )
+        })?;
+
+        // Verify that the output actually pays to the key we just derived.
+        // This prevents wasting an expensive threshold ECDSA call on malformed/adversarial
+        // prev_txs.
+        let expected_spk = ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash());
+        ensure!(
+            tx_out.script_pubkey == expected_spk,
+            "Input error: output script in prev_tx {} does not match the derived public key",
+            out_point.txid
+        );
 
         let tx_sighash = SighashCache::new(&bitcoin_tx)
-            .p2wpkh_signature_hash(input_index, script_pubkey, value, EcdsaSighashType::All)
+            .p2wpkh_signature_hash(
+                input_index_usize,
+                &tx_out.script_pubkey,
+                tx_out.value,
+                EcdsaSighashType::All,
+            )
             .map_err(|e| anyhow!("System error: computing sighash: {}", e))?;
 
-        let ecdsa_signature = sign_tx_sighash(nonce, &tx_sighash).await?;
+        let ecdsa_signature = sign_tx_sighash_for_output(&tx_in_0, out_i, &tx_sighash).await?;
 
-        let witness = &mut bitcoin_tx.input[input_index].witness;
+        let witness = &mut bitcoin_tx.input[input_index_usize].witness;
         witness.push_ecdsa_signature(&ecdsa_signature);
         witness.push(&public_key.to_bytes());
     }
     Ok(bitcoin_tx)
 }
 
-async fn sign_tx_sighash(nonce: u64, tx_sighash: &SegwitV0Sighash) -> anyhow::Result<Signature> {
+async fn sign_tx_sighash_with_path(
+    derivation_path: Vec<Vec<u8>>,
+    tx_sighash: &SegwitV0Sighash,
+) -> anyhow::Result<Signature> {
     let message_hash = tx_sighash.to_byte_array().to_vec();
     let sign_with_ecdsa_arg = SignWithEcdsaArgs {
         message_hash,
-        derivation_path: derivation_path(nonce),
+        derivation_path,
         key_id: key_id(),
     };
     let sign_result = sign_with_ecdsa(&sign_with_ecdsa_arg)
@@ -597,10 +681,20 @@ async fn sign_tx_sighash(nonce: u64, tx_sighash: &SegwitV0Sighash) -> anyhow::Re
     Ok(ecdsa_signature)
 }
 
-async fn derive_public_key(nonce: u64) -> anyhow::Result<CompressedPublicKey> {
+async fn sign_tx_sighash_for_output(
+    tx_in_0: &UtxoId,
+    out_i: u32,
+    tx_sighash: &SegwitV0Sighash,
+) -> anyhow::Result<Signature> {
+    sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i)?, tx_sighash).await
+}
+
+async fn derive_public_key_with_path(
+    derivation_path: Vec<Vec<u8>>,
+) -> anyhow::Result<CompressedPublicKey> {
     let ecdsa_public_key_args = EcdsaPublicKeyArgs {
         canister_id: None,
-        derivation_path: derivation_path(nonce),
+        derivation_path,
         key_id: key_id(),
     };
     let ecdsa_public_key_result = ecdsa_public_key(&ecdsa_public_key_args)
@@ -609,6 +703,13 @@ async fn derive_public_key(nonce: u64) -> anyhow::Result<CompressedPublicKey> {
     let public_key = CompressedPublicKey::from_slice(&ecdsa_public_key_result.public_key)
         .map_err(|e| anyhow!("System error: parsing user public key: {}", e))?;
     Ok(public_key)
+}
+
+async fn derive_public_key_for_output(
+    tx_in_0: &UtxoId,
+    out_i: u32,
+) -> anyhow::Result<CompressedPublicKey> {
+    derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)?).await
 }
 
 fn txid_to_tx(

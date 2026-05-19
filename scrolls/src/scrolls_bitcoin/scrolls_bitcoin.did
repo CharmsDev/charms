@@ -4,18 +4,33 @@ type Config = record {
   fixed_cost : nat64;
   fee_basis_points : nat64;
 };
-type Result = variant { Ok : text; Err : text };
+type Result = variant { Ok : vec text; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
 type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
+type Result_3 = variant { Ok : text; Err : text };
 type SignAndSubmitResult = record { txid : text; wtxid : text };
-type SignInput = record { nonce : nat64; index : nat64 };
 type SignRequest = record {
   prev_txs : vec text;
-  sign_inputs : vec SignInput;
+  sign_inputs : vec nat32;
   tx_to_sign : text;
 };
 service : () -> {
-  address : (text, nat64) -> (Result);
+  // Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+  // 
+  // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
+  // It identifies the unique "anchor" used for key derivation:
+  // 
+  // * For a normal (non-coinbase) output, this is the outpoint (`{txid}:{vout}`) of the *first
+  // input* of the transaction that created the output(s) being addressed.
+  // * For an output created by a **coinbase** transaction, use the all-zeros txid (the txid that
+  // appears as the first input's `txid` of the coinbase transaction itself) together with the
+  // block height (as a decimal integer) in place of the vout. Example:
+  // `0000000000000000000000000000000000000000000000000000000000000000:123456`
+  // 
+  // `out_is` is a list of output indexes (within the creating transaction)
+  // for which addresses should be generated. At most 256 indexes are accepted
+  // per call.
+  addresses : (text, text, vec nat32) -> (Result);
   config : () -> (Config) query;
   // Current cycle balance of this canister.
   // 
@@ -41,7 +56,7 @@ service : () -> {
   // The `mock` parameter controls whether mock spells are accepted:
   // - `mock = true`: accepts mock spells (for testing)
   // - `mock = false`: requires real (non-mock) spells
-  verify_spell : (text, bool) -> (Result);
+  verify_spell : (text, bool) -> (Result_3);
   // Inter-canister entry point for delegated `verify_spell` calls.
   // 
   // `spell_version` is the version learned from a previous hop. If it exceeds
@@ -54,5 +69,5 @@ service : () -> {
   // if that next ID equals this canister's own ID (A → A) or already appears
   // in `seen` (A → B → ... → A). After the checks pass, this canister appends
   // its own ID to `seen` before calling the next hop.
-  verify_spell_delegated : (text, bool, nat32, vec text) -> (Result);
+  verify_spell_delegated : (text, bool, nat32, vec text) -> (Result_3);
 }
