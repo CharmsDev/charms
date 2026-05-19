@@ -591,67 +591,61 @@ async fn sign_tx(
             .ok_or_else(|| anyhow!("Input error: invalid input_index: {}", input_index))?
             .previous_output;
 
-        // The UTXO we are spending was created as output `out_point.vout` in `prev_tx`.
-        // Its controlling key was derived from (first input of that prev_tx, output index).
+        // The UTXO we are spending was created as output `out_point.vout` in `creating_tx`.
+        // Its controlling key was derived from (first input of that creating_tx, output index).
         // For coinbase-created outputs we instead use (coinbase_txid, block_height).
         let creating_tx = prev_txs
             .get(&out_point.txid)
             .ok_or_else(|| anyhow!("Input error: missing prev_tx with txid: {}", out_point.txid))?;
 
-        ensure!(
-            !creating_tx.input.is_empty(),
-            "Input error: prev_tx {} has no inputs; cannot derive address path",
-            out_point.txid
-        );
+        let first_in = creating_tx.input.first().ok_or_else(|| {
+            anyhow!(
+                "Input error: prev_tx {} has no inputs; cannot derive address path",
+                out_point.txid
+            )
+        })?;
 
-        let first_in = &creating_tx.input[0].previous_output;
-
-        let tx_in_0 = if creating_tx.is_coinbase() {
-            let height = extract_coinbase_height(&creating_tx.input[0]).ok_or_else(|| {
+        let second_field = if creating_tx.is_coinbase() {
+            extract_coinbase_height(first_in).ok_or_else(|| {
                 anyhow!(
                     "Input error: could not extract block height from coinbase {}",
                     out_point.txid
                 )
-            })?;
-            UtxoId(TxId(first_in.txid.to_byte_array()), height)
+            })?
         } else {
-            UtxoId(TxId(first_in.txid.to_byte_array()), first_in.vout)
+            first_in.previous_output.vout
         };
+        let tx_in_0 = UtxoId(
+            TxId(first_in.previous_output.txid.to_byte_array()),
+            second_field,
+        );
         let out_i = out_point.vout;
 
         let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
 
-        let tx_out = creating_tx
-            .output
-            .get(out_point.vout as usize)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Input error: prev_tx {} missing output with index: {}",
-                    out_point.txid,
-                    out_point.vout
-                )
-            })?;
+        let tx_out = creating_tx.output.get(out_i as usize).ok_or_else(|| {
+            anyhow!(
+                "Input error: prev_tx {} missing output with index: {}",
+                out_point.txid,
+                out_i
+            )
+        })?;
 
         // Verify that the output actually pays to the key we just derived.
         // This prevents wasting an expensive threshold ECDSA call on malformed/adversarial
         // prev_txs.
-        let hash = bitcoin::hashes::hash160::Hash::hash(&public_key.to_bytes());
-        let pubkey_hash = bitcoin::WPubkeyHash::from_byte_array(hash.to_byte_array());
-        let expected_spk = bitcoin::ScriptBuf::new_p2wpkh(&pubkey_hash);
+        let expected_spk = ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash());
         ensure!(
-            &tx_out.script_pubkey == &expected_spk,
+            tx_out.script_pubkey == expected_spk,
             "Input error: output script in prev_tx {} does not match the derived public key",
             out_point.txid
         );
 
-        let script_pubkey = &tx_out.script_pubkey;
-        let value = tx_out.value;
-
         let tx_sighash = SighashCache::new(&bitcoin_tx)
             .p2wpkh_signature_hash(
                 input_index_usize,
-                script_pubkey,
-                value,
+                &tx_out.script_pubkey,
+                tx_out.value,
                 EcdsaSighashType::All,
             )
             .map_err(|e| anyhow!("System error: computing sighash: {}", e))?;
