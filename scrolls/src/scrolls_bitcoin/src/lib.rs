@@ -301,7 +301,7 @@ pub async fn addresses(
     network: String,
     tx_in_0: String,
     out_is: Vec<u32>,
-) -> Result<Vec<String>, String> {
+) -> Result<BTreeMap<u32, String>, String> {
     addresses_impl(network, tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
@@ -311,7 +311,7 @@ async fn addresses_impl(
     network: String,
     tx_in_0: String,
     out_is: Vec<u32>,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<BTreeMap<u32, String>> {
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
@@ -322,11 +322,11 @@ async fn addresses_impl(
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
 
-    let mut addresses = Vec::with_capacity(out_is.len());
+    let mut addresses = BTreeMap::new();
     for out_i in out_is {
         let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
         let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
-        addresses.push(address);
+        addresses.insert(out_i, address);
     }
     Ok(addresses)
 }

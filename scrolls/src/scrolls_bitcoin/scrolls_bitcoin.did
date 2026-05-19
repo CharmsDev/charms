@@ -4,7 +4,7 @@ type Config = record {
   fixed_cost : nat64;
   fee_basis_points : nat64;
 };
-type Result = variant { Ok : vec text; Err : text };
+type Result = variant { Ok : vec record { nat32; text }; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
 type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
 type Result_3 = variant { Ok : text; Err : text };
