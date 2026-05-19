@@ -292,7 +292,7 @@ pub async fn sign(
         .with_arg(Encode!(&network, &sign_request).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("System error: encoding sign request: {}", e),
+                format!("System error: encoding sign_and_submit request: {}", e),
             )
         })?)
         .call()
@@ -300,7 +300,7 @@ pub async fn sign(
         .map_err(|e| {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("System error: calling sign method: {}", e),
+                format!("System error: calling sign_and_submit method: {}", e),
             )
         })?;
     let response = wait_for_response(agent, update_response)
@@ -315,7 +315,7 @@ pub async fn sign(
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("System error: decoding sign response: {}", e),
+                format!("System error: decoding sign_and_submit response: {}", e),
             )
         })?
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Upstream error: {}", e)))?;

@@ -382,26 +382,47 @@ async fn do_sign(
     })
 }
 
-/// Ensure every input that this call is NOT going to sign already carries a non-empty
-/// witness. After the call, every input must be spendable, and the only ones we will
-/// populate here are those listed in `sign_inputs` — everything else must already be
-/// signed by the caller.
+/// Validate `sign_inputs` and ensure every input that this call is NOT going to
+/// sign already carries a signature (witness or `script_sig`). After the call,
+/// every input must be spendable, and the only ones we will populate here are
+/// those listed in `sign_inputs` — everything else must already be signed by
+/// the caller.
+///
+/// Bounds and duplicate detection happen first so that an out-of-range or
+/// repeated `sign_inputs` index produces an accurate error message instead of
+/// a misleading "input N has no witness" report.
 fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[SignInput]) -> anyhow::Result<()> {
-    let signing: HashSet<usize> = sign_inputs.iter().map(|s| s.index).collect();
+    let input_count = tx.input.len();
+    let mut signing: HashSet<usize> = HashSet::new();
+    for sign_input in sign_inputs {
+        let idx = sign_input.index;
+        ensure!(
+            idx < input_count,
+            "Input error: input_index {} is out of range [0, {})",
+            idx,
+            input_count
+        );
+        ensure!(
+            signing.insert(idx),
+            "Input error: duplicate input_index: {}",
+            idx
+        );
+    }
     for (i, input) in tx.input.iter().enumerate() {
+        let is_signed = !input.witness.is_empty() || !input.script_sig.is_empty();
         if signing.contains(&i) {
             ensure!(
-                input.witness.is_empty(),
-                "Input error: input {} already has a witness but is in sign_inputs",
+                !is_signed,
+                "Input error: input {} already has a signature but is in sign_inputs",
                 i
             );
-            continue;
+        } else {
+            ensure!(
+                is_signed,
+                "Input error: input {} has no signature and is not being signed",
+                i
+            );
         }
-        ensure!(
-            !input.witness.is_empty(),
-            "Input error: input {} has no witness and is not being signed",
-            i
-        );
     }
     Ok(())
 }
@@ -518,24 +539,6 @@ async fn sign_tx(
     prev_txs: &BTreeMap<Txid, Transaction>,
     mut bitcoin_tx: Transaction,
 ) -> anyhow::Result<Transaction> {
-    // Validate input indices: must be unique and within signable range
-    let signable_count = signable_inputs(&bitcoin_tx);
-    let mut seen_indices: HashSet<usize> = HashSet::new();
-    for sign_input in &sign_inputs {
-        let idx = sign_input.index;
-        ensure!(
-            idx < signable_count,
-            "Input error: input_index {} is out of signable range [0, {})",
-            idx,
-            signable_count
-        );
-        ensure!(
-            seen_indices.insert(idx),
-            "Input error: duplicate input_index: {}",
-            idx
-        );
-    }
-
     for sign_input in sign_inputs {
         let input_index = sign_input.index;
         let nonce = sign_input.nonce;
