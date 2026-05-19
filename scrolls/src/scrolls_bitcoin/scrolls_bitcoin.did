@@ -10,11 +10,11 @@ type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
 type SignAndSubmitResult = record { txid : text; wtxid : text };
 type SignRequest = record {
   prev_txs : vec text;
-  sign_inputs : vec nat64;
+  sign_inputs : vec nat32;
   tx_to_sign : text;
 };
 service : () -> {
-  address : (text, text, nat64) -> (Result);
+  address : (text, text, nat32) -> (Result);
   config : () -> (Config) query;
   // Current cycle balance of this canister.
   // 

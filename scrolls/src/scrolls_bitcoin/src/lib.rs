@@ -282,13 +282,13 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 }
 
 #[ic_cdk::update]
-pub async fn address(network: String, tx_in_0: String, out_i: usize) -> Result<String, String> {
+pub async fn address(network: String, tx_in_0: String, out_i: u32) -> Result<String, String> {
     address_impl(network, tx_in_0, out_i)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn address_impl(network: String, tx_in_0: String, out_i: usize) -> anyhow::Result<String> {
+async fn address_impl(network: String, tx_in_0: String, out_i: u32) -> anyhow::Result<String> {
     let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
         .parse()
@@ -299,11 +299,11 @@ async fn address_impl(network: String, tx_in_0: String, out_i: usize) -> anyhow:
     Ok(address)
 }
 
-fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: usize) -> Vec<Vec<u8>> {
+fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> Vec<Vec<u8>> {
     let tx_in_0_bytes = util::write(tx_in_0)
         .expect("UtxoId should always serialize");
     let out_i_bytes = util::write(&out_i)
-        .expect("usize should always serialize");
+        .expect("u32 should always serialize");
     vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes]
 }
 
@@ -316,7 +316,7 @@ fn key_id() -> EcdsaKeyId {
 
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
 pub struct SignRequest {
-    sign_inputs: Vec<usize>,
+    sign_inputs: Vec<u32>,
     prev_txs: Vec<String>,
     tx_to_sign: String,
 }
@@ -391,18 +391,19 @@ async fn do_sign(
 /// Bounds and duplicate detection happen first so that an out-of-range or
 /// repeated `sign_inputs` index produces an accurate error message instead of
 /// a misleading "input N has no witness" report.
-fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[usize]) -> anyhow::Result<()> {
+fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Result<()> {
     let input_count = tx.input.len();
     let mut signing: HashSet<usize> = HashSet::new();
     for &idx in sign_inputs {
+        let idx_usize = idx as usize;
         ensure!(
-            idx < input_count,
+            idx_usize < input_count,
             "Input error: input_index {} is out of range [0, {})",
             idx,
             input_count
         );
         ensure!(
-            signing.insert(idx),
+            signing.insert(idx_usize),
             "Input error: duplicate input_index: {}",
             idx
         );
@@ -534,14 +535,15 @@ fn configured_fee_script_pubkey(network: Network) -> ScriptBuf {
 }
 
 async fn sign_tx(
-    sign_inputs: Vec<usize>,
+    sign_inputs: Vec<u32>,
     prev_txs: &BTreeMap<Txid, Transaction>,
     mut bitcoin_tx: Transaction,
 ) -> anyhow::Result<Transaction> {
     for input_index in sign_inputs {
+        let input_index_usize = input_index as usize;
         let out_point = bitcoin_tx
             .input
-            .get(input_index)
+            .get(input_index_usize)
             .ok_or_else(|| anyhow!("Input error: invalid input_index: {}", input_index))?
             .previous_output;
 
@@ -559,7 +561,7 @@ async fn sign_tx(
 
         let first_in = &creating_tx.input[0].previous_output;
         let tx_in_0 = UtxoId(TxId(first_in.txid.to_byte_array()), first_in.vout);
-        let out_i = out_point.vout as usize;
+        let out_i = out_point.vout;
 
         let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
 
@@ -577,12 +579,12 @@ async fn sign_tx(
         let value = tx_out.value;
 
         let tx_sighash = SighashCache::new(&bitcoin_tx)
-            .p2wpkh_signature_hash(input_index, script_pubkey, value, EcdsaSighashType::All)
+            .p2wpkh_signature_hash(input_index_usize, script_pubkey, value, EcdsaSighashType::All)
             .map_err(|e| anyhow!("System error: computing sighash: {}", e))?;
 
         let ecdsa_signature = sign_tx_sighash_for_output(&tx_in_0, out_i, &tx_sighash).await?;
 
-        let witness = &mut bitcoin_tx.input[input_index].witness;
+        let witness = &mut bitcoin_tx.input[input_index_usize].witness;
         witness.push_ecdsa_signature(&ecdsa_signature);
         witness.push(&public_key.to_bytes());
     }
@@ -613,7 +615,7 @@ async fn sign_tx_sighash_with_path(
 
 async fn sign_tx_sighash_for_output(
     tx_in_0: &UtxoId,
-    out_i: usize,
+    out_i: u32,
     tx_sighash: &SegwitV0Sighash,
 ) -> anyhow::Result<Signature> {
     sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i), tx_sighash).await
@@ -637,7 +639,7 @@ async fn derive_public_key_with_path(
 
 async fn derive_public_key_for_output(
     tx_in_0: &UtxoId,
-    out_i: usize,
+    out_i: u32,
 ) -> anyhow::Result<CompressedPublicKey> {
     derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)).await
 }
