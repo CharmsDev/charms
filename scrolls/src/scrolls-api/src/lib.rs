@@ -274,19 +274,25 @@ pub struct SignRequest {
     pub tx_to_sign: String,
 }
 
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+pub struct SignAndSubmitResult {
+    pub txid: String,
+    pub wtxid: String,
+}
+
 #[worker::send]
 pub async fn sign(
     State(app_state): State<AppState>,
     Path(network): Path<String>,
     Json(sign_request): Json<SignRequest>,
-) -> Result<Json<String>, (StatusCode, String)> {
+) -> Result<Json<SignAndSubmitResult>, (StatusCode, String)> {
     let agent = app_state.agent.clone();
     let update_response = agent
-        .update(&SCROLLS_BITCOIN, "sign")
+        .update(&SCROLLS_BITCOIN, "sign_and_submit")
         .with_arg(Encode!(&network, &sign_request).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("System error: encoding sign request: {}", e),
+                format!("System error: encoding sign_and_submit request: {}", e),
             )
         })?)
         .call()
@@ -294,7 +300,7 @@ pub async fn sign(
         .map_err(|e| {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("System error: calling sign method: {}", e),
+                format!("System error: calling sign_and_submit method: {}", e),
             )
         })?;
     let response = wait_for_response(agent, update_response)
@@ -305,11 +311,11 @@ pub async fn sign(
                 format!("System error: waiting for response: {}", e),
             )
         })?;
-    let result = Decode!(&response, Result<String, String>)
+    let result = Decode!(&response, Result<SignAndSubmitResult, String>)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("System error: decoding sign response: {}", e),
+                format!("System error: decoding sign_and_submit response: {}", e),
             )
         })?
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("Upstream error: {}", e)))?;
