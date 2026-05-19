@@ -289,6 +289,11 @@ pub async fn addresses(network: String, tx_in_0: String, out_is: Vec<u32>) -> Re
 }
 
 async fn addresses_impl(network: String, tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Vec<String>> {
+    ensure!(
+        out_is.len() <= 256,
+        "Input error: too many output indexes requested (max: 256)"
+    );
+
     let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
         .parse()
@@ -303,12 +308,12 @@ async fn addresses_impl(network: String, tx_in_0: String, out_is: Vec<u32>) -> a
     Ok(addresses)
 }
 
-fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> Vec<Vec<u8>> {
+fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> anyhow::Result<Vec<Vec<u8>>> {
     let tx_in_0_bytes = util::write(tx_in_0)
-        .expect("UtxoId should always serialize");
+        .context("System error: serializing tx_in_0 for derivation path")?;
     let out_i_bytes = util::write(&out_i)
-        .expect("u32 should always serialize");
-    vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes]
+        .context("System error: serializing out_i for derivation path")?;
+    Ok(vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes])
 }
 
 fn key_id() -> EcdsaKeyId {
@@ -564,6 +569,12 @@ async fn sign_tx(
         );
 
         let first_in = &creating_tx.input[0].previous_output;
+        ensure!(
+            first_in.txid != bitcoin::Txid::all_zeros(),
+            "Input error: prev_tx {} is a coinbase transaction; coinbase-created outputs cannot be used as derivation anchors",
+            out_point.txid
+        );
+
         let tx_in_0 = UtxoId(TxId(first_in.txid.to_byte_array()), first_in.vout);
         let out_i = out_point.vout;
 
@@ -579,6 +590,18 @@ async fn sign_tx(
                     out_point.vout
                 )
             })?;
+
+        // Verify that the output actually pays to the key we just derived.
+        // This prevents wasting an expensive threshold ECDSA call on malformed/adversarial prev_txs.
+        let hash = bitcoin::hashes::hash160::Hash::hash(&public_key.to_bytes());
+        let pubkey_hash = bitcoin::WPubkeyHash::from_byte_array(hash.to_byte_array());
+        let expected_spk = bitcoin::ScriptBuf::new_p2wpkh(&pubkey_hash);
+        ensure!(
+            &tx_out.script_pubkey == &expected_spk,
+            "Input error: output script in prev_tx {} does not match the derived public key",
+            out_point.txid
+        );
+
         let script_pubkey = &tx_out.script_pubkey;
         let value = tx_out.value;
 
@@ -622,7 +645,7 @@ async fn sign_tx_sighash_for_output(
     out_i: u32,
     tx_sighash: &SegwitV0Sighash,
 ) -> anyhow::Result<Signature> {
-    sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i), tx_sighash).await
+    sign_tx_sighash_with_path(derivation_path_for_output(tx_in_0, out_i)?, tx_sighash).await
 }
 
 async fn derive_public_key_with_path(
@@ -645,7 +668,7 @@ async fn derive_public_key_for_output(
     tx_in_0: &UtxoId,
     out_i: u32,
 ) -> anyhow::Result<CompressedPublicKey> {
-    derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)).await
+    derive_public_key_with_path(derivation_path_for_output(tx_in_0, out_i)?).await
 }
 
 fn txid_to_tx(
