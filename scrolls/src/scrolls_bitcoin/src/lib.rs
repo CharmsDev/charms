@@ -1,7 +1,7 @@
 use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::{
     Address, CompressedPublicKey, EcdsaSighashType, Network, ScriptBuf, SegwitV0Sighash,
-    Transaction, Txid,
+    Transaction, TxIn, Txid,
     consensus::encode::{deserialize_hex, serialize},
     ecdsa::Signature,
     hashes::Hash,
@@ -9,7 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::{util, TxId, UtxoId};
+use charms_data::{TxId, UtxoId, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
@@ -282,13 +282,36 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 }
 
 #[ic_cdk::update]
-pub async fn addresses(network: String, tx_in_0: String, out_is: Vec<u32>) -> Result<Vec<String>, String> {
+/// Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+///
+/// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
+/// It identifies the unique "anchor" used for key derivation:
+///
+/// * For a normal (non-coinbase) output, this is the outpoint (`{txid}:{vout}`) of the *first
+///   input* of the transaction that created the output(s) being addressed.
+/// * For an output created by a **coinbase** transaction, use the all-zeros txid (the txid that
+///   appears as the first input's `txid` of the coinbase transaction itself) together with the
+///   block height (as a decimal integer) in place of the vout. Example:
+///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
+///
+/// `out_is` is a list of output indexes (within the creating transaction)
+/// for which addresses should be generated. At most 256 indexes are accepted
+/// per call.
+pub async fn addresses(
+    network: String,
+    tx_in_0: String,
+    out_is: Vec<u32>,
+) -> Result<Vec<String>, String> {
     addresses_impl(network, tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn addresses_impl(network: String, tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Vec<String>> {
+async fn addresses_impl(
+    network: String,
+    tx_in_0: String,
+    out_is: Vec<u32>,
+) -> anyhow::Result<Vec<String>> {
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
@@ -309,10 +332,10 @@ async fn addresses_impl(network: String, tx_in_0: String, out_is: Vec<u32>) -> a
 }
 
 fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> anyhow::Result<Vec<Vec<u8>>> {
-    let tx_in_0_bytes = util::write(tx_in_0)
-        .context("System error: serializing tx_in_0 for derivation path")?;
-    let out_i_bytes = util::write(&out_i)
-        .context("System error: serializing out_i for derivation path")?;
+    let tx_in_0_bytes =
+        util::write(tx_in_0).context("System error: serializing tx_in_0 for derivation path")?;
+    let out_i_bytes =
+        util::write(&out_i).context("System error: serializing out_i for derivation path")?;
     Ok(vec![SCROLLS.to_vec(), tx_in_0_bytes, out_i_bytes])
 }
 
@@ -535,6 +558,18 @@ fn signable_inputs(tx: &Transaction) -> usize {
     tx.input.len()
 }
 
+/// Extract the block height from a coinbase input's scriptSig.
+/// The caller must pass `&tx.input[0]` of a coinbase transaction (i.e. after checking `tx.is_coinbase()`).
+/// Returns `None` if the height could not be parsed.
+fn extract_coinbase_height(coinbase_input: &TxIn) -> Option<u32> {
+    let push = coinbase_input.script_sig.instructions_minimal().next()?.ok()?;
+    let bitcoin::script::Instruction::PushBytes(b) = push else {
+        return None;
+    };
+    let h = bitcoin::script::read_scriptint(b.as_bytes()).ok()?;
+    u32::try_from(h).ok()
+}
+
 fn configured_fee_script_pubkey(network: Network) -> ScriptBuf {
     let expected_fee_script_pubkey = Address::from_str(&CONFIG.fee_address[network.to_core_arg()])
         .unwrap()
@@ -558,6 +593,7 @@ async fn sign_tx(
 
         // The UTXO we are spending was created as output `out_point.vout` in `prev_tx`.
         // Its controlling key was derived from (first input of that prev_tx, output index).
+        // For coinbase-created outputs we instead use (coinbase_txid, block_height).
         let creating_tx = prev_txs
             .get(&out_point.txid)
             .ok_or_else(|| anyhow!("Input error: missing prev_tx with txid: {}", out_point.txid))?;
@@ -569,13 +605,18 @@ async fn sign_tx(
         );
 
         let first_in = &creating_tx.input[0].previous_output;
-        ensure!(
-            first_in.txid != bitcoin::Txid::all_zeros(),
-            "Input error: prev_tx {} is a coinbase transaction; coinbase-created outputs cannot be used as derivation anchors",
-            out_point.txid
-        );
 
-        let tx_in_0 = UtxoId(TxId(first_in.txid.to_byte_array()), first_in.vout);
+        let tx_in_0 = if creating_tx.is_coinbase() {
+            let height = extract_coinbase_height(&creating_tx.input[0]).ok_or_else(|| {
+                anyhow!(
+                    "Input error: could not extract block height from coinbase {}",
+                    out_point.txid
+                )
+            })?;
+            UtxoId(TxId(first_in.txid.to_byte_array()), height)
+        } else {
+            UtxoId(TxId(first_in.txid.to_byte_array()), first_in.vout)
+        };
         let out_i = out_point.vout;
 
         let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
@@ -592,7 +633,8 @@ async fn sign_tx(
             })?;
 
         // Verify that the output actually pays to the key we just derived.
-        // This prevents wasting an expensive threshold ECDSA call on malformed/adversarial prev_txs.
+        // This prevents wasting an expensive threshold ECDSA call on malformed/adversarial
+        // prev_txs.
         let hash = bitcoin::hashes::hash160::Hash::hash(&public_key.to_bytes());
         let pubkey_hash = bitcoin::WPubkeyHash::from_byte_array(hash.to_byte_array());
         let expected_spk = bitcoin::ScriptBuf::new_p2wpkh(&pubkey_hash);
@@ -606,7 +648,12 @@ async fn sign_tx(
         let value = tx_out.value;
 
         let tx_sighash = SighashCache::new(&bitcoin_tx)
-            .p2wpkh_signature_hash(input_index_usize, script_pubkey, value, EcdsaSighashType::All)
+            .p2wpkh_signature_hash(
+                input_index_usize,
+                script_pubkey,
+                value,
+                EcdsaSighashType::All,
+            )
             .map_err(|e| anyhow!("System error: computing sighash: {}", e))?;
 
         let ecdsa_signature = sign_tx_sighash_for_output(&tx_in_0, out_i, &tx_sighash).await?;

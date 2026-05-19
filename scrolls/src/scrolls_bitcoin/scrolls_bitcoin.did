@@ -15,6 +15,21 @@ type SignRequest = record {
   tx_to_sign : text;
 };
 service : () -> {
+  // Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+  // 
+  // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
+  // It identifies the unique "anchor" used for key derivation:
+  // 
+  // * For a normal (non-coinbase) output, this is the outpoint (`{txid}:{vout}`) of the *first
+  // input* of the transaction that created the output(s) being addressed.
+  // * For an output created by a **coinbase** transaction, use the all-zeros txid (the txid that
+  // appears as the first input's `txid` of the coinbase transaction itself) together with the
+  // block height (as a decimal integer) in place of the vout. Example:
+  // `0000000000000000000000000000000000000000000000000000000000000000:123456`
+  // 
+  // `out_is` is a list of output indexes (within the creating transaction)
+  // for which addresses should be generated. At most 256 indexes are accepted
+  // per call.
   addresses : (text, text, vec nat32) -> (Result);
   config : () -> (Config) query;
   // Current cycle balance of this canister.
