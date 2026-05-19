@@ -1,10 +1,18 @@
+// Result of [`addresses`]: the map from output index to derived P2WPKH address,
+// plus a BIP-340 Schnorr signature over the CBOR-serialized map produced by the
+// canister's chain key under derivation path `[b"sign"]`. The signature is
+// hex-encoded.
+type AddressesResult = record {
+  signature : text;
+  addresses : vec record { nat32; text };
+};
 type Config = record {
   fee_per_input : nat64;
   fee_address : vec record { text; text };
   fixed_cost : nat64;
   fee_basis_points : nat64;
 };
-type Result = variant { Ok : vec record { nat32; text }; Err : text };
+type Result = variant { Ok : AddressesResult; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
 type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
 type Result_3 = variant { Ok : text; Err : text };
@@ -15,7 +23,9 @@ type SignRequest = record {
   tx_to_sign : text;
 };
 service : () -> {
-  // Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+  // Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor,
+  // together with a BIP-340 Schnorr signature over the address map produced by the canister's
+  // chain key under derivation path `[b"sign"]`.
   // 
   // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
   // It identifies the unique "anchor" used for key derivation:

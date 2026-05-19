@@ -22,8 +22,8 @@ use ic_cdk_bitcoin_canister::{
     Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
 };
 use ic_cdk_management_canister::{
-    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SignWithEcdsaArgs, ecdsa_public_key,
-    sign_with_ecdsa,
+    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs,
+    SignWithSchnorrArgs, ecdsa_public_key, sign_with_ecdsa, sign_with_schnorr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -33,6 +33,7 @@ use std::{
 };
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
+const SIGN: &'static [u8; 4] = b"sign";
 
 /// Minimum cycles accepted by `deposit_cycles`. Once the canister is blackholed
 /// it can never be topped up by its (now non-existent) controllers, so anybody
@@ -281,8 +282,20 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
     Ok(hex::encode(spell_bytes))
 }
 
+/// Result of [`addresses`]: the map from output index to derived P2WPKH address,
+/// plus a BIP-340 Schnorr signature over the CBOR-serialized map produced by the
+/// canister's chain key under derivation path `[b"sign"]`. The signature is
+/// hex-encoded.
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+pub struct AddressesResult {
+    pub addresses: BTreeMap<u32, String>,
+    pub signature: String,
+}
+
 #[ic_cdk::update]
-/// Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor.
+/// Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor,
+/// together with a BIP-340 Schnorr signature over the address map produced by the canister's
+/// chain key under derivation path `[b"sign"]`.
 ///
 /// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
 /// It identifies the unique "anchor" used for key derivation:
@@ -301,7 +314,7 @@ pub async fn addresses(
     network: String,
     tx_in_0: String,
     out_is: Vec<u32>,
-) -> Result<BTreeMap<u32, String>, String> {
+) -> Result<AddressesResult, String> {
     addresses_impl(network, tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
@@ -311,7 +324,7 @@ async fn addresses_impl(
     network: String,
     tx_in_0: String,
     out_is: Vec<u32>,
-) -> anyhow::Result<BTreeMap<u32, String>> {
+) -> anyhow::Result<AddressesResult> {
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
@@ -328,7 +341,41 @@ async fn addresses_impl(
         let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
         addresses.insert(out_i, address);
     }
-    Ok(addresses)
+
+    let signature = sign_addresses(&addresses).await?;
+
+    Ok(AddressesResult {
+        addresses,
+        signature,
+    })
+}
+
+/// Sign the CBOR serialization of `addresses` (after SHA-256 hashing) with the
+/// canister's BIP-340/secp256k1 Schnorr chain key under derivation path
+/// `[b"sign"]`. Returns the hex-encoded signature.
+async fn sign_addresses(addresses: &BTreeMap<u32, String>) -> anyhow::Result<String> {
+    let message_bytes =
+        util::write(addresses).context("System error: serializing addresses for signing")?;
+    let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
+        .to_byte_array()
+        .to_vec();
+    let args = SignWithSchnorrArgs {
+        message: message_hash,
+        derivation_path: vec![SIGN.to_vec()],
+        key_id: schnorr_sign_key_id(),
+        aux: None,
+    };
+    let result = sign_with_schnorr(&args)
+        .await
+        .map_err(|e| anyhow!("System error: signing addresses with Schnorr: {}", e))?;
+    Ok(hex::encode(&result.signature))
+}
+
+fn schnorr_sign_key_id() -> SchnorrKeyId {
+    SchnorrKeyId {
+        algorithm: SchnorrAlgorithm::Bip340secp256k1,
+        name: "key_1".to_string(),
+    }
 }
 
 fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> anyhow::Result<Vec<Vec<u8>>> {
@@ -559,10 +606,14 @@ fn signable_inputs(tx: &Transaction) -> usize {
 }
 
 /// Extract the block height from a coinbase input's scriptSig.
-/// The caller must pass `&tx.input[0]` of a coinbase transaction (i.e. after checking `tx.is_coinbase()`).
-/// Returns `None` if the height could not be parsed.
+/// The caller must pass `&tx.input[0]` of a coinbase transaction (i.e. after checking
+/// `tx.is_coinbase()`). Returns `None` if the height could not be parsed.
 fn extract_coinbase_height(coinbase_input: &TxIn) -> Option<u32> {
-    let push = coinbase_input.script_sig.instructions_minimal().next()?.ok()?;
+    let push = coinbase_input
+        .script_sig
+        .instructions_minimal()
+        .next()?
+        .ok()?;
     let bitcoin::script::Instruction::PushBytes(b) = push else {
         return None;
     };
@@ -732,14 +783,12 @@ fn txid_to_tx(
         })
         .collect::<anyhow::Result<_>>()?;
     for tx_in in tx.input[..].iter() {
-        let prev_tx = prev_txs
-            .get(&tx_in.previous_output.txid)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Input error: missing prev_tx for txid: {}",
-                    tx_in.previous_output.txid
-                )
-            })?;
+        let prev_tx = prev_txs.get(&tx_in.previous_output.txid).ok_or_else(|| {
+            anyhow!(
+                "Input error: missing prev_tx for txid: {}",
+                tx_in.previous_output.txid
+            )
+        })?;
         let vout = tx_in.previous_output.vout as usize;
         ensure!(
             vout < prev_tx.output.len(),
