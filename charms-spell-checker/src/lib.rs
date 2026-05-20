@@ -20,6 +20,7 @@ pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
         spell,
         tx_ins_beamed_source_utxos,
         app_input,
+        scrolls_addresses,
     } = input;
 
     // Check the spell that we're proving is correct.
@@ -30,6 +31,7 @@ pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
             app_input,
             &self_spell_vk,
             &tx_ins_beamed_source_utxos,
+            scrolls_addresses.as_ref(),
         )
         .unwrap()
     );

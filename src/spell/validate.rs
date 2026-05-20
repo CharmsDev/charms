@@ -284,6 +284,7 @@ impl ProveSpellTxImpl {
                 app_input.clone(),
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
+                None,
             )?,
             "spell verification failed"
         );

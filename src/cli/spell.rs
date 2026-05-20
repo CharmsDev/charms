@@ -141,6 +141,7 @@ impl Prove for SpellCli {
                     app_input,
                     SPELL_VK,
                     &prove_request.tx_ins_beamed_source_utxos,
+                    None,
                 )?,
                 "spell verification failed"
             );
@@ -260,6 +261,7 @@ impl Check for SpellCli {
                 app_input,
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
+                None,
             )?,
             "spell verification failed"
         );

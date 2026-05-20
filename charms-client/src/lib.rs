@@ -1,9 +1,13 @@
-use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
-use anyhow::{Context, anyhow, ensure};
+use crate::{
+    bitcoin_tx::SCROLLS_ADDRS_PUBKEY,
+    tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell},
+};
+use anyhow::{Context, anyhow, bail, ensure};
+use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, VersionedApp,
-    check, is_simple_transfer,
+    App, AppInput, B32, Charms, Data, NativeOutput, SCROLL, TOKEN, Transaction, TxId, UtxoId,
+    VersionedApp, check, is_simple_transfer, util,
 };
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
@@ -128,6 +132,20 @@ pub struct NormalizedTransaction {
     /// Amounts of native coin in transaction outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coins: Option<Vec<NativeOutput>>,
+
+    /// Indexes of outputs that MUST be sent to a Scrolls-managed address on Bitcoin.
+    ///
+    /// When non-empty on a Bitcoin spell, [`SpellProverInput::scrolls_addresses`] MUST
+    /// carry the signed `output_index -> address` map obtained by calling `addresses()`
+    /// on the `scrolls_bitcoin_v15` canister (passing the Bitcoin network — `"main"` or
+    /// `"testnet4"` — the spell's first input UTXO outpoint, and this set of indexes).
+    /// [`is_correct`] verifies the canister's BIP-340 Schnorr signature and that this
+    /// set equals the keys of the signed address map.
+    ///
+    /// Every spell-output containing a charm whose app has tag [`charms_data::SCROLL`]
+    /// MUST have its index listed here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrolls: Option<BTreeSet<u32>>,
 }
 
 impl NormalizedTransaction {
@@ -359,6 +377,17 @@ pub fn charms(spell: &NormalizedSpell, n_charms: &NormalizedCharms) -> Charms {
         .collect()
 }
 
+/// Output of the `scrolls_bitcoin_v15` canister's `addresses(...)` endpoint:
+/// a map from spell-output index to its derived P2WPKH address, plus a hex-encoded
+/// BIP-340 Schnorr signature over the CBOR serialization of the map, produced under
+/// the canister's chain key derivation path `[b"sign"]`. The signature is verified
+/// against [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignedScrollsAddresses {
+    pub addresses: BTreeMap<u32, String>,
+    pub signature: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpellProverInput {
     pub self_spell_vk: String,
@@ -366,6 +395,11 @@ pub struct SpellProverInput {
     pub spell: NormalizedSpell,
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     pub app_input: Option<AppInput>,
+    /// Signed `output_index -> address` map for the spell's Scrolls outputs. MUST be
+    /// `Some` whenever the spell is on Bitcoin and [`NormalizedTransaction::scrolls`]
+    /// is non-empty. Verified inside [`is_correct`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scrolls_addresses: Option<SignedScrollsAddresses>,
 }
 
 /// Check if the spell is correct.
@@ -375,6 +409,7 @@ pub fn is_correct(
     app_input: Option<AppInput>,
     spell_vk: &str,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+    scrolls_addresses: Option<&SignedScrollsAddresses>,
 ) -> anyhow::Result<bool> {
     ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
@@ -398,6 +433,10 @@ pub fn is_correct(
     ensure_no_orphan_versioned_apps(spell)?;
     check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
+    check_scroll_outputs_are_listed(spell)?;
+    if prev_txs.iter().any(|tx| matches!(tx, Tx::Bitcoin(_))) {
+        check_scrolls_addresses(spell, scrolls_addresses)?;
+    }
 
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
@@ -833,6 +872,78 @@ fn apps_satisfied(
         )
         .context("all apps should run successfully")?;
     Ok(())
+}
+
+/// Every output that carries a charm whose app has tag [`SCROLL`] MUST have its index
+/// listed in `spell.tx.scrolls`. The chain-conditional signature check lives in
+/// [`check_scrolls_addresses`]; this structural rule applies regardless of chain (on
+/// Cardano the SCROLL app behaves as a regular non-token app, but the index still has
+/// to be declared so the spell shape stays uniform across chains).
+fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let apps = apps(spell);
+    for (i, n_charm) in spell.tx.outs.iter().enumerate() {
+        let has_scroll = n_charm
+            .keys()
+            .any(|&app_i| apps[app_i as usize].tag == SCROLL);
+        if has_scroll {
+            let listed = spell
+                .tx
+                .scrolls
+                .as_ref()
+                .is_some_and(|s| s.contains(&(i as u32)));
+            ensure!(
+                listed,
+                "output #{} carries a SCROLL-tagged charm but is not listed in `tx.scrolls`",
+                i
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Verify the canister-signed Scrolls address map. Called only when the spell is on
+/// Bitcoin. When `spell.tx.scrolls` is non-empty, the signed map MUST be provided, its
+/// keys MUST equal `spell.tx.scrolls`, and its BIP-340 Schnorr signature MUST verify
+/// under [`SCROLLS_ADDRS_PUBKEY`] over `SHA-256(CBOR(addresses))` (the same digest the
+/// `scrolls_bitcoin_v15` canister signs).
+fn check_scrolls_addresses(
+    spell: &NormalizedSpell,
+    scrolls_addresses: Option<&SignedScrollsAddresses>,
+) -> anyhow::Result<()> {
+    let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
+        return Ok(());
+    };
+    let Some(scrolls_addresses) = scrolls_addresses else {
+        bail!(
+            "Bitcoin spell declares {} Scrolls output(s) but no signed address map was provided",
+            scrolls.len()
+        );
+    };
+    let signed_keys: BTreeSet<u32> = scrolls_addresses.addresses.keys().copied().collect();
+    ensure!(
+        scrolls == &signed_keys,
+        "signed Scrolls address map keys ({:?}) do not match `tx.scrolls` ({:?})",
+        signed_keys,
+        scrolls
+    );
+    verify_scrolls_addresses_signature(scrolls_addresses)
+}
+
+fn verify_scrolls_addresses_signature(s: &SignedScrollsAddresses) -> anyhow::Result<()> {
+    let message_bytes =
+        util::write(&s.addresses).context("serializing Scrolls addresses for signature check")?;
+    let digest: [u8; 32] = Sha256::digest(&message_bytes).into();
+    let msg = Message::from_digest(digest);
+
+    let sig_bytes = hex::decode(&s.signature).context("decoding Scrolls signature hex")?;
+    let sig =
+        Signature::from_slice(&sig_bytes).context("parsing Scrolls BIP-340 Schnorr signature")?;
+    let pk = XOnlyPublicKey::from_slice(&SCROLLS_ADDRS_PUBKEY)
+        .context("parsing SCROLLS_ADDRS_PUBKEY as x-only secp256k1 key")?;
+
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &msg, &pk)
+        .context("verifying Scrolls address-map Schnorr signature")
 }
 
 pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {

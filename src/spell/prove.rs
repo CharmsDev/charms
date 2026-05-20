@@ -133,6 +133,7 @@ impl Prove for Prover {
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
             app_input,
+            scrolls_addresses: None,
         };
 
         let mut stdin = SP1Stdin::new();
@@ -197,6 +198,7 @@ impl Prove for MockProver {
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
             app_input,
+            scrolls_addresses: None,
         };
 
         let mut stdin = SP1Stdin::new();
