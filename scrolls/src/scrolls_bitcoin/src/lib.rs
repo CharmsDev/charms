@@ -33,6 +33,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     str::FromStr,
     sync::{LazyLock, OnceLock},
+    time::Duration,
 };
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
@@ -95,10 +96,10 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
 });
 
 // In-memory cache of the canister-specific secret prefix derived via vetKD.
-// Populated once via `ensure_secret_prefix` on first use, restored on every
-// upgrade from stable memory by `post_upgrade`, and read on the hot path
-// inside `derivation_path_for_output`. Write-once semantics, so `OnceLock`
-// matches the use exactly.
+// Populated once by the one-time timer scheduled in `do_init`, which loads
+// it from stable memory if present and otherwise derives it via vetKD. Read
+// on the hot path inside `derivation_path_for_output`. Write-once semantics,
+// so `OnceLock` matches the use exactly.
 static SECRET_PREFIX: OnceLock<[u8; SECRET_PREFIX_LEN]> = OnceLock::new();
 
 #[ic_cdk::init]
@@ -109,9 +110,6 @@ fn init() {
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
     do_init();
-    if let Some(prefix) = load_persisted_prefix() {
-        let _ = SECRET_PREFIX.set(prefix);
-    }
 }
 
 fn do_init() {
@@ -124,6 +122,17 @@ fn do_init() {
             .unwrap();
         let _ = address.witness_program().unwrap();
     }
+
+    // Bootstrap the secret prefix asynchronously on a one-time timer that
+    // fires as soon as the canister becomes idle after init/post_upgrade.
+    // Lifecycle hooks themselves cannot run inter-canister calls, but they
+    // can schedule timers that do. The first attempt reads from stable
+    // memory; only on a fresh canister does it call into vetKD.
+    ic_cdk_timers::set_timer(Duration::ZERO, async {
+        if let Err(e) = ensure_secret_prefix().await {
+            ic_cdk::println!("scrolls_bitcoin: ensure_secret_prefix failed: {}", e);
+        }
+    });
 }
 
 /// Read the persisted secret prefix from stable memory, or `None` if it has
@@ -162,25 +171,25 @@ fn vetkd_key_id() -> VetKDKeyId {
     }
 }
 
-/// Derive the canister's secret prefix (idempotent). The decrypted vetKey
-/// returned by vetKD is the canonical threshold-derived key for
-/// `(canister_id, input, context)` — it does **not** depend on the transport
-/// keypair, which only wraps it in transit. So we can use an ephemeral
-/// random transport keypair on every call: decryption always recovers the
-/// same vetKey, and the resulting prefix is reproducible by this canister
-/// as long as its identity survives.
+/// Populate `SECRET_PREFIX` (idempotent). Called exactly once per canister
+/// lifetime via the timer scheduled in [`do_init`]:
+///   1. If RAM cache is already set, no-op.
+///   2. Otherwise try stable memory — populated on a previous run, this
+///      avoids the inter-canister vetKD ceremony entirely on every upgrade.
+///   3. Otherwise derive the secret via vetKD and persist it.
 ///
-/// Steps on first call:
-///   1. Sample a fresh 32-byte seed from `raw_rand`, build an ephemeral
-///      `TransportSecretKey` from it.
-///   2. Call `vetkd_derive_key` and `vetkd_public_key` with the fixed input
-///      and context.
-///   3. Decrypt and verify the ciphertext into a canonical `VetKey`.
-///   4. HKDF that vetKey into 32 bytes — the secret prefix.
-///
-/// Subsequent calls are no-ops once `SECRET_PREFIX` is populated.
+/// The decrypted vetKey returned by vetKD is the canonical threshold-derived
+/// key for `(canister_id, input, context)` — it does **not** depend on the
+/// transport keypair, which only wraps it in transit. So an ephemeral random
+/// transport keypair is fine; decryption always recovers the same vetKey,
+/// and the resulting prefix is reproducible by this canister as long as its
+/// identity survives.
 async fn ensure_secret_prefix() -> anyhow::Result<()> {
     if SECRET_PREFIX.get().is_some() {
+        return Ok(());
+    }
+    if let Some(prefix) = load_persisted_prefix() {
+        let _ = SECRET_PREFIX.set(prefix);
         return Ok(());
     }
 
@@ -226,8 +235,20 @@ async fn ensure_secret_prefix() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Read the cached secret prefix. Traps if `ensure_secret_prefix` has not run
-/// yet — every caller of [`derivation_path_for_output`] must `await` it first.
+/// Fail-fast check for public entry points that need the secret prefix.
+/// Returns an error if the one-time init timer has not finished yet, so
+/// callers see a clear "try again shortly" message instead of a trap deep
+/// inside `derivation_path_for_output`.
+fn require_secret_prefix() -> anyhow::Result<()> {
+    ensure!(
+        SECRET_PREFIX.get().is_some(),
+        "Service unavailable: secret prefix not initialized yet, retry shortly"
+    );
+    Ok(())
+}
+
+/// Read the cached secret prefix. Traps if [`require_secret_prefix`] was
+/// not checked first.
 fn cached_secret_prefix() -> [u8; SECRET_PREFIX_LEN] {
     *SECRET_PREFIX
         .get()
@@ -471,7 +492,7 @@ async fn addresses_impl(
         "Input error: too many output indexes requested (max: 256)"
     );
 
-    ensure_secret_prefix().await?;
+    require_secret_prefix()?;
 
     let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
@@ -564,7 +585,7 @@ async fn do_sign(
     network_str: String,
     sign_request: SignRequest,
 ) -> anyhow::Result<SignAndSubmitResult> {
-    ensure_secret_prefix().await?;
+    require_secret_prefix()?;
 
     let network = check_network(&network_str)?;
     let SignRequest {
