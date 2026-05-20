@@ -176,6 +176,18 @@ impl EnchantedTx for BitcoinTx {
 
 pub const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bits (~6 blocks)
 
+/// The 32-byte BIP-340 (x-only) secp256k1 public key corresponding to the
+/// threshold Schnorr key held by the ICP subnet for the `scrolls_bitcoin_v15`
+/// canister (`rpgc6-oqaaa-aaaak-qy3uq-cai`), under the derivation path `[b"sign"]`
+/// and key_id `("key_1", bip340secp256k1)`.
+///
+/// This value is obtained (and the const is validated at test time) via the
+/// offline equivalent `ic_pub_key::derive_schnorr_key` (or the live management
+/// canister `schnorr_public_key` call). It is used by the client to verify the
+/// Schnorr signature returned by the canister's `addresses(...)` endpoint.
+pub const SCROLLS_ADDRS_PUBKEY: [u8; 32] =
+    hex_literal::hex!("30109b1c3c8dc1812de6267cd864a5f1f794330c6e43c25f971e6d0ae9440e3b");
+
 fn verify_finality_proof(
     tx: &Transaction,
     tx_block_proof: &MerkleBlock,
@@ -351,6 +363,7 @@ pub fn parse_spell_and_proof_from_witness(
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
     use super::*;
 
     fn compute_finality_target(target_bits: u32) -> CompactTarget {
@@ -382,5 +395,31 @@ mod tests {
 
         let required_work = finality_target.to_work();
         assert!(dbg!(cumulative_work) >= dbg!(required_work));
+    }
+
+    #[test]
+    fn scrolls_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
+        use ic_pub_key::{derive_schnorr_key, CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs};
+
+        // Canister ID bytes for rpgc6-oqaaa-aaaak-qy3uq-cai (obtained via Principal::from_text)
+        let canister_id = CanisterId::from_str("rpgc6-oqaaa-aaaak-qy3uq-cai").unwrap();
+
+        let args = SchnorrPublicKeyArgs {
+            canister_id: Some(canister_id),
+            derivation_path: vec![b"sign".to_vec()],
+            key_id: SchnorrKeyId {
+                algorithm: SchnorrAlgorithm::Bip340secp256k1,
+                name: "key_1".to_string(),
+            },
+        };
+
+        let result = derive_schnorr_key(&args).expect("derivation must succeed for mainnet key_1");
+
+        // The crate (and the live management canister) returns the Schnorr public key
+        // in SEC1 compressed form (33 bytes, 0x02/0x03 prefix + 32-byte x coord).
+        // SCROLLS_ADDRS_PUBKEY stores the 32-byte x-only form used for BIP-340 verification.
+        let derived_x_only: [u8; 32] = result.public_key[1..].try_into().unwrap();
+
+        assert_eq!(SCROLLS_ADDRS_PUBKEY, derived_x_only);
     }
 }
