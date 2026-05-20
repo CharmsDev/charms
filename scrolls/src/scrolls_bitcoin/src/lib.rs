@@ -1,4 +1,8 @@
 use anyhow::{Context, anyhow, bail, ensure};
+use ark_bls12_381::{Fr, G1Projective};
+use ark_ec::{CurveGroup, PrimeGroup};
+use ark_ff::PrimeField;
+use ark_serialize::CanonicalSerialize;
 use bitcoin::{
     Address, CompressedPublicKey, EcdsaSighashType, Network, ScriptBuf, SegwitV0Sighash,
     Transaction, TxIn, Txid,
@@ -17,16 +21,18 @@ use charms_lib::{
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
 };
 use getrandom::register_custom_getrandom;
-use ic_cdk::call::Call;
+use ic_cdk::{call::Call, stable};
 use ic_cdk_bitcoin_canister::{
     Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
 };
 use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs,
-    SignWithSchnorrArgs, ecdsa_public_key, sign_with_ecdsa, sign_with_schnorr,
+    SignWithSchnorrArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, ecdsa_public_key, raw_rand,
+    sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashSet},
     str::FromStr,
     sync::LazyLock,
@@ -34,6 +40,24 @@ use std::{
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
 const SIGN: &'static [u8; 4] = b"sign";
+
+/// Fixed input/context passed to `vetkd_derive_key` when bootstrapping the
+/// canister-specific secret prefix. Changing either string would derive a
+/// different prefix and orphan every previously created address.
+const VETKD_SECRET_PREFIX_INPUT: &[u8] = b"scrolls_bitcoin/derivation_prefix/v1";
+const VETKD_SECRET_PREFIX_CONTEXT: &[u8] = b"scrolls_bitcoin/derivation_prefix";
+
+/// Width of the canister-specific secret prefix kept in `SECRET_PREFIX`.
+const SECRET_PREFIX_LEN: usize = 32;
+
+/// On-disk layout of the persisted secret prefix in stable memory:
+/// byte 0 holds the marker (`SECRET_PREFIX_MARKER` when present), and the next
+/// `SECRET_PREFIX_LEN` bytes hold the prefix. Both ends use raw `ic_cdk::stable`
+/// reads/writes, so no `pre_upgrade` hook is required — a `pre_upgrade` trap
+/// would brick the canister, while `post_upgrade` failures are always
+/// recoverable by deploying another upgrade.
+const SECRET_PREFIX_MARKER: u8 = 0x01;
+const SECRET_PREFIX_OFFSET: u64 = 1;
 
 /// Minimum cycles accepted by `deposit_cycles`. Once the canister is blackholed
 /// it can never be topped up by its (now non-existent) controllers, so anybody
@@ -71,6 +95,15 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
     config
 });
 
+// In-memory cache of the canister-specific secret prefix derived via vetKD.
+// Populated once via `ensure_secret_prefix` on first use, restored on every
+// upgrade from stable memory by `post_upgrade`, and read on the hot path
+// inside `derivation_path_for_output`. The `RefCell` is fine because all
+// canister entry points run single-threaded within their own message.
+thread_local! {
+    static SECRET_PREFIX: RefCell<Option<[u8; SECRET_PREFIX_LEN]>> = const { RefCell::new(None) };
+}
+
 #[ic_cdk::init]
 fn init() {
     do_init();
@@ -79,6 +112,9 @@ fn init() {
 #[ic_cdk::post_upgrade]
 fn post_upgrade() {
     do_init();
+    if let Some(prefix) = load_persisted_prefix() {
+        SECRET_PREFIX.with(|cell| *cell.borrow_mut() = Some(prefix));
+    }
 }
 
 fn do_init() {
@@ -91,6 +127,104 @@ fn do_init() {
             .unwrap();
         let _ = address.witness_program().unwrap();
     }
+}
+
+/// Read the persisted secret prefix from stable memory, or `None` if it has
+/// never been written (fresh canister, or upgrade from a version that didn't
+/// derive one yet).
+fn load_persisted_prefix() -> Option<[u8; SECRET_PREFIX_LEN]> {
+    if stable::stable_size() == 0 {
+        return None;
+    }
+    let mut marker = [0u8; 1];
+    stable::stable_read(0, &mut marker);
+    if marker[0] != SECRET_PREFIX_MARKER {
+        return None;
+    }
+    let mut prefix = [0u8; SECRET_PREFIX_LEN];
+    stable::stable_read(SECRET_PREFIX_OFFSET, &mut prefix);
+    Some(prefix)
+}
+
+/// Persist the secret prefix to stable memory so the next `post_upgrade` can
+/// restore it. Allocates the first stable-memory page on demand.
+fn store_persisted_prefix(prefix: &[u8; SECRET_PREFIX_LEN]) -> anyhow::Result<()> {
+    if stable::stable_size() == 0 {
+        stable::stable_grow(1)
+            .map_err(|e| anyhow!("System error: growing stable memory: {:?}", e))?;
+    }
+    stable::stable_write(SECRET_PREFIX_OFFSET, prefix);
+    stable::stable_write(0, &[SECRET_PREFIX_MARKER]);
+    Ok(())
+}
+
+fn vetkd_key_id() -> VetKDKeyId {
+    VetKDKeyId {
+        curve: VetKDCurve::Bls12_381_G2,
+        name: "key_1".to_string(),
+    }
+}
+
+/// Derive the canister's secret prefix (idempotent). On first call:
+///   1. Sample 32 bytes from `raw_rand` and reduce them to a BLS12-381 scalar
+///      `sk` (the transport secret key). `sk` never leaves this function.
+///   2. Compute the compressed G1 point `pk = sk · G1` as the transport
+///      public key required by `vetkd_derive_key`.
+///   3. Call `vetkd_derive_key` with fixed input/context — the response is
+///      deterministic for this canister but its `encrypted_key` is opaque
+///      ciphertext that nobody outside the canister can decrypt (we discard
+///      `sk` immediately, so even this canister cannot decrypt it later).
+///   4. The 32-byte secret prefix is `SHA-256(sk_bytes || encrypted_key)` —
+///      a value only this canister can ever observe.
+///
+/// Subsequent calls are no-ops once `SECRET_PREFIX` is populated.
+async fn ensure_secret_prefix() -> anyhow::Result<()> {
+    if SECRET_PREFIX.with(|cell| cell.borrow().is_some()) {
+        return Ok(());
+    }
+
+    let rand = raw_rand()
+        .await
+        .map_err(|e| anyhow!("System error: raw_rand failed: {}", e))?;
+    let transport_sk = Fr::from_le_bytes_mod_order(&rand);
+    let transport_pk = G1Projective::generator() * transport_sk;
+    let mut transport_pk_bytes = Vec::new();
+    transport_pk
+        .into_affine()
+        .serialize_compressed(&mut transport_pk_bytes)
+        .context("System error: serializing transport public key")?;
+
+    let args = VetKDDeriveKeyArgs {
+        input: VETKD_SECRET_PREFIX_INPUT.to_vec(),
+        context: VETKD_SECRET_PREFIX_CONTEXT.to_vec(),
+        transport_public_key: transport_pk_bytes,
+        key_id: vetkd_key_id(),
+    };
+    let result = vetkd_derive_key(&args)
+        .await
+        .map_err(|e| anyhow!("System error: vetkd_derive_key failed: {}", e))?;
+
+    let mut transport_sk_bytes = Vec::new();
+    transport_sk
+        .serialize_compressed(&mut transport_sk_bytes)
+        .context("System error: serializing transport secret key")?;
+
+    let mut buf = transport_sk_bytes;
+    buf.extend_from_slice(&result.encrypted_key);
+    let prefix: [u8; SECRET_PREFIX_LEN] =
+        bitcoin::hashes::sha256::Hash::hash(&buf).to_byte_array();
+
+    store_persisted_prefix(&prefix)?;
+    SECRET_PREFIX.with(|cell| *cell.borrow_mut() = Some(prefix));
+    Ok(())
+}
+
+/// Read the cached secret prefix. Traps if `ensure_secret_prefix` has not run
+/// yet — every caller of [`derivation_path_for_output`] must `await` it first.
+fn cached_secret_prefix() -> [u8; SECRET_PREFIX_LEN] {
+    SECRET_PREFIX
+        .with(|cell| *cell.borrow())
+        .unwrap_or_else(|| ic_cdk::trap("System error: secret prefix not initialized"))
 }
 
 #[ic_cdk::query]
@@ -330,6 +464,8 @@ async fn addresses_impl(
         "Input error: too many output indexes requested (max: 256)"
     );
 
+    ensure_secret_prefix().await?;
+
     let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
         .parse()
@@ -380,6 +516,7 @@ fn schnorr_sign_key_id() -> SchnorrKeyId {
 
 fn derivation_path_for_output(tx_in_0: &UtxoId, out_i: u32) -> Vec<Vec<u8>> {
     vec![
+        cached_secret_prefix().to_vec(),
         SCROLLS.to_vec(),
         tx_in_0.to_bytes().to_vec(),
         out_i.to_le_bytes().to_vec(),
@@ -420,6 +557,8 @@ async fn do_sign(
     network_str: String,
     sign_request: SignRequest,
 ) -> anyhow::Result<SignAndSubmitResult> {
+    ensure_secret_prefix().await?;
+
     let network = check_network(&network_str)?;
     let SignRequest {
         sign_inputs,

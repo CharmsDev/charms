@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = { version = "1.0.102" }
+ark-bls12-381 = { version = "0.6", default-features = false, features = ["curve"] }
+ark-ec = { version = "0.6", default-features = false }
+ark-ff = { version = "0.6", default-features = false }
+ark-serialize = { version = "0.6", default-features = false }
 bitcoin = { version = "0.32.8" }
 candid = { version = "0.10.26" }
 hex = { version = "0.4" }

@@ -3696,6 +3696,10 @@ name = "scrolls_bitcoin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ark-bls12-381",
+ "ark-ec",
+ "ark-ff",
+ "ark-serialize",
  "bitcoin",
  "candid",
  "charms-data",
