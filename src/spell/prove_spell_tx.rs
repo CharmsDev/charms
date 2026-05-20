@@ -6,11 +6,11 @@ use super::{
 use crate::utils::retry;
 use crate::{
     cli::{charms_fee_settings, prove_impl},
-    tx::{bitcoin_tx, cardano_tx},
+    tx::{bitcoin_tx, cardano_tx, scrolls_bitcoin},
 };
 use anyhow::bail;
 use charms_client::{
-    NormalizedSpell,
+    NormalizedSpell, SignedScrollOutputs,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::util;
@@ -83,6 +83,7 @@ impl ProveSpellTxImpl {
         &self,
         prove_request: ProveRequest,
         app_cycles: u64,
+        scroll_outputs: Option<SignedScrollOutputs>,
     ) -> anyhow::Result<Vec<Tx>> {
         let total_app_cycles = app_cycles;
         let ProveRequest {
@@ -111,6 +112,7 @@ impl ProveSpellTxImpl {
             app_private_inputs,
             prev_txs,
             tx_ins_beamed_source_utxos,
+            scroll_outputs,
         )?;
 
         let total_cycles = if !self.mock {
@@ -209,7 +211,13 @@ impl ProveSpellTx for ProveSpellTxImpl {
 
     #[cfg(feature = "prover")]
     async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let app_cycles = self.validate_prove_request(&mut prove_request)?;
+        let scroll_outputs = scrolls_bitcoin::fill_scroll_outputs(
+            &mut prove_request.spell,
+            prove_request.chain,
+        )
+        .await?;
+        let app_cycles =
+            self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
         let norm_spell = &prove_request.spell;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
@@ -247,7 +255,9 @@ impl ProveSpellTx for ProveSpellTxImpl {
                             )
                             .await?;
 
-                        let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles).await?;
+                        let r: Vec<Tx> = self
+                            .do_prove_spell_tx(prove_request, app_cycles, scroll_outputs)
+                            .await?;
 
                         let _: () = con
                             .set(
@@ -273,16 +283,24 @@ impl ProveSpellTx for ProveSpellTxImpl {
                 }
             }
         } else {
-            self.do_prove_spell_tx(prove_request, app_cycles).await
+            self.do_prove_spell_tx(prove_request, app_cycles, scroll_outputs)
+                .await
         }
     }
 
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
     async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let app_cycles = self.validate_prove_request(&mut prove_request)?;
+        let scroll_outputs = scrolls_bitcoin::fill_scroll_outputs(
+            &mut prove_request.spell,
+            prove_request.chain,
+        )
+        .await?;
+        let app_cycles =
+            self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
         if self.mock {
-            return Self::do_prove_spell_tx(self, prove_request, app_cycles).await;
+            return Self::do_prove_spell_tx(self, prove_request, app_cycles, scroll_outputs)
+                .await;
         }
 
         let response = retry(0, || async {

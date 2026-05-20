@@ -131,8 +131,13 @@ impl Prove for SpellCli {
         if payload {
             // Normalize the prove request so that the emitted payload matches what
             // would actually be sent to the proving API (e.g., adjust coin contents
-            // based on the selected chain).
+            // based on the selected chain, fill in Scrolls outputs from the canister).
             adjust_coin_contents(&mut prove_request.spell, chain)?;
+            let scroll_outputs = crate::tx::scrolls_bitcoin::fill_scroll_outputs(
+                &mut prove_request.spell,
+                chain,
+            )
+            .await?;
 
             ensure!(
                 charms_client::is_correct(
@@ -141,7 +146,7 @@ impl Prove for SpellCli {
                     app_input,
                     SPELL_VK,
                     &prove_request.tx_ins_beamed_source_utxos,
-                    None,
+                    scroll_outputs.as_ref(),
                 )?,
                 "spell verification failed"
             );

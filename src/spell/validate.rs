@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::Network;
 use charms_app_runner::AppRunner;
 use charms_client::{
-    BeamSource, NormalizedSpell,
+    BeamSource, NormalizedSpell, SignedScrollOutputs,
     cardano_tx::OutputContent,
     ensure_no_orphan_versioned_apps,
     tx::{Chain, Tx, by_txid},
@@ -224,6 +224,7 @@ impl ProveSpellTxImpl {
     pub fn validate_prove_request(
         &self,
         prove_request: &mut super::request::ProveRequest,
+        scroll_outputs: Option<&SignedScrollOutputs>,
     ) -> anyhow::Result<u64> {
         ensure!(
             prove_request.spell.mock == self.mock,
@@ -284,7 +285,7 @@ impl ProveSpellTxImpl {
                 app_input.clone(),
                 SPELL_VK,
                 &tx_ins_beamed_source_utxos,
-                None,
+                scroll_outputs,
             )?,
             "spell verification failed"
         );
