@@ -17,7 +17,7 @@ use charms_lib::{
     tx::{Tx, UnsupportedSpellVersion, committed_normalized_spell},
 };
 use getrandom::register_custom_getrandom;
-use ic_cdk::{call::Call, stable};
+use ic_cdk::call::Call;
 use ic_cdk_bitcoin_canister::{
     Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
 };
@@ -49,15 +49,6 @@ const VETKD_SECRET_PREFIX_DOMAIN_SEP: &str = "scrolls_bitcoin/derivation_prefix"
 
 /// Width of the canister-specific secret prefix kept in `SECRET_PREFIX`.
 const SECRET_PREFIX_LEN: usize = 32;
-
-/// On-disk layout of the persisted secret prefix in stable memory:
-/// byte 0 holds the marker (`SECRET_PREFIX_MARKER` when present), and the next
-/// `SECRET_PREFIX_LEN` bytes hold the prefix. Both ends use raw `ic_cdk::stable`
-/// reads/writes, so no `pre_upgrade` hook is required — a `pre_upgrade` trap
-/// would brick the canister, while `post_upgrade` failures are always
-/// recoverable by deploying another upgrade.
-const SECRET_PREFIX_MARKER: u8 = 0x01;
-const SECRET_PREFIX_OFFSET: u64 = 1;
 
 /// Minimum cycles accepted by `deposit_cycles`. Once the canister is blackholed
 /// it can never be topped up by its (now non-existent) controllers, so anybody
@@ -96,10 +87,10 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
 });
 
 // In-memory cache of the canister-specific secret prefix derived via vetKD.
-// Populated once by the one-time timer scheduled in `do_init`, which loads
-// it from stable memory if present and otherwise derives it via vetKD. Read
-// on the hot path inside `derivation_path_for_output`. Write-once semantics,
-// so `OnceLock` matches the use exactly.
+// Populated once per canister boot by the timer scheduled in `do_init`. The
+// prefix is fully reproducible from `(canister_id, input, context)` via
+// vetKD, so it's re-derived rather than persisted across upgrades.
+// Write-once semantics, so `OnceLock` matches the use exactly.
 static SECRET_PREFIX: OnceLock<[u8; SECRET_PREFIX_LEN]> = OnceLock::new();
 
 #[ic_cdk::init]
@@ -126,8 +117,9 @@ fn do_init() {
     // Bootstrap the secret prefix asynchronously on a timer that fires as
     // soon as the canister becomes idle after init/post_upgrade. Lifecycle
     // hooks themselves cannot run inter-canister calls, but they can
-    // schedule timers that do. The first attempt reads from stable memory;
-    // only on a fresh canister does it call into vetKD.
+    // schedule timers that do. The prefix is re-derived via vetKD on every
+    // boot — it's deterministic per (canister_id, input, context), so we
+    // intentionally don't persist it.
     schedule_secret_prefix_bootstrap(Duration::ZERO);
 }
 
@@ -161,35 +153,6 @@ fn next_bootstrap_delay(prev: Duration) -> Duration {
     next.min(MAX_RETRY)
 }
 
-/// Read the persisted secret prefix from stable memory, or `None` if it has
-/// never been written (fresh canister, or upgrade from a version that didn't
-/// derive one yet).
-fn load_persisted_prefix() -> Option<[u8; SECRET_PREFIX_LEN]> {
-    if stable::stable_size() == 0 {
-        return None;
-    }
-    let mut marker = [0u8; 1];
-    stable::stable_read(0, &mut marker);
-    if marker[0] != SECRET_PREFIX_MARKER {
-        return None;
-    }
-    let mut prefix = [0u8; SECRET_PREFIX_LEN];
-    stable::stable_read(SECRET_PREFIX_OFFSET, &mut prefix);
-    Some(prefix)
-}
-
-/// Persist the secret prefix to stable memory so the next `post_upgrade` can
-/// restore it. Allocates the first stable-memory page on demand.
-fn store_persisted_prefix(prefix: &[u8; SECRET_PREFIX_LEN]) -> anyhow::Result<()> {
-    if stable::stable_size() == 0 {
-        stable::stable_grow(1)
-            .map_err(|e| anyhow!("System error: growing stable memory: {:?}", e))?;
-    }
-    stable::stable_write(SECRET_PREFIX_OFFSET, prefix);
-    stable::stable_write(0, &[SECRET_PREFIX_MARKER]);
-    Ok(())
-}
-
 fn vetkd_key_id() -> VetKDKeyId {
     VetKDKeyId {
         curve: VetKDCurve::Bls12_381_G2,
@@ -197,25 +160,18 @@ fn vetkd_key_id() -> VetKDKeyId {
     }
 }
 
-/// Populate `SECRET_PREFIX` (idempotent). Called exactly once per canister
-/// lifetime via the timer scheduled in [`do_init`]:
-///   1. If RAM cache is already set, no-op.
-///   2. Otherwise try stable memory — populated on a previous run, this
-///      avoids the inter-canister vetKD ceremony entirely on every upgrade.
-///   3. Otherwise derive the secret via vetKD and persist it.
+/// Populate `SECRET_PREFIX` (idempotent). Called by the timer scheduled in
+/// [`do_init`] and retried with exponential backoff on failure until it
+/// succeeds.
 ///
 /// The decrypted vetKey returned by vetKD is the canonical threshold-derived
 /// key for `(canister_id, input, context)` — it does **not** depend on the
 /// transport keypair, which only wraps it in transit. So an ephemeral random
 /// transport keypair is fine; decryption always recovers the same vetKey,
-/// and the resulting prefix is reproducible by this canister as long as its
-/// identity survives.
+/// and the resulting prefix is reproducible by this canister on every boot
+/// as long as its identity survives. No need to persist it.
 async fn ensure_secret_prefix() -> anyhow::Result<()> {
     if SECRET_PREFIX.get().is_some() {
-        return Ok(());
-    }
-    if let Some(prefix) = load_persisted_prefix() {
-        let _ = SECRET_PREFIX.set(prefix);
         return Ok(());
     }
 
@@ -256,7 +212,6 @@ async fn ensure_secret_prefix() -> anyhow::Result<()> {
         .try_into()
         .context("System error: vetKey-derived symmetric key has unexpected length")?;
 
-    store_persisted_prefix(&prefix)?;
     let _ = SECRET_PREFIX.set(prefix);
     Ok(())
 }
