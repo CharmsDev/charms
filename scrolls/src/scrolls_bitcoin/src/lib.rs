@@ -117,8 +117,9 @@ fn do_init() {
     // Bootstrap the secret prefix asynchronously on a timer that fires as
     // soon as the canister becomes idle after init/post_upgrade. Lifecycle
     // hooks themselves cannot run inter-canister calls, but they can
-    // schedule timers that do. The first attempt reads from stable memory;
-    // only on a fresh canister does it call into vetKD.
+    // schedule timers that do. The prefix is re-derived via vetKD on every
+    // boot — it's deterministic per (canister_id, input, context), so we
+    // intentionally don't persist it.
     schedule_secret_prefix_bootstrap(Duration::ZERO);
 }
 
