@@ -1,8 +1,4 @@
 use anyhow::{Context, anyhow, bail, ensure};
-use ark_bls12_381::{Fr, G1Projective};
-use ark_ec::{CurveGroup, PrimeGroup};
-use ark_ff::PrimeField;
-use ark_serialize::CanonicalSerialize;
 use bitcoin::{
     Address, CompressedPublicKey, EcdsaSighashType, Network, ScriptBuf, SegwitV0Sighash,
     Transaction, TxIn, Txid,
@@ -27,9 +23,10 @@ use ic_cdk_bitcoin_canister::{
 };
 use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs,
-    SignWithSchnorrArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, ecdsa_public_key, raw_rand,
-    sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key,
+    SignWithSchnorrArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
+    ecdsa_public_key, sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key, vetkd_public_key,
 };
+use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -42,10 +39,18 @@ const SCROLLS: &'static [u8; 7] = b"scrolls";
 const SIGN: &'static [u8; 4] = b"sign";
 
 /// Fixed input/context passed to `vetkd_derive_key` when bootstrapping the
-/// canister-specific secret prefix. Changing either string would derive a
-/// different prefix and orphan every previously created address.
+/// canister-specific secret prefix. Changing any of these constants would
+/// derive a different prefix and orphan every previously created address.
 const VETKD_SECRET_PREFIX_INPUT: &[u8] = b"scrolls_bitcoin/derivation_prefix/v1";
 const VETKD_SECRET_PREFIX_CONTEXT: &[u8] = b"scrolls_bitcoin/derivation_prefix";
+const VETKD_SECRET_PREFIX_DOMAIN_SEP: &str = "scrolls_bitcoin/derivation_prefix";
+
+/// Derivation path for the Schnorr signature used to seed the vetKD transport
+/// secret key. The signature is deterministic (BIP-340), so re-running
+/// `ensure_secret_prefix` yields the same transport keypair on this canister
+/// and a value no other canister can produce.
+const VETKD_TRANSPORT_SEED_PATH: &[u8] = b"vetkd_transport_seed/v1";
+const VETKD_TRANSPORT_SEED_MESSAGE: &[u8] = b"scrolls_bitcoin vetKD transport seed v1";
 
 /// Width of the canister-specific secret prefix kept in `SECRET_PREFIX`.
 const SECRET_PREFIX_LEN: usize = 32;
@@ -166,16 +171,21 @@ fn vetkd_key_id() -> VetKDKeyId {
 }
 
 /// Derive the canister's secret prefix (idempotent). On first call:
-///   1. Sample 32 bytes from `raw_rand` and reduce them to a BLS12-381 scalar
-///      `sk` (the transport secret key). `sk` never leaves this function.
-///   2. Compute the compressed G1 point `pk = sk · G1` as the transport
-///      public key required by `vetkd_derive_key`.
-///   3. Call `vetkd_derive_key` with fixed input/context — the response is
-///      deterministic for this canister but its `encrypted_key` is opaque
-///      ciphertext that nobody outside the canister can decrypt (we discard
-///      `sk` immediately, so even this canister cannot decrypt it later).
-///   4. The 32-byte secret prefix is `SHA-256(sk_bytes || encrypted_key)` —
-///      a value only this canister can ever observe.
+///   1. Ask the IC to produce a BIP-340 Schnorr signature over a fixed message
+///      under a fixed derivation path. The signature is deterministic per
+///      (canister chain key, message) and can only be produced by this
+///      canister, so it serves as a per-canister reproducible secret.
+///   2. SHA-256-hash that signature to a 32-byte seed and build a vetKD
+///      `TransportSecretKey` from it. Same seed → same transport keypair.
+///   3. Call `vetkd_derive_key` with the resulting transport public key plus
+///      fixed `input`/`context`, then `vetkd_public_key` to obtain the
+///      derived public key needed to verify the response.
+///   4. Decrypt the ciphertext into a `VetKey` — the decrypted vetKD output
+///      is deterministic per `(canister_id, input, context)` by design, so
+///      the canister can always reproduce it on a fresh deploy as long as
+///      its chain key survives.
+///   5. Domain-separate that vetKey into 32 bytes via HKDF; that is the
+///      secret prefix.
 ///
 /// Subsequent calls are no-ops once `SECRET_PREFIX` is populated.
 async fn ensure_secret_prefix() -> anyhow::Result<()> {
@@ -183,36 +193,48 @@ async fn ensure_secret_prefix() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let rand = raw_rand()
-        .await
-        .map_err(|e| anyhow!("System error: raw_rand failed: {}", e))?;
-    let transport_sk = Fr::from_le_bytes_mod_order(&rand);
-    let transport_pk = G1Projective::generator() * transport_sk;
-    let mut transport_pk_bytes = Vec::new();
-    transport_pk
-        .into_affine()
-        .serialize_compressed(&mut transport_pk_bytes)
-        .context("System error: serializing transport public key")?;
+    let seed_sig = sign_with_schnorr(&SignWithSchnorrArgs {
+        message: VETKD_TRANSPORT_SEED_MESSAGE.to_vec(),
+        derivation_path: vec![VETKD_TRANSPORT_SEED_PATH.to_vec()],
+        key_id: schnorr_sign_key_id(),
+        aux: None,
+    })
+    .await
+    .map_err(|e| anyhow!("System error: deriving transport seed signature: {}", e))?;
+    let seed: [u8; 32] = bitcoin::hashes::sha256::Hash::hash(&seed_sig.signature).to_byte_array();
+    let tsk = TransportSecretKey::from_seed(seed.to_vec())
+        .map_err(|e| anyhow!("System error: building transport secret key: {}", e))?;
 
-    let args = VetKDDeriveKeyArgs {
+    let derive_result = vetkd_derive_key(&VetKDDeriveKeyArgs {
         input: VETKD_SECRET_PREFIX_INPUT.to_vec(),
         context: VETKD_SECRET_PREFIX_CONTEXT.to_vec(),
-        transport_public_key: transport_pk_bytes,
+        transport_public_key: tsk.public_key(),
         key_id: vetkd_key_id(),
-    };
-    let result = vetkd_derive_key(&args)
-        .await
-        .map_err(|e| anyhow!("System error: vetkd_derive_key failed: {}", e))?;
+    })
+    .await
+    .map_err(|e| anyhow!("System error: vetkd_derive_key failed: {}", e))?;
 
-    let mut transport_sk_bytes = Vec::new();
-    transport_sk
-        .serialize_compressed(&mut transport_sk_bytes)
-        .context("System error: serializing transport secret key")?;
+    let pk_result = vetkd_public_key(&VetKDPublicKeyArgs {
+        canister_id: None,
+        context: VETKD_SECRET_PREFIX_CONTEXT.to_vec(),
+        key_id: vetkd_key_id(),
+    })
+    .await
+    .map_err(|e| anyhow!("System error: vetkd_public_key failed: {}", e))?;
+    let derived_pk = DerivedPublicKey::deserialize(&pk_result.public_key)
+        .map_err(|e| anyhow!("System error: parsing derived public key: {:?}", e))?;
 
-    let mut buf = transport_sk_bytes;
-    buf.extend_from_slice(&result.encrypted_key);
-    let prefix: [u8; SECRET_PREFIX_LEN] =
-        bitcoin::hashes::sha256::Hash::hash(&buf).to_byte_array();
+    let encrypted = EncryptedVetKey::deserialize(&derive_result.encrypted_key)
+        .map_err(|e| anyhow!("System error: parsing encrypted vetKey: {}", e))?;
+    let vetkey = encrypted
+        .decrypt_and_verify(&tsk, &derived_pk, VETKD_SECRET_PREFIX_INPUT)
+        .map_err(|e| anyhow!("System error: decrypting vetKey: {}", e))?;
+
+    let bytes = vetkey.derive_symmetric_key(VETKD_SECRET_PREFIX_DOMAIN_SEP, SECRET_PREFIX_LEN);
+    let prefix: [u8; SECRET_PREFIX_LEN] = bytes
+        .as_slice()
+        .try_into()
+        .context("System error: vetKey-derived symmetric key has unexpected length")?;
 
     store_persisted_prefix(&prefix)?;
     SECRET_PREFIX.with(|cell| *cell.borrow_mut() = Some(prefix));
