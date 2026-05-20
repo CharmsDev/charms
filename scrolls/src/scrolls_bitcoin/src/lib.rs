@@ -30,10 +30,9 @@ use ic_cdk_management_canister::{
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashSet},
     str::FromStr,
-    sync::LazyLock,
+    sync::{LazyLock, OnceLock},
 };
 
 const SCROLLS: &'static [u8; 7] = b"scrolls";
@@ -98,11 +97,9 @@ static CONFIG: LazyLock<Config> = LazyLock::new(|| {
 // In-memory cache of the canister-specific secret prefix derived via vetKD.
 // Populated once via `ensure_secret_prefix` on first use, restored on every
 // upgrade from stable memory by `post_upgrade`, and read on the hot path
-// inside `derivation_path_for_output`. The `RefCell` is fine because all
-// canister entry points run single-threaded within their own message.
-thread_local! {
-    static SECRET_PREFIX: RefCell<Option<[u8; SECRET_PREFIX_LEN]>> = const { RefCell::new(None) };
-}
+// inside `derivation_path_for_output`. Write-once semantics, so `OnceLock`
+// matches the use exactly.
+static SECRET_PREFIX: OnceLock<[u8; SECRET_PREFIX_LEN]> = OnceLock::new();
 
 #[ic_cdk::init]
 fn init() {
@@ -113,7 +110,7 @@ fn init() {
 fn post_upgrade() {
     do_init();
     if let Some(prefix) = load_persisted_prefix() {
-        SECRET_PREFIX.with(|cell| *cell.borrow_mut() = Some(prefix));
+        let _ = SECRET_PREFIX.set(prefix);
     }
 }
 
@@ -183,7 +180,7 @@ fn vetkd_key_id() -> VetKDKeyId {
 ///
 /// Subsequent calls are no-ops once `SECRET_PREFIX` is populated.
 async fn ensure_secret_prefix() -> anyhow::Result<()> {
-    if SECRET_PREFIX.with(|cell| cell.borrow().is_some()) {
+    if SECRET_PREFIX.get().is_some() {
         return Ok(());
     }
 
@@ -225,15 +222,15 @@ async fn ensure_secret_prefix() -> anyhow::Result<()> {
         .context("System error: vetKey-derived symmetric key has unexpected length")?;
 
     store_persisted_prefix(&prefix)?;
-    SECRET_PREFIX.with(|cell| *cell.borrow_mut() = Some(prefix));
+    let _ = SECRET_PREFIX.set(prefix);
     Ok(())
 }
 
 /// Read the cached secret prefix. Traps if `ensure_secret_prefix` has not run
 /// yet — every caller of [`derivation_path_for_output`] must `await` it first.
 fn cached_secret_prefix() -> [u8; SECRET_PREFIX_LEN] {
-    SECRET_PREFIX
-        .with(|cell| *cell.borrow())
+    *SECRET_PREFIX
+        .get()
         .unwrap_or_else(|| ic_cdk::trap("System error: secret prefix not initialized"))
 }
 
