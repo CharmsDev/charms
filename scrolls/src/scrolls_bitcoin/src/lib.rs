@@ -123,16 +123,42 @@ fn do_init() {
         let _ = address.witness_program().unwrap();
     }
 
-    // Bootstrap the secret prefix asynchronously on a one-time timer that
-    // fires as soon as the canister becomes idle after init/post_upgrade.
-    // Lifecycle hooks themselves cannot run inter-canister calls, but they
-    // can schedule timers that do. The first attempt reads from stable
-    // memory; only on a fresh canister does it call into vetKD.
-    ic_cdk_timers::set_timer(Duration::ZERO, async {
+    // Bootstrap the secret prefix asynchronously on a timer that fires as
+    // soon as the canister becomes idle after init/post_upgrade. Lifecycle
+    // hooks themselves cannot run inter-canister calls, but they can
+    // schedule timers that do. The first attempt reads from stable memory;
+    // only on a fresh canister does it call into vetKD.
+    schedule_secret_prefix_bootstrap(Duration::ZERO);
+}
+
+/// Schedule one attempt at `ensure_secret_prefix` after `delay`. On failure,
+/// reschedule with exponential backoff (1s, 2s, 4s, …, capped at one hour)
+/// until it succeeds. On success the chain stops because the cache
+/// short-circuit at the top of `ensure_secret_prefix` makes any subsequent
+/// invocation a no-op (and nothing else schedules a retry).
+fn schedule_secret_prefix_bootstrap(delay: Duration) {
+    ic_cdk_timers::set_timer(delay, async move {
         if let Err(e) = ensure_secret_prefix().await {
-            ic_cdk::println!("scrolls_bitcoin: ensure_secret_prefix failed: {}", e);
+            let next = next_bootstrap_delay(delay);
+            ic_cdk::println!(
+                "scrolls_bitcoin: ensure_secret_prefix failed ({}); retrying in {}s",
+                e,
+                next.as_secs()
+            );
+            schedule_secret_prefix_bootstrap(next);
         }
     });
+}
+
+fn next_bootstrap_delay(prev: Duration) -> Duration {
+    const FIRST_RETRY: Duration = Duration::from_secs(1);
+    const MAX_RETRY: Duration = Duration::from_secs(3600);
+    let next = if prev.is_zero() {
+        FIRST_RETRY
+    } else {
+        prev.saturating_mul(2)
+    };
+    next.min(MAX_RETRY)
 }
 
 /// Read the persisted secret prefix from stable memory, or `None` if it has
