@@ -2,7 +2,7 @@ use crate::{
     bitcoin_tx::SCROLLS_ADDRS_PUBKEY,
     tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell},
 };
-use anyhow::{Context, anyhow, bail, ensure};
+use anyhow::{Context, anyhow, ensure};
 use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature};
 use charms_app_runner::AppRunner;
 use charms_data::{
@@ -136,12 +136,18 @@ pub struct NormalizedTransaction {
     /// Indexes of outputs that MUST be sent to a Scrolls-managed `scriptPubKey` on
     /// Bitcoin.
     ///
-    /// When non-empty on a Bitcoin spell, [`SpellProverInput::scroll_outputs`] MUST
-    /// carry the signed `output_index -> scriptPubKey` map obtained by calling
-    /// `addresses()` on the `scrolls_bitcoin_v15` canister (passing the spell's first
-    /// input UTXO outpoint and this set of indexes). [`is_correct`] verifies the
+    /// Clients prepare a spell with these indexes listed and `coins[i].dest = vec![]`
+    /// for each scroll output. The prover server then calls the
+    /// `scrolls_bitcoin_v15` canister's `addresses()` endpoint to obtain a signed
+    /// `output_index -> scriptPubKey` map, writes each `scriptPubKey` into
+    /// `coins[i].dest`, and threads the signed map through to the zkVM as
+    /// [`SpellProverInput::scroll_outputs`]. [`is_correct`] then verifies the
     /// canister's BIP-340 Schnorr signature, that this set equals the keys of the
     /// signed map, and that each signed `scriptPubKey` equals `tx.coins[i].dest`.
+    ///
+    /// On the client side (before the server hop), `is_correct` returns `Ok(false)`
+    /// for spells with unbound scroll outputs; callers like `charms spell check` and
+    /// the prove-request preflight tolerate that "not yet" signal.
     ///
     /// Every spell-output containing a charm whose app has tag [`charms_data::SCROLL`]
     /// MUST have its index listed here.
@@ -437,9 +443,17 @@ pub fn is_correct(
     check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
     check_scroll_outputs_are_listed(spell)?;
-    if hosting_chain_is_bitcoin(spell, prev_txs) {
-        check_scroll_outputs(spell, scroll_outputs)?;
-    }
+
+    // Scrolls scriptPubKey-map check. May return `Ok(false)` on the client
+    // preflight path (the spell declares Scrolls outputs but the signed map
+    // hasn't been fetched -- the prover server fills it in via
+    // `fill_scroll_outputs`). We don't bail early on `false`: the rest of the
+    // checks still run, and the "not yet" signal is folded into the final
+    // result below. The zkVM spell-checker asserts `Ok(true)` and so refuses to
+    // prove until the binding is in place; host-side callers that run before
+    // the server hop tolerate `Ok(false)`.
+    let scrolls_ok = !hosting_chain_is_bitcoin(spell, prev_txs)
+        || check_scroll_outputs(spell, scroll_outputs)?;
 
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
@@ -485,7 +499,7 @@ pub fn is_correct(
         }
     }
 
-    Ok(true)
+    Ok(scrolls_ok)
 }
 
 /// Gate on which a version change must hand off to the new app's contract: when any spent
@@ -931,27 +945,35 @@ fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()
 }
 
 /// Verify the canister-signed Scrolls `scriptPubKey` map. Called only when the spell
-/// is on Bitcoin. When `spell.tx.scrolls` is non-empty:
+/// is on Bitcoin.
 ///
-/// * the signed map MUST be provided,
-/// * its keys MUST equal `spell.tx.scrolls`,
-/// * each signed `scriptPubKey` MUST equal `spell.tx.coins[i].dest` (hex-encoded),
-///   pinning the Bitcoin output to the canister-controlled script, and
-/// * its BIP-340 Schnorr signature MUST verify under [`SCROLLS_ADDRS_PUBKEY`] over
+/// Returns:
+///
+/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map
+///   is present and every check passes.
+/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied
+///   (the client preflight path, where `coins[i].dest` for those outputs is also
+///   still empty -- the prover server fills both in via `fill_scroll_outputs`).
+/// * `Err(_)` -- the signed map is present but a structural or cryptographic check
+///   failed.
+///
+/// When the signed map is present, these MUST all hold:
+///
+/// * its keys equal `spell.tx.scrolls`,
+/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded),
+///   pinning the Bitcoin output to the canister-controlled script,
+/// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
 ///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15`
 ///   canister signs).
 fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
-        return Ok(());
+        return Ok(true);
     };
     let Some(scroll_outputs) = scroll_outputs else {
-        bail!(
-            "Bitcoin spell declares {} Scrolls output(s) but no signed scriptPubKey map was provided",
-            scrolls.len()
-        );
+        return Ok(false);
     };
     let signed_keys: BTreeSet<u32> = scroll_outputs.script_pubkeys.keys().copied().collect();
     ensure!(
@@ -983,7 +1005,8 @@ fn check_scroll_outputs(
             dest_hex
         );
     }
-    verify_scroll_outputs_signature(scroll_outputs)
+    verify_scroll_outputs_signature(scroll_outputs)?;
+    Ok(true)
 }
 
 fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()> {
@@ -1725,24 +1748,23 @@ mod test {
     const OTHER_P2WPKH_SPK: &str = "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     #[test]
-    fn check_scroll_outputs_skips_when_no_scrolls() {
-        // Empty / absent `tx.scrolls` means there's nothing to check; the
-        // signature need not be present and the function must succeed.
+    fn check_scroll_outputs_returns_true_when_no_scrolls() {
+        // Empty / absent `tx.scrolls` means there's nothing to check; the function
+        // returns `Ok(true)` even without a signed map.
         let mut spell = NormalizedSpell::default();
         spell.tx.coins = Some(vec![]);
-        check_scroll_outputs(&spell, None).unwrap();
+        assert!(check_scroll_outputs(&spell, None).unwrap());
         spell.tx.scrolls = Some(BTreeSet::new());
-        check_scroll_outputs(&spell, None).unwrap();
+        assert!(check_scroll_outputs(&spell, None).unwrap());
     }
 
     #[test]
-    fn check_scroll_outputs_requires_signed_map_when_scrolls_present() {
+    fn check_scroll_outputs_returns_false_when_signed_map_absent() {
+        // Client preflight: spell declares Scrolls outputs but the prover server
+        // hasn't filled in the signed `scriptPubKey` map yet. Function returns
+        // `Ok(false)` rather than bailing -- host-side callers tolerate.
         let spell = spell_with_scroll_output_at(SAMPLE_P2WPKH_SPK);
-        let err = check_scroll_outputs(&spell, None).unwrap_err().to_string();
-        assert!(
-            err.contains("no signed scriptPubKey map was provided"),
-            "got: {err}"
-        );
+        assert!(!check_scroll_outputs(&spell, None).unwrap());
     }
 
     #[test]

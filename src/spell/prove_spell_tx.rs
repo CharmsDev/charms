@@ -4,11 +4,13 @@ use super::{
 };
 #[cfg(not(feature = "prover"))]
 use crate::utils::retry;
+#[cfg(feature = "prover")]
+use crate::tx::scrolls_bitcoin;
 use crate::{
     cli::{charms_fee_settings, prove_impl},
-    tx::{bitcoin_tx, cardano_tx, scrolls_bitcoin},
+    tx::{bitcoin_tx, cardano_tx},
 };
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use charms_client::{
     NormalizedSpell, SignedScrollOutputs,
     tx::{Chain, Tx, by_txid},
@@ -216,8 +218,9 @@ impl ProveSpellTx for ProveSpellTxImpl {
             prove_request.chain,
         )
         .await?;
-        let app_cycles =
+        let (app_cycles, verified) =
             self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
+        ensure!(verified, "spell verification failed");
         let norm_spell = &prove_request.spell;
 
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
@@ -291,16 +294,28 @@ impl ProveSpellTx for ProveSpellTxImpl {
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
     async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let scroll_outputs = scrolls_bitcoin::fill_scroll_outputs(
-            &mut prove_request.spell,
-            prove_request.chain,
-        )
-        .await?;
-        let app_cycles =
-            self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
+        // Client preflight: don't call the canister. `coins[i].dest` for any
+        // Scrolls output is `vec![]`; `is_correct` returns `Ok(false)` and we
+        // tolerate it. The prover server runs `fill_scroll_outputs` and the
+        // strict version of this check before producing the proof.
+        let (app_cycles, verified) = self.validate_prove_request(&mut prove_request, None)?;
+        if !verified {
+            tracing::info!(
+                "spell has Scrolls outputs awaiting binding; the prover server will \
+                 fill `coins[i].dest` and the signed scriptPubKey map"
+            );
+        }
         if self.mock {
-            return Self::do_prove_spell_tx(self, prove_request, app_cycles, scroll_outputs)
-                .await;
+            // Local mock proving runs the spell-checker SP1 binary, which strictly
+            // requires the signed scriptPubKey map. Mock-proving a Bitcoin spell
+            // with Scrolls outputs from the client without canister access is not
+            // supported -- run a local prover server (`charms server`) for that.
+            ensure!(
+                verified,
+                "mock proving locally requires the signed scriptPubKey map; \
+                 run a prover server (`charms server`) for Bitcoin Scrolls spells"
+            );
+            return Self::do_prove_spell_tx(self, prove_request, app_cycles, None).await;
         }
 
         let response = retry(0, || async {
