@@ -425,20 +425,26 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
     Ok(hex::encode(spell_bytes))
 }
 
-/// Result of [`addresses`]: the map from output index to derived P2WPKH address,
-/// plus a BIP-340 Schnorr signature over the CBOR-serialized map produced by the
-/// canister's chain key under derivation path `[b"sign"]`. The signature is
-/// hex-encoded.
+/// Result of [`addresses`]: the map from output index to its derived P2WPKH
+/// `scriptPubKey` (hex-encoded raw script bytes), plus a BIP-340 Schnorr
+/// signature over the CBOR-serialized map produced by the canister's chain
+/// key under derivation path `[b"sign"]`. The signature is hex-encoded.
+///
+/// The `scriptPubKey` is what goes directly into a Bitcoin output's
+/// `script_pubkey` field; it is the same byte string that ends up in
+/// `spell.tx.coins[i].dest`. Unlike an address, it is network-independent —
+/// P2WPKH scripts have identical bytes on `main` and `testnet4`.
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
-pub struct AddressesResult {
-    pub addresses: BTreeMap<u32, String>,
+pub struct Addresses {
+    pub script_pubkeys: BTreeMap<u32, String>,
     pub signature: String,
 }
 
 #[ic_cdk::update]
-/// Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor,
-/// together with a BIP-340 Schnorr signature over the address map produced by the canister's
-/// chain key under derivation path `[b"sign"]`.
+/// Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
+/// given derivation anchor, together with a BIP-340 Schnorr signature over the
+/// `(output_index -> scriptPubKey)` map produced by the canister's chain key
+/// under derivation path `[b"sign"]`.
 ///
 /// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
 /// It identifies the unique "anchor" used for key derivation:
@@ -450,24 +456,19 @@ pub struct AddressesResult {
 ///   block height (as a decimal integer) in place of the vout. Example:
 ///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
 ///
-/// `out_is` is a list of output indexes (within the creating transaction)
-/// for which addresses should be generated. At most 256 indexes are accepted
+/// `out_is` is a list of output indexes (within the creating transaction) for
+/// which `scriptPubKey`s should be generated. At most 256 indexes are accepted
 /// per call.
-pub async fn addresses(
-    network: String,
-    tx_in_0: String,
-    out_is: Vec<u32>,
-) -> Result<AddressesResult, String> {
-    addresses_impl(network, tx_in_0, out_is)
+///
+/// No `network` argument is taken because a P2WPKH `scriptPubKey` is just
+/// `OP_0 <20-byte-pubkey-hash>` — the same bytes on every Bitcoin network.
+pub async fn addresses(tx_in_0: String, out_is: Vec<u32>) -> Result<Addresses, String> {
+    addresses_impl(tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
 }
 
-async fn addresses_impl(
-    network: String,
-    tx_in_0: String,
-    out_is: Vec<u32>,
-) -> anyhow::Result<AddressesResult> {
+async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Addresses> {
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
@@ -475,32 +476,31 @@ async fn addresses_impl(
 
     require_secret_prefix()?;
 
-    let network = check_network(&network)?;
     let tx_in_0: UtxoId = tx_in_0
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
 
-    let mut addresses = BTreeMap::new();
+    let mut script_pubkeys = BTreeMap::new();
     for out_i in out_is {
         let public_key = derive_public_key_for_output(&tx_in_0, out_i).await?;
-        let address = bitcoin::Address::p2wpkh(&public_key, network).to_string();
-        addresses.insert(out_i, address);
+        let spk = ScriptBuf::new_p2wpkh(&public_key.wpubkey_hash());
+        script_pubkeys.insert(out_i, hex::encode(spk.as_bytes()));
     }
 
-    let signature = sign_addresses(&addresses).await?;
+    let signature = sign_script_pubkeys(&script_pubkeys).await?;
 
-    Ok(AddressesResult {
-        addresses,
+    Ok(Addresses {
+        script_pubkeys,
         signature,
     })
 }
 
-/// Sign the CBOR serialization of `addresses` (after SHA-256 hashing) with the
-/// canister's BIP-340/secp256k1 Schnorr chain key under derivation path
+/// Sign the CBOR serialization of `script_pubkeys` (after SHA-256 hashing) with
+/// the canister's BIP-340/secp256k1 Schnorr chain key under derivation path
 /// `[b"sign"]`. Returns the hex-encoded signature.
-async fn sign_addresses(addresses: &BTreeMap<u32, String>) -> anyhow::Result<String> {
+async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::Result<String> {
     let message_bytes =
-        util::write(addresses).context("System error: serializing addresses for signing")?;
+        util::write(script_pubkeys).context("System error: serializing script_pubkeys for signing")?;
     let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
         .to_byte_array()
         .to_vec();

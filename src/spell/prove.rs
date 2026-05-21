@@ -18,7 +18,9 @@ use ark_std::{
     rand::{RngCore, SeedableRng},
     test_rng,
 };
-use charms_client::{BeamSource, MOCK_SPELL_VK, NormalizedSpell, Proof, SpellProverInput};
+use charms_client::{
+    BeamSource, MOCK_SPELL_VK, NormalizedSpell, Proof, SignedScrollOutputs, SpellProverInput,
+};
 use charms_data::{App, AppInput, AppSignature, B32, Data, util};
 use charms_lib::SPELL_VK;
 use sha2::{Digest, Sha256};
@@ -76,6 +78,7 @@ pub trait Prove: Send + Sync {
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
+        scroll_outputs: Option<SignedScrollOutputs>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)>;
 }
 
@@ -112,6 +115,7 @@ impl Prove for Prover {
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
+        scroll_outputs: Option<SignedScrollOutputs>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         ensure!(
             !norm_spell.mock,
@@ -133,6 +137,7 @@ impl Prove for Prover {
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
             app_input,
+            scroll_outputs,
         };
 
         let mut stdin = SP1Stdin::new();
@@ -178,6 +183,7 @@ impl Prove for MockProver {
         app_private_inputs: BTreeMap<App, Data>,
         prev_txs: Vec<charms_client::tx::Tx>,
         tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
+        scroll_outputs: Option<SignedScrollOutputs>,
     ) -> anyhow::Result<(NormalizedSpell, Proof, u64)> {
         let norm_spell = make_mock(norm_spell);
 
@@ -197,6 +203,7 @@ impl Prove for MockProver {
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
             app_input,
+            scroll_outputs,
         };
 
         let mut stdin = SP1Stdin::new();

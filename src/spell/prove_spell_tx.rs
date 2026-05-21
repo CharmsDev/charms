@@ -4,13 +4,15 @@ use super::{
 };
 #[cfg(not(feature = "prover"))]
 use crate::utils::retry;
+#[cfg(feature = "prover")]
+use crate::tx::scrolls_bitcoin;
 use crate::{
     cli::{charms_fee_settings, prove_impl},
     tx::{bitcoin_tx, cardano_tx},
 };
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use charms_client::{
-    NormalizedSpell,
+    NormalizedSpell, SignedScrollOutputs,
     tx::{Chain, Tx, by_txid},
 };
 use charms_data::util;
@@ -79,10 +81,31 @@ pub fn committed_data_hash(normalized_spell: &NormalizedSpell) -> anyhow::Result
 use anyhow::Context;
 
 impl ProveSpellTxImpl {
+    /// Fill the Scrolls scriptPubKey map from the canister, validate the
+    /// resulting `ProveRequest`, and produce the proof. Called only on cache
+    /// miss (or when caching is disabled).
+    #[cfg(feature = "prover")]
+    async fn fill_validate_and_prove(
+        &self,
+        mut prove_request: ProveRequest,
+    ) -> anyhow::Result<Vec<Tx>> {
+        let scroll_outputs = scrolls_bitcoin::fill_scroll_outputs(
+            &mut prove_request.spell,
+            prove_request.chain,
+        )
+        .await?;
+        let (app_cycles, verified) =
+            self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
+        ensure!(verified, "spell verification failed");
+        self.do_prove_spell_tx(prove_request, app_cycles, scroll_outputs)
+            .await
+    }
+
     pub(super) async fn do_prove_spell_tx(
         &self,
         prove_request: ProveRequest,
         app_cycles: u64,
+        scroll_outputs: Option<SignedScrollOutputs>,
     ) -> anyhow::Result<Vec<Tx>> {
         let total_app_cycles = app_cycles;
         let ProveRequest {
@@ -111,6 +134,7 @@ impl ProveSpellTxImpl {
             app_private_inputs,
             prev_txs,
             tx_ins_beamed_source_utxos,
+            scroll_outputs,
         )?;
 
         let total_cycles = if !self.mock {
@@ -208,12 +232,15 @@ impl ProveSpellTx for ProveSpellTxImpl {
     }
 
     #[cfg(feature = "prover")]
-    async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let app_cycles = self.validate_prove_request(&mut prove_request)?;
-        let norm_spell = &prove_request.spell;
-
+    async fn prove_spell_tx(&self, prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
+        // Cache key is computed from the request as received -- *before* the
+        // Scrolls scriptPubKey fill-in. Filling is deterministic in
+        // (tx_in_0, out_is), so any later request with the same content hash
+        // would derive the same scriptPubKeys and produce the same proof;
+        // hashing the pre-fill spell lets a cache hit skip both the IC
+        // canister round-trip (`fill_scroll_outputs`) and the proving step.
         if let Some((cache_client, lock_manager)) = self.cache_client.as_ref() {
-            let committed_data_hash = committed_data_hash(norm_spell)?;
+            let committed_data_hash = committed_data_hash(&prove_request.spell)?;
             let request_key = hex::encode(committed_data_hash);
             let lock_key = format!("LOCK_{}", request_key.as_str());
 
@@ -247,7 +274,11 @@ impl ProveSpellTx for ProveSpellTxImpl {
                             )
                             .await?;
 
-                        let r: Vec<Tx> = self.do_prove_spell_tx(prove_request, app_cycles).await?;
+                        // Nothing in the cache and we own the lock: do the
+                        // expensive work. The IC canister call happens here so
+                        // it's only paid when neither the pre-lock nor the
+                        // post-lock cache check found a result.
+                        let r: Vec<Tx> = self.fill_validate_and_prove(prove_request).await?;
 
                         let _: () = con
                             .set(
@@ -273,16 +304,35 @@ impl ProveSpellTx for ProveSpellTxImpl {
                 }
             }
         } else {
-            self.do_prove_spell_tx(prove_request, app_cycles).await
+            self.fill_validate_and_prove(prove_request).await
         }
     }
 
     #[cfg(not(feature = "prover"))]
     #[tracing::instrument(level = "info", skip_all)]
     async fn prove_spell_tx(&self, mut prove_request: ProveRequest) -> anyhow::Result<Vec<Tx>> {
-        let app_cycles = self.validate_prove_request(&mut prove_request)?;
+        // Client preflight: don't call the canister. `coins[i].dest` for any
+        // Scrolls output is `vec![]`; `is_correct` returns `Ok(false)` and we
+        // tolerate it. The prover server runs `fill_scroll_outputs` and the
+        // strict version of this check before producing the proof.
+        let (app_cycles, verified) = self.validate_prove_request(&mut prove_request, None)?;
+        if !verified {
+            tracing::info!(
+                "spell has Scrolls outputs awaiting binding; the prover server will \
+                 fill `coins[i].dest` and the signed scriptPubKey map"
+            );
+        }
         if self.mock {
-            return Self::do_prove_spell_tx(self, prove_request, app_cycles).await;
+            // Local mock proving runs the spell-checker SP1 binary, which strictly
+            // requires the signed scriptPubKey map. Mock-proving a Bitcoin spell
+            // with Scrolls outputs from the client without canister access is not
+            // supported -- run a local prover server (`charms server`) for that.
+            ensure!(
+                verified,
+                "mock proving locally requires the signed scriptPubKey map; \
+                 run a prover server (`charms server`) for Bitcoin Scrolls spells"
+            );
+            return Self::do_prove_spell_tx(self, prove_request, app_cycles, None).await;
         }
 
         let response = retry(0, || async {

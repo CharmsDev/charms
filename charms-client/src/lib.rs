@@ -1,9 +1,13 @@
-use crate::tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell};
+use crate::{
+    bitcoin_tx::SCROLLS_ADDRS_PUBKEY,
+    tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell},
+};
 use anyhow::{Context, anyhow, ensure};
+use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature};
 use charms_app_runner::AppRunner;
 use charms_data::{
-    App, AppInput, B32, Charms, Data, NativeOutput, TOKEN, Transaction, TxId, UtxoId, VersionedApp,
-    check, is_simple_transfer,
+    App, AppInput, B32, Charms, Data, NativeOutput, SCROLL, TOKEN, Transaction, TxId, UtxoId,
+    VersionedApp, check, is_simple_transfer, util,
 };
 use const_format::formatcp;
 use serde::{Deserialize, Serialize};
@@ -128,6 +132,27 @@ pub struct NormalizedTransaction {
     /// Amounts of native coin in transaction outputs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coins: Option<Vec<NativeOutput>>,
+
+    /// Indexes of outputs that MUST be sent to a Scrolls-managed `scriptPubKey` on
+    /// Bitcoin.
+    ///
+    /// Clients prepare a spell with these indexes listed and `coins[i].dest = vec![]`
+    /// for each scroll output. The prover server then calls the
+    /// `scrolls_bitcoin_v15` canister's `addresses()` endpoint to obtain a signed
+    /// `output_index -> scriptPubKey` map, writes each `scriptPubKey` into
+    /// `coins[i].dest`, and threads the signed map through to the zkVM as
+    /// [`SpellProverInput::scroll_outputs`]. [`is_correct`] then verifies the
+    /// canister's BIP-340 Schnorr signature, that this set equals the keys of the
+    /// signed map, and that each signed `scriptPubKey` equals `tx.coins[i].dest`.
+    ///
+    /// On the client side (before the server hop), `is_correct` returns `Ok(false)`
+    /// for spells with unbound scroll outputs; callers like `charms spell check` and
+    /// the prove-request preflight tolerate that "not yet" signal.
+    ///
+    /// Every spell-output containing a charm whose app has tag [`charms_data::SCROLL`]
+    /// MUST have its index listed here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrolls: Option<BTreeSet<u32>>,
 }
 
 impl NormalizedTransaction {
@@ -359,6 +384,18 @@ pub fn charms(spell: &NormalizedSpell, n_charms: &NormalizedCharms) -> Charms {
         .collect()
 }
 
+/// Output of the `scrolls_bitcoin_v15` canister's `addresses(...)` endpoint: a map
+/// from spell-output index to its derived P2WPKH `scriptPubKey` (hex-encoded raw
+/// script bytes — the same bytes that go into `tx.coins[i].dest`), plus a
+/// hex-encoded BIP-340 Schnorr signature over the CBOR serialization of the map,
+/// produced under the canister's chain key derivation path `[b"sign"]`. The
+/// signature is verified against [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SignedScrollOutputs {
+    pub script_pubkeys: BTreeMap<u32, String>,
+    pub signature: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpellProverInput {
     pub self_spell_vk: String,
@@ -366,6 +403,12 @@ pub struct SpellProverInput {
     pub spell: NormalizedSpell,
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     pub app_input: Option<AppInput>,
+    /// Signed `output_index -> scriptPubKey` map for the spell's Scrolls outputs.
+    /// MUST be `Some` whenever the spell is on Bitcoin and
+    /// [`NormalizedTransaction::scrolls`] is non-empty. Verified inside
+    /// [`is_correct`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub scroll_outputs: Option<SignedScrollOutputs>,
 }
 
 /// Check if the spell is correct.
@@ -375,6 +418,7 @@ pub fn is_correct(
     app_input: Option<AppInput>,
     spell_vk: &str,
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+    scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
     ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
@@ -398,6 +442,18 @@ pub fn is_correct(
     ensure_no_orphan_versioned_apps(spell)?;
     check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
+    check_scroll_outputs_are_listed(spell)?;
+
+    // Scrolls scriptPubKey-map check. May return `Ok(false)` on the client
+    // preflight path (the spell declares Scrolls outputs but the signed map
+    // hasn't been fetched -- the prover server fills it in via
+    // `fill_scroll_outputs`). We don't bail early on `false`: the rest of the
+    // checks still run, and the "not yet" signal is folded into the final
+    // result below. The zkVM spell-checker asserts `Ok(true)` and so refuses to
+    // prove until the binding is in place; host-side callers that run before
+    // the server hop tolerate `Ok(false)`.
+    let scrolls_ok = !hosting_chain_is_bitcoin(spell, prev_txs)
+        || check_scroll_outputs(spell, scroll_outputs)?;
 
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
@@ -443,7 +499,7 @@ pub fn is_correct(
         }
     }
 
-    Ok(true)
+    Ok(scrolls_ok)
 }
 
 /// Gate on which a version change must hand off to the new app's contract: when any spent
@@ -833,6 +889,141 @@ fn apps_satisfied(
         )
         .context("all apps should run successfully")?;
     Ok(())
+}
+
+/// The hosting tx's chain is the chain of the tx that created `spell.tx.ins[0]`. We
+/// can't just look at *any* `prev_txs` entry: beam-source txs are also in `prev_txs`
+/// and may live on a different chain than the hosting tx, so an `any(|t| Bitcoin)`
+/// would misfire on a Cardano spell with a Bitcoin beam source.
+fn hosting_chain_is_bitcoin(spell: &NormalizedSpell, prev_txs: &[Tx]) -> bool {
+    let Some(first_in) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
+        return false;
+    };
+    prev_txs
+        .iter()
+        .find(|tx| tx.tx_id() == first_in.0)
+        .is_some_and(|tx| matches!(tx, Tx::Bitcoin(_)))
+}
+
+/// Every output that carries a charm whose app has tag [`SCROLL`] MUST have its index
+/// listed in `spell.tx.scrolls`, and every index in `spell.tx.scrolls` MUST point at a
+/// real spell output (`< spell.tx.outs.len()`). The chain-conditional signature check
+/// lives in [`check_scroll_outputs`]; these structural rules apply regardless of chain
+/// (on Cardano the SCROLL app behaves as a regular non-token app, but the index still
+/// has to be declared so the spell shape stays uniform across chains).
+fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let outs_len = spell.tx.outs.len() as u32;
+    if let Some(scrolls) = spell.tx.scrolls.as_ref() {
+        for &i in scrolls {
+            ensure!(
+                i < outs_len,
+                "`tx.scrolls` references output #{} but the spell only has {} output(s)",
+                i,
+                outs_len
+            );
+        }
+    }
+    let apps = apps(spell);
+    for (i, n_charm) in spell.tx.outs.iter().enumerate() {
+        let has_scroll = n_charm
+            .keys()
+            .any(|&app_i| apps[app_i as usize].tag == SCROLL);
+        if has_scroll {
+            let listed = spell
+                .tx
+                .scrolls
+                .as_ref()
+                .is_some_and(|s| s.contains(&(i as u32)));
+            ensure!(
+                listed,
+                "output #{} carries a SCROLL-tagged charm but is not listed in `tx.scrolls`",
+                i
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Verify the canister-signed Scrolls `scriptPubKey` map. Called only when the spell
+/// is on Bitcoin.
+///
+/// Returns:
+///
+/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map
+///   is present and every check passes.
+/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied
+///   (the client preflight path, where `coins[i].dest` for those outputs is also
+///   still empty -- the prover server fills both in via `fill_scroll_outputs`).
+/// * `Err(_)` -- the signed map is present but a structural or cryptographic check
+///   failed.
+///
+/// When the signed map is present, these MUST all hold:
+///
+/// * its keys equal `spell.tx.scrolls`,
+/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded),
+///   pinning the Bitcoin output to the canister-controlled script,
+/// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
+///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15`
+///   canister signs).
+fn check_scroll_outputs(
+    spell: &NormalizedSpell,
+    scroll_outputs: Option<&SignedScrollOutputs>,
+) -> anyhow::Result<bool> {
+    let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
+        return Ok(true);
+    };
+    let Some(scroll_outputs) = scroll_outputs else {
+        return Ok(false);
+    };
+    let signed_keys: BTreeSet<u32> = scroll_outputs.script_pubkeys.keys().copied().collect();
+    ensure!(
+        scrolls == &signed_keys,
+        "signed Scrolls scriptPubKey map keys ({:?}) do not match `tx.scrolls` ({:?})",
+        signed_keys,
+        scrolls
+    );
+    let coins = spell
+        .tx
+        .coins
+        .as_ref()
+        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set"))?;
+    for (&i, signed_spk_hex) in &scroll_outputs.script_pubkeys {
+        let coin = coins.get(i as usize).ok_or_else(|| {
+            anyhow!(
+                "tx.scrolls references output #{} but tx.coins only has {} entries",
+                i,
+                coins.len()
+            )
+        })?;
+        let dest_hex = hex::encode(&coin.dest);
+        ensure!(
+            signed_spk_hex.eq_ignore_ascii_case(&dest_hex),
+            "scroll output #{}: signed scriptPubKey ({}) does not match `tx.coins[{}].dest` ({})",
+            i,
+            signed_spk_hex,
+            i,
+            dest_hex
+        );
+    }
+    verify_scroll_outputs_signature(scroll_outputs)?;
+    Ok(true)
+}
+
+fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()> {
+    let message_bytes = util::write(&s.script_pubkeys)
+        .context("serializing Scrolls scriptPubKeys for signature check")?;
+    let digest: [u8; 32] = Sha256::digest(&message_bytes).into();
+    let msg = Message::from_digest(digest);
+
+    let sig_bytes = hex::decode(&s.signature).context("decoding Scrolls signature hex")?;
+    let sig =
+        Signature::from_slice(&sig_bytes).context("parsing Scrolls BIP-340 Schnorr signature")?;
+    let pk = XOnlyPublicKey::from_slice(&SCROLLS_ADDRS_PUBKEY)
+        .context("parsing SCROLLS_ADDRS_PUBKEY as x-only secp256k1 key")?;
+
+    Secp256k1::verification_only()
+        .verify_schnorr(&sig, &msg, &pk)
+        .context("verifying Scrolls scriptPubKey-map Schnorr signature")
 }
 
 pub fn ensure_no_zero_amounts(norm_spell: &NormalizedSpell) -> anyhow::Result<()> {
@@ -1516,5 +1707,144 @@ mod test {
         let s = serde_json::to_string(&bs0).unwrap();
         let bs1: BeamSource = serde_json::from_str(&s).unwrap();
         assert_eq!(bs1, bs0);
+    }
+
+    /// Build a minimal Bitcoin-shaped spell with `scrolls = {1}`, coin at index 1
+    /// carrying `dest_hex` as a hex-decoded scriptPubKey.
+    fn spell_with_scroll_output_at(dest_hex: &str) -> NormalizedSpell {
+        let mut spell = NormalizedSpell::default();
+        let mut scrolls = BTreeSet::new();
+        scrolls.insert(1u32);
+        spell.tx.scrolls = Some(scrolls);
+        spell.tx.coins = Some(vec![
+            NativeOutput {
+                amount: 0,
+                dest: vec![],
+                content: None,
+            },
+            NativeOutput {
+                amount: 0,
+                dest: hex::decode(dest_hex).unwrap(),
+                content: None,
+            },
+        ]);
+        spell
+    }
+
+    fn signed_scrolls_for(index: u32, spk_hex: &str) -> SignedScrollOutputs {
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(index, spk_hex.to_string());
+        SignedScrollOutputs {
+            script_pubkeys,
+            // Signature isn't validated here — these tests cover the structural
+            // checks that run *before* `verify_scroll_outputs_signature`.
+            signature: "00".repeat(64),
+        }
+    }
+
+    /// Sample P2WPKH scriptPubKey: `OP_0 <20-byte hash>` (24 hex chars after the
+    /// `0014` prefix). Any 20-byte payload works for these structural checks.
+    const SAMPLE_P2WPKH_SPK: &str = "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const OTHER_P2WPKH_SPK: &str = "0014bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn check_scroll_outputs_returns_true_when_no_scrolls() {
+        // Empty / absent `tx.scrolls` means there's nothing to check; the function
+        // returns `Ok(true)` even without a signed map.
+        let mut spell = NormalizedSpell::default();
+        spell.tx.coins = Some(vec![]);
+        assert!(check_scroll_outputs(&spell, None).unwrap());
+        spell.tx.scrolls = Some(BTreeSet::new());
+        assert!(check_scroll_outputs(&spell, None).unwrap());
+    }
+
+    #[test]
+    fn check_scroll_outputs_returns_false_when_signed_map_absent() {
+        // Client preflight: spell declares Scrolls outputs but the prover server
+        // hasn't filled in the signed `scriptPubKey` map yet. Function returns
+        // `Ok(false)` rather than bailing -- host-side callers tolerate.
+        let spell = spell_with_scroll_output_at(SAMPLE_P2WPKH_SPK);
+        assert!(!check_scroll_outputs(&spell, None).unwrap());
+    }
+
+    #[test]
+    fn check_scroll_outputs_rejects_signed_keys_mismatch() {
+        let spell = spell_with_scroll_output_at(SAMPLE_P2WPKH_SPK);
+        // Signed map declares output #2, but the spell's `tx.scrolls` is {1}.
+        let signed = signed_scrolls_for(2, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs(&spell, Some(&signed))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("do not match `tx.scrolls`"), "got: {err}");
+    }
+
+    #[test]
+    fn check_scroll_outputs_rejects_spk_mismatch_with_dest() {
+        // Signed scriptPubKey is `OTHER_P2WPKH_SPK`, but the spell's
+        // `coins[1].dest` was filled with `SAMPLE_P2WPKH_SPK`.
+        let spell = spell_with_scroll_output_at(SAMPLE_P2WPKH_SPK);
+        let signed = signed_scrolls_for(1, OTHER_P2WPKH_SPK);
+        let err = check_scroll_outputs(&spell, Some(&signed))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("does not match `tx.coins[1].dest`"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn scroll_outputs_listed_rejects_out_of_range_index() {
+        // `tx.outs` has 1 entry (index 0 only), but `tx.scrolls` claims index 1.
+        let mut spell = NormalizedSpell::default();
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        let mut scrolls = BTreeSet::new();
+        scrolls.insert(1u32);
+        spell.tx.scrolls = Some(scrolls);
+        let err = check_scroll_outputs_are_listed(&spell)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("references output #1"), "got: {err}");
+        assert!(err.contains("only has 1 output"), "got: {err}");
+    }
+
+    #[test]
+    fn scroll_outputs_listed_accepts_in_range_non_scroll_index() {
+        // An output index can be declared in `tx.scrolls` even when it carries no
+        // SCROLL charm (the canister signature is the practical gatekeeper on Bitcoin
+        // -- see the reply to greptile on PR #192).
+        let mut spell = NormalizedSpell::default();
+        spell.tx.outs = vec![NormalizedCharms::new(), NormalizedCharms::new()];
+        let mut scrolls = BTreeSet::new();
+        scrolls.insert(1u32);
+        spell.tx.scrolls = Some(scrolls);
+        check_scroll_outputs_are_listed(&spell).unwrap();
+    }
+
+    /// Compact-format Bitcoin tx hex (no spell). Reused from `tx::tests::ser_to_json`
+    /// so the test doesn't drag in a separate fixture.
+    const SAMPLE_BTC_TX_HEX: &str = "0200000000010115ccf0534b7969e5ac0f4699e51bf7805168244057059caa333397fcf8a9acdd0000000000fdffffff027a6faf85150000001600147b458433d0c04323426ef88365bd4cfef141ac7520a107000000000022512087a397fc19d816b6f938dad182a54c778d2d5db8b31f4528a758b989d42f0b78024730440220072d64b2e3bbcd27bd79cb8859c83ca524dad60dc6310569c2a04c997d116381022071d4df703d037a9fe16ccb1a2b8061f10cda86ccbb330a49c5dcc95197436c960121030db9616d96a7b7a8656191b340f77e905ee2885a09a7a1e80b9c8b64ec746fb300000000";
+    const SAMPLE_CARDANO_TX_HEX: &str = "84a400d901028182582011a2338987035057f6c36286cf5aadc02573059b2cde9790017eb4e148f0c67a0001828258390174f84e13070bb755eaa01cb717da8c7450daf379948e979f6de99d26ba89ff199fde572546b9a044eb129ad2edb184bd79cde63ab4b47aec1a01312d008258390184f1c3b1fff5241088acc4ce0aec81f45a71a70e35c94e30a70b7cdfeb0785cdec744029db6b4f344b1123497c9cabfeeb94af20fcfddfe01a33e578fd021a000299e90758201e8eb8575d879922d701c12daa7366cb71b6518a9500e083a966a8e66b56ed23a10081825820ea444825bbd5cc97b6c795437849fe55694b52e2f51485ac76ca2d9f991e83305840d59db4fa0b4bb233504f5e6826261a2e18b2e22cb3df4f631ab77d94d62e8df3200536271f3f3a625bc86919714972964f070f909f145b342f2889f58ccc210ff5a11902a2a1636d736765546f6b656f";
+
+    #[test]
+    fn hosting_chain_follows_first_input_not_any_prev_tx() {
+        use crate::tx::EnchantedTx;
+
+        let btc_tx = Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap();
+        let cardano_tx = Tx::try_from(SAMPLE_CARDANO_TX_HEX).unwrap();
+        let btc_txid = btc_tx.tx_id();
+        let cardano_txid = cardano_tx.tx_id();
+
+        // Spell's first input points at the *Cardano* tx -> hosting chain is Cardano,
+        // even though a Bitcoin tx is also present in `prev_txs` (as it would be for
+        // a Cardano spell beaming charms in from a Bitcoin source).
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(cardano_txid, 0)]);
+        let prev_txs = vec![cardano_tx.clone(), btc_tx.clone()];
+        assert!(!hosting_chain_is_bitcoin(&spell, &prev_txs));
+
+        // Mirror image: first input points at the Bitcoin tx -> Bitcoin host.
+        spell.tx.ins = Some(vec![UtxoId(btc_txid, 0)]);
+        assert!(hosting_chain_is_bitcoin(&spell, &prev_txs));
     }
 }

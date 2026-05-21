@@ -131,19 +131,27 @@ impl Prove for SpellCli {
         if payload {
             // Normalize the prove request so that the emitted payload matches what
             // would actually be sent to the proving API (e.g., adjust coin contents
-            // based on the selected chain).
+            // based on the selected chain). We do NOT call the Scrolls canister
+            // here: `coins[i].dest` stays empty for Scrolls outputs, and the prover
+            // server fills both `dest` and the signed scriptPubKey map at prove
+            // time. `is_correct` returns `Ok(false)` in that case, which we
+            // tolerate (with a warning).
             adjust_coin_contents(&mut prove_request.spell, chain)?;
 
-            ensure!(
-                charms_client::is_correct(
-                    &prove_request.spell,
-                    &prove_request.prev_txs,
-                    app_input,
-                    SPELL_VK,
-                    &prove_request.tx_ins_beamed_source_utxos,
-                )?,
-                "spell verification failed"
-            );
+            let verified = charms_client::is_correct(
+                &prove_request.spell,
+                &prove_request.prev_txs,
+                app_input,
+                SPELL_VK,
+                &prove_request.tx_ins_beamed_source_utxos,
+                None,
+            )?;
+            if !verified {
+                eprintln!(
+                    "warning: spell has Scrolls outputs whose scriptPubKeys are not \
+                     yet bound; binding happens at proving time on the prover server"
+                );
+            }
 
             match format {
                 Output::Json => println!("{}", serde_json::to_string(&prove_request)?),
@@ -253,16 +261,24 @@ impl Check for SpellCli {
             }),
         };
 
-        ensure!(
-            charms_client::is_correct(
-                &norm_spell,
-                &prev_txs,
-                app_input,
-                SPELL_VK,
-                &tx_ins_beamed_source_utxos,
-            )?,
-            "spell verification failed"
-        );
+        // No canister call: `charms spell check` is purely client-side. The signed
+        // scriptPubKey map for Bitcoin Scrolls outputs is the prover server's job;
+        // `is_correct` returns `Ok(false)` in that case and we tolerate it (with a
+        // warning) so authors can sanity-check their spell shape locally.
+        let verified = charms_client::is_correct(
+            &norm_spell,
+            &prev_txs,
+            app_input,
+            SPELL_VK,
+            &tx_ins_beamed_source_utxos,
+            None,
+        )?;
+        if !verified {
+            eprintln!(
+                "warning: spell has Scrolls outputs whose scriptPubKeys are not yet \
+                 bound; binding happens at proving time on the prover server"
+            );
+        }
 
         let version_changed_apps = charms_client::collect_version_changed_apps(
             &norm_spell,

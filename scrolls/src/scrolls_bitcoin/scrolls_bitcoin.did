@@ -1,10 +1,15 @@
-// Result of [`addresses`]: the map from output index to derived P2WPKH address,
-// plus a BIP-340 Schnorr signature over the CBOR-serialized map produced by the
-// canister's chain key under derivation path `[b"sign"]`. The signature is
-// hex-encoded.
-type AddressesResult = record {
+// Result of [`addresses`]: the map from output index to its derived P2WPKH
+// `scriptPubKey` (hex-encoded raw script bytes), plus a BIP-340 Schnorr
+// signature over the CBOR-serialized map produced by the canister's chain
+// key under derivation path `[b"sign"]`. The signature is hex-encoded.
+//
+// The `scriptPubKey` is what goes directly into a Bitcoin output's
+// `script_pubkey` field; it is the same byte string that ends up in
+// `spell.tx.coins[i].dest`. Unlike an address, it is network-independent —
+// P2WPKH scripts have identical bytes on `main` and `testnet4`.
+type Addresses = record {
   signature : text;
-  addresses : vec record { nat32; text };
+  script_pubkeys : vec record { nat32; text };
 };
 type Config = record {
   fee_per_input : nat64;
@@ -12,7 +17,7 @@ type Config = record {
   fixed_cost : nat64;
   fee_basis_points : nat64;
 };
-type Result = variant { Ok : AddressesResult; Err : text };
+type Result = variant { Ok : Addresses; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
 type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
 type Result_3 = variant { Ok : text; Err : text };
@@ -23,24 +28,28 @@ type SignRequest = record {
   tx_to_sign : text;
 };
 service : () -> {
-  // Returns Scroll-controlled P2WPKH addresses for the given network and derivation anchor,
-  // together with a BIP-340 Schnorr signature over the address map produced by the canister's
-  // chain key under derivation path `[b"sign"]`.
-  // 
+  // Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
+  // given derivation anchor, together with a BIP-340 Schnorr signature over the
+  // `(output_index -> scriptPubKey)` map produced by the canister's chain key
+  // under derivation path `[b"sign"]`.
+  //
   // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
   // It identifies the unique "anchor" used for key derivation:
-  // 
+  //
   // * For a normal (non-coinbase) output, this is the outpoint (`{txid}:{vout}`) of the *first
   // input* of the transaction that created the output(s) being addressed.
   // * For an output created by a **coinbase** transaction, use the all-zeros txid (the txid that
   // appears as the first input's `txid` of the coinbase transaction itself) together with the
   // block height (as a decimal integer) in place of the vout. Example:
   // `0000000000000000000000000000000000000000000000000000000000000000:123456`
-  // 
-  // `out_is` is a list of output indexes (within the creating transaction)
-  // for which addresses should be generated. At most 256 indexes are accepted
+  //
+  // `out_is` is a list of output indexes (within the creating transaction) for
+  // which `scriptPubKey`s should be generated. At most 256 indexes are accepted
   // per call.
-  addresses : (text, text, vec nat32) -> (Result);
+  //
+  // No `network` argument is taken because a P2WPKH `scriptPubKey` is just
+  // `OP_0 <20-byte-pubkey-hash>` — the same bytes on every Bitcoin network.
+  addresses : (text, vec nat32) -> (Result);
   config : () -> (Config) query;
   // Current cycle balance of this canister.
   // 

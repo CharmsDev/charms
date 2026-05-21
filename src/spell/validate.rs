@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::Network;
 use charms_app_runner::AppRunner;
 use charms_client::{
-    BeamSource, NormalizedSpell,
+    BeamSource, NormalizedSpell, SignedScrollOutputs,
     cardano_tx::OutputContent,
     ensure_no_orphan_versioned_apps,
     tx::{Chain, Tx, by_txid},
@@ -221,10 +221,15 @@ pub fn adjust_coin_contents(norm_spell: &mut NormalizedSpell, chain: Chain) -> a
 }
 
 impl ProveSpellTxImpl {
+    /// Validate a `ProveRequest`, returning the app-cycle total and the `is_correct`
+    /// result. `is_correct` may return `Ok(false)` on the client preflight path when
+    /// the spell has unbound Scrolls outputs (the prover server fills those in via
+    /// `fill_scroll_outputs`); the caller decides whether to treat that as fatal.
     pub fn validate_prove_request(
         &self,
         prove_request: &mut super::request::ProveRequest,
-    ) -> anyhow::Result<u64> {
+        scroll_outputs: Option<&SignedScrollOutputs>,
+    ) -> anyhow::Result<(u64, bool)> {
         ensure!(
             prove_request.spell.mock == self.mock,
             "cannot prove a mock=={} spell on a mock=={} prover",
@@ -277,16 +282,14 @@ impl ProveSpellTxImpl {
             }),
         };
 
-        ensure!(
-            charms_client::is_correct(
-                &norm_spell,
-                &prev_txs,
-                app_input.clone(),
-                SPELL_VK,
-                &tx_ins_beamed_source_utxos,
-            )?,
-            "spell verification failed"
-        );
+        let verified = charms_client::is_correct(
+            &norm_spell,
+            &prev_txs,
+            app_input.clone(),
+            SPELL_VK,
+            &tx_ins_beamed_source_utxos,
+            scroll_outputs,
+        )?;
 
         // Calculate cycles for fee estimation
         let total_cycles = if let Some(app_input) = &app_input {
@@ -324,9 +327,21 @@ impl ProveSpellTxImpl {
                 };
                 let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
 
-                // Validate that all output addresses are valid for the network
+                // Validate that all output addresses are valid for the network.
+                // Outputs listed in `tx.scrolls` may legitimately have `dest = []`
+                // on the client preflight path -- the prover server fills them in
+                // via `fill_scroll_outputs`, and `check_scroll_outputs` later pins
+                // each `dest` to the canister-signed scriptPubKey.
+                let scroll_indexes: BTreeSet<u32> = norm_spell
+                    .tx
+                    .scrolls
+                    .clone()
+                    .unwrap_or_default();
                 ensure!(
-                    coin_outs.iter().all(|o| {
+                    coin_outs.iter().enumerate().all(|(i, o)| {
+                        if scroll_indexes.contains(&(i as u32)) && o.dest.is_empty() {
+                            return true;
+                        }
                         bitcoin::Address::from_script(
                             &bitcoin::ScriptBuf::from_bytes(o.dest.clone()),
                             network,
@@ -399,12 +414,12 @@ impl ProveSpellTxImpl {
                     total_sats_in > total_sats_required,
                     "spell inputs must have sufficient value to cover outputs and fees"
                 );
-                Ok(total_cycles)
+                Ok((total_cycles, verified))
             }
             Chain::Cardano => {
                 // TODO
                 tracing::warn!("spell validation for cardano is not yet implemented");
-                Ok(total_cycles)
+                Ok((total_cycles, verified))
             }
         }
     }

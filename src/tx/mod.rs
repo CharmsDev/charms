@@ -3,6 +3,7 @@ use charms_lib::SPELL_VK;
 
 pub mod bitcoin_tx;
 pub mod cardano_tx;
+pub mod scrolls_bitcoin;
 
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn spell(tx: &Tx, mock: bool) -> Option<NormalizedSpell> {
