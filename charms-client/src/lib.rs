@@ -437,7 +437,7 @@ pub fn is_correct(
     check_input_apps_are_referenced(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
     check_prev_versioned_apps_consistency(&prev_spells)?;
     check_scroll_outputs_are_listed(spell)?;
-    if prev_txs.iter().any(|tx| matches!(tx, Tx::Bitcoin(_))) {
+    if hosting_chain_is_bitcoin(spell, prev_txs) {
         check_scroll_outputs(spell, scroll_outputs)?;
     }
 
@@ -877,12 +877,38 @@ fn apps_satisfied(
     Ok(())
 }
 
+/// The hosting tx's chain is the chain of the tx that created `spell.tx.ins[0]`. We
+/// can't just look at *any* `prev_txs` entry: beam-source txs are also in `prev_txs`
+/// and may live on a different chain than the hosting tx, so an `any(|t| Bitcoin)`
+/// would misfire on a Cardano spell with a Bitcoin beam source.
+fn hosting_chain_is_bitcoin(spell: &NormalizedSpell, prev_txs: &[Tx]) -> bool {
+    let Some(first_in) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
+        return false;
+    };
+    prev_txs
+        .iter()
+        .find(|tx| tx.tx_id() == first_in.0)
+        .is_some_and(|tx| matches!(tx, Tx::Bitcoin(_)))
+}
+
 /// Every output that carries a charm whose app has tag [`SCROLL`] MUST have its index
-/// listed in `spell.tx.scrolls`. The chain-conditional signature check lives in
-/// [`check_scroll_outputs`]; this structural rule applies regardless of chain (on
-/// Cardano the SCROLL app behaves as a regular non-token app, but the index still has
-/// to be declared so the spell shape stays uniform across chains).
+/// listed in `spell.tx.scrolls`, and every index in `spell.tx.scrolls` MUST point at a
+/// real spell output (`< spell.tx.outs.len()`). The chain-conditional signature check
+/// lives in [`check_scroll_outputs`]; these structural rules apply regardless of chain
+/// (on Cardano the SCROLL app behaves as a regular non-token app, but the index still
+/// has to be declared so the spell shape stays uniform across chains).
 fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let outs_len = spell.tx.outs.len() as u32;
+    if let Some(scrolls) = spell.tx.scrolls.as_ref() {
+        for &i in scrolls {
+            ensure!(
+                i < outs_len,
+                "`tx.scrolls` references output #{} but the spell only has {} output(s)",
+                i,
+                outs_len
+            );
+        }
+    }
     let apps = apps(spell);
     for (i, n_charm) in spell.tx.outs.iter().enumerate() {
         let has_scroll = n_charm
@@ -1743,5 +1769,60 @@ mod test {
             err.contains("does not match `tx.coins[1].dest`"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn scroll_outputs_listed_rejects_out_of_range_index() {
+        // `tx.outs` has 1 entry (index 0 only), but `tx.scrolls` claims index 1.
+        let mut spell = NormalizedSpell::default();
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        let mut scrolls = BTreeSet::new();
+        scrolls.insert(1u32);
+        spell.tx.scrolls = Some(scrolls);
+        let err = check_scroll_outputs_are_listed(&spell)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("references output #1"), "got: {err}");
+        assert!(err.contains("only has 1 output"), "got: {err}");
+    }
+
+    #[test]
+    fn scroll_outputs_listed_accepts_in_range_non_scroll_index() {
+        // An output index can be declared in `tx.scrolls` even when it carries no
+        // SCROLL charm (the canister signature is the practical gatekeeper on Bitcoin
+        // -- see the reply to greptile on PR #192).
+        let mut spell = NormalizedSpell::default();
+        spell.tx.outs = vec![NormalizedCharms::new(), NormalizedCharms::new()];
+        let mut scrolls = BTreeSet::new();
+        scrolls.insert(1u32);
+        spell.tx.scrolls = Some(scrolls);
+        check_scroll_outputs_are_listed(&spell).unwrap();
+    }
+
+    /// Compact-format Bitcoin tx hex (no spell). Reused from `tx::tests::ser_to_json`
+    /// so the test doesn't drag in a separate fixture.
+    const SAMPLE_BTC_TX_HEX: &str = "0200000000010115ccf0534b7969e5ac0f4699e51bf7805168244057059caa333397fcf8a9acdd0000000000fdffffff027a6faf85150000001600147b458433d0c04323426ef88365bd4cfef141ac7520a107000000000022512087a397fc19d816b6f938dad182a54c778d2d5db8b31f4528a758b989d42f0b78024730440220072d64b2e3bbcd27bd79cb8859c83ca524dad60dc6310569c2a04c997d116381022071d4df703d037a9fe16ccb1a2b8061f10cda86ccbb330a49c5dcc95197436c960121030db9616d96a7b7a8656191b340f77e905ee2885a09a7a1e80b9c8b64ec746fb300000000";
+    const SAMPLE_CARDANO_TX_HEX: &str = "84a400d901028182582011a2338987035057f6c36286cf5aadc02573059b2cde9790017eb4e148f0c67a0001828258390174f84e13070bb755eaa01cb717da8c7450daf379948e979f6de99d26ba89ff199fde572546b9a044eb129ad2edb184bd79cde63ab4b47aec1a01312d008258390184f1c3b1fff5241088acc4ce0aec81f45a71a70e35c94e30a70b7cdfeb0785cdec744029db6b4f344b1123497c9cabfeeb94af20fcfddfe01a33e578fd021a000299e90758201e8eb8575d879922d701c12daa7366cb71b6518a9500e083a966a8e66b56ed23a10081825820ea444825bbd5cc97b6c795437849fe55694b52e2f51485ac76ca2d9f991e83305840d59db4fa0b4bb233504f5e6826261a2e18b2e22cb3df4f631ab77d94d62e8df3200536271f3f3a625bc86919714972964f070f909f145b342f2889f58ccc210ff5a11902a2a1636d736765546f6b656f";
+
+    #[test]
+    fn hosting_chain_follows_first_input_not_any_prev_tx() {
+        use crate::tx::EnchantedTx;
+
+        let btc_tx = Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap();
+        let cardano_tx = Tx::try_from(SAMPLE_CARDANO_TX_HEX).unwrap();
+        let btc_txid = btc_tx.tx_id();
+        let cardano_txid = cardano_tx.tx_id();
+
+        // Spell's first input points at the *Cardano* tx -> hosting chain is Cardano,
+        // even though a Bitcoin tx is also present in `prev_txs` (as it would be for
+        // a Cardano spell beaming charms in from a Bitcoin source).
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(cardano_txid, 0)]);
+        let prev_txs = vec![cardano_tx.clone(), btc_tx.clone()];
+        assert!(!hosting_chain_is_bitcoin(&spell, &prev_txs));
+
+        // Mirror image: first input points at the Bitcoin tx -> Bitcoin host.
+        spell.tx.ins = Some(vec![UtxoId(btc_txid, 0)]);
+        assert!(hosting_chain_is_bitcoin(&spell, &prev_txs));
     }
 }
