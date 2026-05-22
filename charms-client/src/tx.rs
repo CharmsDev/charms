@@ -139,7 +139,12 @@ pub fn spell_vk(spell_version: u32, spell_vk: &[u8; 32], mock: bool) -> anyhow::
 /// (CBOR public values, prover-input JSON, CLI output, etc.) where a string form
 /// is expected.
 pub fn vk_hex(vk: &[u8; 32]) -> String {
-    format!("0x{}", hex::encode(vk))
+    let mut hex_buf = [0u8; 64];
+    hex::encode_to_slice(vk, &mut hex_buf).expect("encoding 32-byte vk into 64-byte buffer");
+    let mut out = String::with_capacity(66);
+    out.push_str("0x");
+    out.push_str(std::str::from_utf8(&hex_buf).expect("hex output is valid ASCII"));
+    out
 }
 
 pub fn groth16_vk(spell_version: u32, mock: bool) -> anyhow::Result<&'static [u8]> {
