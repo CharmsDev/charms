@@ -31,8 +31,11 @@ pub async fn prove(req: ProveRequest) -> anyhow::Result<Vec<Tx>> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use charms_client::{NormalizedSpell, SpellProverInput};
+    use charms_data::util;
     use charms_lib::SPELL_VK;
-    use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey};
+    use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1Stdin};
+    use std::collections::BTreeMap;
 
     #[tokio::test]
     async fn test_spell_vk() {
@@ -57,5 +60,47 @@ mod test {
             .unwrap();
         let s = pk.verifying_key().bytes32();
         assert_eq!(charms_client::tx::vk_hex(&SPELL_VK)[2..], s[2..]);
+    }
+
+    #[tokio::test]
+    async fn programs_run_in_zkvm() {
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![]);
+
+        let input = SpellProverInput {
+            self_spell_vk: SPELL_VK,
+            prev_txs: vec![],
+            spell: spell.clone(),
+            tx_ins_beamed_source_utxos: BTreeMap::new(),
+            app_input: None,
+            scroll_outputs: None,
+        };
+
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&input).unwrap());
+
+        let client = ProverClient::builder().light().build().await;
+        let (pv, _report) = client
+            .execute(Elf::Static(SPELL_CHECKER_BINARY), stdin)
+            .await
+            .expect("spell-checker should execute successfully");
+
+        let (committed_vk, committed_spell): ([u8; 32], NormalizedSpell) =
+            util::read(pv.as_slice()).unwrap();
+        assert_eq!(committed_vk, SPELL_VK);
+        assert_eq!(committed_spell, spell);
+
+        let input = b"charms-proof-wrapper smoke test".to_vec();
+
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(input.clone());
+
+        let (pv, _report) = client
+            .execute(Elf::Static(PROOF_WRAPPER_BINARY), stdin)
+            .deferred_proof_verification(false)
+            .await
+            .expect("proof-wrapper should execute successfully");
+
+        assert_eq!(pv.as_slice(), input.as_slice());
     }
 }
