@@ -13,7 +13,7 @@ pub fn main() {
     sp1_zkvm::io::commit_slice(output_vec.as_slice());
 }
 
-pub fn run(input: SpellProverInput) -> (String, NormalizedSpell) {
+pub fn run(input: SpellProverInput) -> ([u8; 32], NormalizedSpell) {
     let SpellProverInput {
         self_spell_vk,
         prev_txs,

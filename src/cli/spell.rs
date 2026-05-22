@@ -42,12 +42,12 @@ impl SpellCli {
                 "mock": true,
                 "prover": is_prover,
                 "version": CURRENT_VERSION,
-                "vk": SPELL_VK.to_string(),
+                "vk": charms_client::tx::vk_hex(&SPELL_VK),
             }),
             false => json!({
                 "prover": is_prover,
                 "version": CURRENT_VERSION,
-                "vk": SPELL_VK.to_string(),
+                "vk": charms_client::tx::vk_hex(&SPELL_VK),
             }),
         };
 
@@ -142,7 +142,7 @@ impl Prove for SpellCli {
                 &prove_request.spell,
                 &prove_request.prev_txs,
                 app_input,
-                SPELL_VK,
+                &SPELL_VK,
                 &prove_request.tx_ins_beamed_source_utxos,
                 None,
             )?;
@@ -235,7 +235,7 @@ impl Check for SpellCli {
             .unwrap_or_default();
         ensure_no_orphan_versioned_apps(&norm_spell)?;
 
-        let prev_spells = charms_client::prev_spells(&prev_txs, SPELL_VK, &norm_spell)?;
+        let prev_spells = charms_client::prev_spells(&prev_txs, &SPELL_VK, &norm_spell)?;
 
         let charms_tx = charms_client::to_tx(
             &norm_spell,
@@ -269,7 +269,7 @@ impl Check for SpellCli {
             &norm_spell,
             &prev_txs,
             app_input,
-            SPELL_VK,
+            &SPELL_VK,
             &tx_ins_beamed_source_utxos,
             None,
         )?;

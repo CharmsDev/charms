@@ -2,15 +2,16 @@ use crate::{
     CURRENT_VERSION, MOCK_SPELL_VK, NormalizedSpell, V0, V0_SPELL_VK, V1, V1_SPELL_VK, V2,
     V2_SPELL_VK, V3, V3_SPELL_VK, V4, V4_SPELL_VK, V5, V5_SPELL_VK, V6, V6_SPELL_VK, V7,
     V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, V11, V11_SPELL_VK, V12,
-    V12_SPELL_VK, V13, V13_SPELL_VK, ark, bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
+    V12_SPELL_VK, V13, V13_SPELL_VK, V14, ark, bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use enum_dispatch::enum_dispatch;
+use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sp1_primitives::io::SP1PublicValues;
-use sp1_verifier::{Groth16Verifier, decode_sp1_vkey_hash, hash_public_inputs};
+use sp1_verifier::{Groth16Verifier, hash_public_inputs};
 use std::collections::BTreeMap;
 use strum::{AsRefStr, EnumDiscriminants, EnumString};
 use thiserror::Error;
@@ -29,12 +30,12 @@ pub struct UnsupportedSpellVersion(pub u32);
 pub trait EnchantedTx {
     fn extract_and_verify_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell>;
     fn virtual_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         next_spell: &NormalizedSpell,
     ) -> anyhow::Result<NormalizedSpell>;
     fn tx_outs_len(&self) -> usize;
@@ -90,7 +91,7 @@ impl Tx {
 /// Incorrect spells are rejected.
 #[tracing::instrument(level = "debug", skip_all)]
 pub fn committed_normalized_spell(
-    spell_vk: &str,
+    spell_vk: &[u8; 32],
     tx: &Tx,
     mock: bool,
 ) -> anyhow::Result<NormalizedSpell> {
@@ -100,35 +101,47 @@ pub fn committed_normalized_spell(
 /// Extract and verify [`NormalizedSpell`] from a transaction. Return an empty spell if the
 /// transaction does not have one. Extend with native coin output amounts if necessary.
 pub fn extended_normalized_spell(
-    spell_vk: &str,
+    spell_vk: &[u8; 32],
     next_spell: &NormalizedSpell,
     tx: &Tx,
 ) -> anyhow::Result<NormalizedSpell> {
     tx.virtual_spell(spell_vk, next_spell)
 }
 
-pub fn spell_vk(spell_version: u32, spell_vk: &str, mock: bool) -> anyhow::Result<&str> {
+pub fn spell_vk<'a>(
+    spell_version: u32,
+    spell_vk: &'a [u8; 32],
+    mock: bool,
+) -> anyhow::Result<&'a [u8; 32]> {
     if mock {
-        return Ok(MOCK_SPELL_VK);
+        return Ok(&MOCK_SPELL_VK);
     }
     match spell_version {
         CURRENT_VERSION => Ok(spell_vk),
-        V13 => Ok(V13_SPELL_VK),
-        V12 => Ok(V12_SPELL_VK),
-        V11 => Ok(V11_SPELL_VK),
-        V10 => Ok(V10_SPELL_VK),
-        V9 => Ok(V9_SPELL_VK),
-        V8 => Ok(V8_SPELL_VK),
-        V7 => Ok(V7_SPELL_VK),
-        V6 => Ok(V6_SPELL_VK),
-        V5 => Ok(V5_SPELL_VK),
-        V4 => Ok(V4_SPELL_VK),
-        V3 => Ok(V3_SPELL_VK),
-        V2 => Ok(V2_SPELL_VK),
-        V1 => Ok(V1_SPELL_VK),
-        V0 => Ok(V0_SPELL_VK),
+        V13 => Ok(&V13_SPELL_VK),
+        V12 => Ok(&V12_SPELL_VK),
+        V11 => Ok(&V11_SPELL_VK),
+        V10 => Ok(&V10_SPELL_VK),
+        V9 => Ok(&V9_SPELL_VK),
+        V8 => Ok(&V8_SPELL_VK),
+        V7 => Ok(&V7_SPELL_VK),
+        V6 => Ok(&V6_SPELL_VK),
+        V5 => Ok(&V5_SPELL_VK),
+        V4 => Ok(&V4_SPELL_VK),
+        V3 => Ok(&V3_SPELL_VK),
+        V2 => Ok(&V2_SPELL_VK),
+        V1 => Ok(&V1_SPELL_VK),
+        V0 => Ok(&V0_SPELL_VK),
         _ => Err(UnsupportedSpellVersion(spell_version).into()),
     }
+}
+
+/// Render a 32-byte verification key as a `"0x"`-prefixed hex string, matching the
+/// format produced by SP1's `vk.bytes32()`. Use this at serialization boundaries
+/// (CBOR public values, prover-input JSON, CLI output, etc.) where a string form
+/// is expected.
+pub fn vk_hex(vk: &[u8; 32]) -> String {
+    format!("0x{}", hex::encode(vk))
 }
 
 pub fn groth16_vk(spell_version: u32, mock: bool) -> anyhow::Result<&'static [u8]> {
@@ -174,18 +187,26 @@ pub const V13_GROTH16_VK_BYTES: &'static [u8] = V12_GROTH16_VK_BYTES;
 pub const V14_GROTH16_VK_BYTES: &'static [u8] = include_bytes!("../vk/v14/groth16_vk.bin");
 pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V14_GROTH16_VK_BYTES;
 
-pub fn to_serialized_pv<T: Serialize>(spell_version: u32, t: &T) -> Vec<u8> {
+pub fn to_serialized_pv(
+    spell_version: u32,
+    spell_vk: &[u8; 32],
+    spell: &NormalizedSpell,
+) -> Vec<u8> {
     match spell_version {
         V0 => {
-            // we used to commit to the tuple `(spell_vk, n_spell)`, which was serialized internally
-            // by SP1
+            // V0 committed `(spell_vk, n_spell)` as a `(String, NormalizedSpell)` tuple
+            // serialized internally by SP1.
             let mut pv = SP1PublicValues::new();
-            pv.write(t);
+            pv.write(&(vk_hex(spell_vk), spell));
             pv.to_vec()
         }
+        v if v <= V14 => {
+            // V1..=V14 committed `(spell_vk, n_spell)` as CBOR of `(String, NormalizedSpell)`.
+            util::write(&(vk_hex(spell_vk), spell)).unwrap()
+        }
         _ => {
-            // we commit to CBOR-encoded tuple `(spell_vk, n_spell)`
-            util::write(t).unwrap()
+            // V15+ commits `(spell_vk, n_spell)` as CBOR of `([u8; 32], NormalizedSpell)`.
+            util::write(&(spell_vk, spell)).unwrap()
         }
     }
 }
@@ -193,18 +214,28 @@ pub fn to_serialized_pv<T: Serialize>(spell_version: u32, t: &T) -> Vec<u8> {
 pub fn verify_snark_proof(
     proof: &[u8],
     public_inputs: &[u8],
-    vk_hash: &str,
+    sp1_vkey_hash: &[u8; 32],
     spell_version: u32,
     mock: bool,
 ) -> anyhow::Result<()> {
     let groth16_vk = groth16_vk(spell_version, mock)?;
     match mock {
         false => match spell_version {
-            v if v <= V11 => verify_gnark_v5(proof, public_inputs, vk_hash, groth16_vk),
-            v if v <= V13 => {
-                verify_gnark_v6(proof, public_inputs, vk_hash, groth16_vk, SP1_V6_0_VK_ROOT)
-            }
-            _ => verify_gnark_v6(proof, public_inputs, vk_hash, groth16_vk, SP1_V6_2_VK_ROOT),
+            v if v <= V11 => verify_gnark_v5(proof, public_inputs, sp1_vkey_hash, groth16_vk),
+            v if v <= V13 => verify_gnark_v6(
+                proof,
+                public_inputs,
+                sp1_vkey_hash,
+                groth16_vk,
+                SP1_V6_0_VK_ROOT,
+            ),
+            _ => verify_gnark_v6(
+                proof,
+                public_inputs,
+                sp1_vkey_hash,
+                groth16_vk,
+                SP1_V6_2_VK_ROOT,
+            ),
         },
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
@@ -214,16 +245,16 @@ const VK_HASH_PREFIX_LENGTH: usize = 4;
 
 /// `VK_ROOT_BYTES` from `sp1-verifier-legacy` 6.0.2 — covers spell versions V12 and V13.
 const SP1_V6_0_VK_ROOT: [u8; 32] =
-    hex_literal::hex!("008cd56e10c2fe24795cff1e1d1f40d3a324528d315674da45d26afb376e8670");
+    hex!("008cd56e10c2fe24795cff1e1d1f40d3a324528d315674da45d26afb376e8670");
 
 /// `VK_ROOT_BYTES` from `sp1-verifier` 6.2.0 — covers the current spell version (V14).
 const SP1_V6_2_VK_ROOT: [u8; 32] =
-    hex_literal::hex!("002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352");
+    hex!("002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352");
 
 fn verify_gnark_v5(
     proof: &[u8],
     public_inputs: &[u8],
-    vk_hash: &str,
+    sp1_vkey_hash: &[u8; 32],
     groth16_vk: &[u8],
 ) -> anyhow::Result<()> {
     if proof.len() < VK_HASH_PREFIX_LENGTH {
@@ -235,11 +266,9 @@ fn verify_gnark_v5(
     if groth16_vk_hash != proof[..VK_HASH_PREFIX_LENGTH] {
         bail!("could not verify spell proof: groth16 vkey hash mismatch");
     }
-    let sp1_vkey_hash = decode_sp1_vkey_hash(vk_hash)
-        .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))?;
     Groth16Verifier::verify_gnark_proof(
         &proof[VK_HASH_PREFIX_LENGTH..],
-        &[sp1_vkey_hash, hash_public_inputs(public_inputs)],
+        &[*sp1_vkey_hash, hash_public_inputs(public_inputs)],
         groth16_vk,
     )
     .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))
@@ -248,7 +277,7 @@ fn verify_gnark_v5(
 fn verify_gnark_v6(
     proof: &[u8],
     public_inputs: &[u8],
-    vk_hash: &str,
+    sp1_vkey_hash: &[u8; 32],
     groth16_vk: &[u8],
     expected_vk_root: [u8; 32],
 ) -> anyhow::Result<()> {
@@ -261,8 +290,6 @@ fn verify_gnark_v6(
     if groth16_vk_hash != proof[..VK_HASH_PREFIX_LENGTH] {
         bail!("could not verify spell proof: groth16 vkey hash mismatch");
     }
-    let sp1_vkey_hash = decode_sp1_vkey_hash(vk_hash)
-        .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))?;
 
     let exit_code: [u8; 32] = proof[VK_HASH_PREFIX_LENGTH..VK_HASH_PREFIX_LENGTH + 32]
         .try_into()
@@ -284,7 +311,7 @@ fn verify_gnark_v6(
     Groth16Verifier::verify_gnark_proof(
         &proof[VK_HASH_PREFIX_LENGTH + 96..],
         &[
-            sp1_vkey_hash,
+            *sp1_vkey_hash,
             hash_public_inputs(public_inputs),
             exit_code,
             vk_root,
@@ -314,7 +341,7 @@ mod tests {
 
     #[test]
     fn spell_vk_unsupported_version_typed_error() {
-        let err = spell_vk(u32::MAX, "vk", false).unwrap_err();
+        let err = spell_vk(u32::MAX, &[0u8; 32], false).unwrap_err();
         assert_eq!(
             err.downcast_ref::<UnsupportedSpellVersion>(),
             Some(&UnsupportedSpellVersion(u32::MAX))

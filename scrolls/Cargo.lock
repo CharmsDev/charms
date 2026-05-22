@@ -836,6 +836,7 @@ name = "charms-lib"
 version = "15.0.0"
 dependencies = [
  "charms-client",
+ "hex-literal",
 ]
 
 [[package]]

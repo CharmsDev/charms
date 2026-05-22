@@ -56,6 +56,6 @@ mod test {
             .await
             .unwrap();
         let s = pk.verifying_key().bytes32();
-        assert_eq!(SPELL_VK, s.as_str());
+        assert_eq!(charms_client::tx::vk_hex(&SPELL_VK)[2..], s[2..]);
     }
 }

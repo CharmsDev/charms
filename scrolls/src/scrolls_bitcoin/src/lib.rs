@@ -340,7 +340,7 @@ fn verify_spell_locally(tx_hex: &str, mock: bool) -> anyhow::Result<NormalizedSp
         .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
         .into();
 
-    let spell = committed_normalized_spell(SPELL_VK, &tx, mock).map_err(|e| {
+    let spell = committed_normalized_spell(&SPELL_VK, &tx, mock).map_err(|e| {
         if e.is::<UnsupportedSpellVersion>() {
             e
         } else {
