@@ -74,9 +74,7 @@ pub fn ensure_versioned_apps_have_signatures(
         .filter(|(app, _)| norm_spell.versioned_apps.contains_key(&app.vk))
         .filter(|(app, data)| {
             !data.is_empty()
-                || !app_private_inputs
-                    .get(app)
-                    .is_none_or(|w| w.is_empty())
+                || !app_private_inputs.get(app).is_none_or(|w| w.is_empty())
                 || !charms_data::is_simple_transfer(app, tx)
         })
         .map(|(app, _)| &app.vk)
@@ -248,7 +246,7 @@ impl ProveSpellTxImpl {
         ensure_all_prev_txs_are_present(&norm_spell, tx_ins_beamed_source_utxos, &prev_txs_by_id)?;
         ensure_unique_spell_inputs(&norm_spell)?;
 
-        let prev_spells = charms_client::prev_spells(prev_txs, SPELL_VK, &norm_spell)?;
+        let prev_spells = charms_client::prev_spells(prev_txs, &SPELL_VK, &norm_spell)?;
 
         let tx = charms_client::to_tx(
             &norm_spell,
@@ -286,7 +284,7 @@ impl ProveSpellTxImpl {
             &norm_spell,
             &prev_txs,
             app_input.clone(),
-            SPELL_VK,
+            &SPELL_VK,
             &tx_ins_beamed_source_utxos,
             scroll_outputs,
         )?;
@@ -332,11 +330,8 @@ impl ProveSpellTxImpl {
                 // on the client preflight path -- the prover server fills them in
                 // via `fill_scroll_outputs`, and `check_scroll_outputs` later pins
                 // each `dest` to the canister-signed scriptPubKey.
-                let scroll_indexes: BTreeSet<u32> = norm_spell
-                    .tx
-                    .scrolls
-                    .clone()
-                    .unwrap_or_default();
+                let scroll_indexes: BTreeSet<u32> =
+                    norm_spell.tx.scrolls.clone().unwrap_or_default();
                 ensure!(
                     coin_outs.iter().enumerate().all(|(i, o)| {
                         if scroll_indexes.contains(&(i as u32)) && o.dest.is_empty() {

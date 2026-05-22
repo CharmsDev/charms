@@ -9,6 +9,7 @@ use bitcoin::{
     script::{Instruction, PushBytes},
 };
 use charms_data::{NativeOutput, TxId, UtxoId, util};
+use hex_literal::hex;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -67,7 +68,7 @@ impl BitcoinTx {
 impl EnchantedTx for BitcoinTx {
     fn extract_and_verify_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = self.inner();
@@ -99,7 +100,7 @@ impl EnchantedTx for BitcoinTx {
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
-        let public_values = tx::to_serialized_pv(spell.version, &(spell_vk, &spell));
+        let public_values = tx::to_serialized_pv(spell.version, spell_vk, &spell);
 
         tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
 
@@ -108,7 +109,7 @@ impl EnchantedTx for BitcoinTx {
 
     fn virtual_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         next_spell: &NormalizedSpell,
     ) -> anyhow::Result<NormalizedSpell> {
         match self.extract_and_verify_spell(spell_vk, next_spell.mock) {
@@ -186,7 +187,7 @@ pub const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bit
 /// canister `schnorr_public_key` call). It is used by the client to verify the
 /// Schnorr signature returned by the canister's `addresses(...)` endpoint.
 pub const SCROLLS_ADDRS_PUBKEY: [u8; 32] =
-    hex_literal::hex!("30109b1c3c8dc1812de6267cd864a5f1f794330c6e43c25f971e6d0ae9440e3b");
+    hex!("30109b1c3c8dc1812de6267cd864a5f1f794330c6e43c25f971e6d0ae9440e3b");
 
 fn verify_finality_proof(
     tx: &Transaction,
@@ -363,8 +364,8 @@ pub fn parse_spell_and_proof_from_witness(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::*;
+    use std::str::FromStr;
 
     fn compute_finality_target(target_bits: u32) -> CompactTarget {
         let compact = CompactTarget::from_consensus(target_bits);
@@ -399,7 +400,9 @@ mod tests {
 
     #[test]
     fn scrolls_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
-        use ic_pub_key::{derive_schnorr_key, CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs};
+        use ic_pub_key::{
+            CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, derive_schnorr_key,
+        };
 
         // Textual canister ID for rpgc6-oqaaa-aaaak-qy3uq-cai.
         let canister_id = CanisterId::from_str("rpgc6-oqaaa-aaaak-qy3uq-cai").unwrap();
@@ -418,7 +421,11 @@ mod tests {
         // The crate (and the live management canister) returns the Schnorr public key
         // in SEC1 compressed form (33 bytes, 0x02/0x03 prefix + 32-byte x coord).
         // SCROLLS_ADDRS_PUBKEY stores the 32-byte x-only form used for BIP-340 verification.
-        assert_eq!(result.public_key.len(), 33, "expected 33-byte SEC1 compressed key");
+        assert_eq!(
+            result.public_key.len(),
+            33,
+            "expected 33-byte SEC1 compressed key"
+        );
         let derived_x_only: [u8; 32] = result.public_key[1..].try_into().unwrap();
 
         assert_eq!(SCROLLS_ADDRS_PUBKEY, derived_x_only);

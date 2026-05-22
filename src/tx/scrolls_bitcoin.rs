@@ -45,11 +45,10 @@ pub async fn fill_scroll_outputs(
 
     let signed = call_canister_addresses(&tx_in_0, out_is).await?;
 
-    let coins = spell
-        .tx
-        .coins
-        .as_mut()
-        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set"))?;
+    let coins =
+        spell.tx.coins.as_mut().ok_or_else(|| {
+            anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set")
+        })?;
     let coins_len = coins.len();
     for (&i, spk_hex) in &signed.script_pubkeys {
         let coin = coins.get_mut(i as usize).ok_or_else(|| {

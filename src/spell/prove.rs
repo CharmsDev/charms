@@ -95,7 +95,7 @@ impl Prover {
         let (spell_checker_pk, spell_checker_vk) = prover_client.get().setup(SPELL_CHECKER_BINARY);
         assert_eq!(crate::SPELL_CHECKER_VK, spell_checker_vk.hash_u32());
         let (proof_wrapper_pk, vk) = prover_client.get().setup(PROOF_WRAPPER_BINARY);
-        assert_eq!(SPELL_VK, vk.bytes32().as_str());
+        assert_eq!(charms_client::tx::vk_hex(&SPELL_VK), vk.bytes32());
         Self {
             spell_prover_client: app_prover.sp1_client.clone(),
             wrapper_prover_client: prover_client,
@@ -132,7 +132,7 @@ impl Prove for Prover {
         };
 
         let prover_input = SpellProverInput {
-            self_spell_vk: SPELL_VK.to_string(),
+            self_spell_vk: SPELL_VK,
             prev_txs,
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
@@ -198,7 +198,7 @@ impl Prove for MockProver {
 
         // Run the zkVM guest program (charms-spell-checker) instead of running apps directly
         let prover_input = SpellProverInput {
-            self_spell_vk: SPELL_VK.to_string(),
+            self_spell_vk: SPELL_VK,
             prev_txs,
             spell: norm_spell.clone(),
             tx_ins_beamed_source_utxos,
@@ -224,7 +224,8 @@ impl Prove for MockProver {
         let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
         let pk = load_pk()?;
 
-        let committed_data = util::write(&(MOCK_SPELL_VK, norm_spell.clone()))?;
+        let committed_data =
+            charms_client::tx::to_serialized_pv(norm_spell.version, &MOCK_SPELL_VK, &norm_spell);
 
         let field_elements = Sha256::digest(&committed_data)
             .to_field_elements()

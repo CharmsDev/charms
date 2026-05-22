@@ -179,8 +179,7 @@ fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
 
 #[cfg(not(unix))]
 fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    fs::write(path, contents)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -262,9 +261,8 @@ fn read_public_key(path: &Path) -> Result<[u8; 32]> {
         .with_context(|| format!("failed to read public key file: {}", path.display()))?;
     let s = s.trim();
     let pk_hex = if s.starts_with('{') {
-        let kp: AppKeypair = serde_json::from_str(s).with_context(|| {
-            format!("failed to parse keypair JSON: {}", path.display())
-        })?;
+        let kp: AppKeypair = serde_json::from_str(s)
+            .with_context(|| format!("failed to parse keypair JSON: {}", path.display()))?;
         kp.public_key
     } else {
         s.trim_start_matches("0x").to_string()

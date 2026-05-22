@@ -79,7 +79,7 @@ impl CardanoTx {
 impl EnchantedTx for CardanoTx {
     fn extract_and_verify_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell> {
         let tx = self.inner();
@@ -134,7 +134,7 @@ impl EnchantedTx for CardanoTx {
 
         let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
 
-        let public_values = tx::to_serialized_pv(spell.version, &(spell_vk, &spell));
+        let public_values = tx::to_serialized_pv(spell.version, spell_vk, &spell);
 
         tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
 
@@ -143,7 +143,7 @@ impl EnchantedTx for CardanoTx {
 
     fn virtual_spell(
         &self,
-        spell_vk: &str,
+        spell_vk: &[u8; 32],
         next_spell: &NormalizedSpell,
     ) -> anyhow::Result<NormalizedSpell> {
         match self.extract_and_verify_spell(spell_vk, next_spell.mock) {

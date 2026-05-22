@@ -2,10 +2,10 @@ use super::{
     prove::Prove,
     request::{CharmsFee, ProveRequest},
 };
-#[cfg(not(feature = "prover"))]
-use crate::utils::retry;
 #[cfg(feature = "prover")]
 use crate::tx::scrolls_bitcoin;
+#[cfg(not(feature = "prover"))]
+use crate::utils::retry;
 use crate::{
     cli::{charms_fee_settings, prove_impl},
     tx::{bitcoin_tx, cardano_tx},
@@ -89,11 +89,9 @@ impl ProveSpellTxImpl {
         &self,
         mut prove_request: ProveRequest,
     ) -> anyhow::Result<Vec<Tx>> {
-        let scroll_outputs = scrolls_bitcoin::fill_scroll_outputs(
-            &mut prove_request.spell,
-            prove_request.chain,
-        )
-        .await?;
+        let scroll_outputs =
+            scrolls_bitcoin::fill_scroll_outputs(&mut prove_request.spell, prove_request.chain)
+                .await?;
         let (app_cycles, verified) =
             self.validate_prove_request(&mut prove_request, scroll_outputs.as_ref())?;
         ensure!(verified, "spell verification failed");
