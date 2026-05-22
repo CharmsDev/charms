@@ -68,6 +68,9 @@ pub const V12_SPELL_VK: [u8; 32] =
 /// Verification key for version `13` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V13_SPELL_VK: [u8; 32] =
     hex!("004ef5bd2f6ed0c33b022dcc263bde479421d81a82ca0cb1a99d9ff361f89895");
+/// Verification key for version `14` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V14_SPELL_VK: [u8; 32] =
+    hex!("001a2396afb7e376736d9cf82d33c0dec55cb66866bf7f141fdaa92ab70a0506");
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -99,9 +102,11 @@ pub const V12: u32 = 12;
 pub const V13: u32 = 13;
 /// Version `14` of the protocol.
 pub const V14: u32 = 14;
+/// Version `15` of the protocol.
+pub const V15: u32 = 15;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V14;
+pub const CURRENT_VERSION: u32 = V15;
 
 pub const CHARMS_PROVE_API_URL: &'static str =
     formatcp!("https://v{CURRENT_VERSION}.charms.dev/spells/prove");
