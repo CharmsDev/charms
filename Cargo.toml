@@ -64,14 +64,14 @@ pallas-txbuilder = { version = "1.0.0" }
 proptest = { version = "1.11.0" }
 proptest-derive = { version = "0.8.0" }
 serde = { version = "1.0" }
-serde_json = { version = "1.0.149" }
+serde_json = { version = "1.0.150" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-primitives = { version = "6.2.0" }
-sp1-prover = { version = "6.2.0" }
-sp1-sdk = { version = "6.2.0", default-features = false, features = ["network"] }
-sp1-verifier = { version = "6.2.0", default-features = false }
-sp1-zkvm = { version = "6.2.0" }
+sp1-primitives = { version = "6.2.1" }
+sp1-prover = { version = "6.2.1" }
+sp1-sdk = { version = "6.2.1", default-features = false, features = ["network"] }
+sp1-verifier = { version = "6.2.1", default-features = false }
+sp1-zkvm = { version = "6.2.1" }
 test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }
 
@@ -127,7 +127,7 @@ sp1-prover = { workspace = true }
 sp1-sdk = { workspace = true }
 tokio = { version = "1.52", features = ["full"] }
 toml = { version = "1.1.2" }
-tower-http = { version = "0.6.10", features = ["cors"] }
+tower-http = { version = "0.6.11", features = ["cors"] }
 tracing = { workspace = true }
 tracing-forest = { version = "0.3.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
