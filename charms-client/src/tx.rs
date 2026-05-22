@@ -8,8 +8,9 @@ use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use enum_dispatch::enum_dispatch;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sp1_primitives::io::SP1PublicValues;
-use sp1_verifier::Groth16Verifier;
+use sp1_verifier::{Groth16Verifier, decode_sp1_vkey_hash, hash_public_inputs};
 use std::collections::BTreeMap;
 use strum::{AsRefStr, EnumDiscriminants, EnumString};
 use thiserror::Error;
@@ -199,22 +200,99 @@ pub fn verify_snark_proof(
     let groth16_vk = groth16_vk(spell_version, mock)?;
     match mock {
         false => match spell_version {
-            v if v <= V11 => {
-                sp1_verifier_5::Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
-                    .map_err(|e| anyhow!("could not verify spell proof: {}", e))
+            v if v <= V11 => verify_gnark_v5(proof, public_inputs, vk_hash, groth16_vk),
+            v if v <= V13 => {
+                verify_gnark_v6(proof, public_inputs, vk_hash, groth16_vk, SP1_V6_0_VK_ROOT)
             }
-            v if v <= V13 => sp1_verifier_v6_0::Groth16Verifier::verify(
-                proof,
-                public_inputs,
-                vk_hash,
-                groth16_vk,
-            )
-            .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
-            _ => Groth16Verifier::verify(proof, public_inputs, vk_hash, groth16_vk)
-                .map_err(|e| anyhow!("could not verify spell proof: {}", e)),
+            _ => verify_gnark_v6(proof, public_inputs, vk_hash, groth16_vk, SP1_V6_2_VK_ROOT),
         },
         true => ark::verify_groth16_proof(proof, public_inputs, groth16_vk),
     }
+}
+
+const VK_HASH_PREFIX_LENGTH: usize = 4;
+
+/// `VK_ROOT_BYTES` from `sp1-verifier-legacy` 6.0.2 — covers spell versions V12 and V13.
+const SP1_V6_0_VK_ROOT: [u8; 32] =
+    hex_literal::hex!("008cd56e10c2fe24795cff1e1d1f40d3a324528d315674da45d26afb376e8670");
+
+/// `VK_ROOT_BYTES` from `sp1-verifier` 6.2.0 — covers the current spell version (V14).
+const SP1_V6_2_VK_ROOT: [u8; 32] =
+    hex_literal::hex!("002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352");
+
+fn verify_gnark_v5(
+    proof: &[u8],
+    public_inputs: &[u8],
+    vk_hash: &str,
+    groth16_vk: &[u8],
+) -> anyhow::Result<()> {
+    if proof.len() < VK_HASH_PREFIX_LENGTH {
+        bail!("could not verify spell proof: invalid proof");
+    }
+    let groth16_vk_hash: [u8; 4] = Sha256::digest(groth16_vk)[..VK_HASH_PREFIX_LENGTH]
+        .try_into()
+        .map_err(|_| anyhow!("could not verify spell proof: invalid groth16 vk"))?;
+    if groth16_vk_hash != proof[..VK_HASH_PREFIX_LENGTH] {
+        bail!("could not verify spell proof: groth16 vkey hash mismatch");
+    }
+    let sp1_vkey_hash = decode_sp1_vkey_hash(vk_hash)
+        .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))?;
+    Groth16Verifier::verify_gnark_proof(
+        &proof[VK_HASH_PREFIX_LENGTH..],
+        &[sp1_vkey_hash, hash_public_inputs(public_inputs)],
+        groth16_vk,
+    )
+    .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))
+}
+
+fn verify_gnark_v6(
+    proof: &[u8],
+    public_inputs: &[u8],
+    vk_hash: &str,
+    groth16_vk: &[u8],
+    expected_vk_root: [u8; 32],
+) -> anyhow::Result<()> {
+    if proof.len() < VK_HASH_PREFIX_LENGTH + 32 * 3 {
+        bail!("could not verify spell proof: invalid proof");
+    }
+    let groth16_vk_hash: [u8; 4] = Sha256::digest(groth16_vk)[..VK_HASH_PREFIX_LENGTH]
+        .try_into()
+        .map_err(|_| anyhow!("could not verify spell proof: invalid groth16 vk"))?;
+    if groth16_vk_hash != proof[..VK_HASH_PREFIX_LENGTH] {
+        bail!("could not verify spell proof: groth16 vkey hash mismatch");
+    }
+    let sp1_vkey_hash = decode_sp1_vkey_hash(vk_hash)
+        .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))?;
+
+    let exit_code: [u8; 32] = proof[VK_HASH_PREFIX_LENGTH..VK_HASH_PREFIX_LENGTH + 32]
+        .try_into()
+        .unwrap();
+    let vk_root: [u8; 32] = proof[VK_HASH_PREFIX_LENGTH + 32..VK_HASH_PREFIX_LENGTH + 64]
+        .try_into()
+        .unwrap();
+    let proof_nonce: [u8; 32] = proof[VK_HASH_PREFIX_LENGTH + 64..VK_HASH_PREFIX_LENGTH + 96]
+        .try_into()
+        .unwrap();
+
+    if vk_root != expected_vk_root {
+        bail!("could not verify spell proof: vkey root mismatch");
+    }
+    if exit_code != [0u8; 32] {
+        bail!("could not verify spell proof: exit code mismatch");
+    }
+
+    Groth16Verifier::verify_gnark_proof(
+        &proof[VK_HASH_PREFIX_LENGTH + 96..],
+        &[
+            sp1_vkey_hash,
+            hash_public_inputs(public_inputs),
+            exit_code,
+            vk_root,
+            proof_nonce,
+        ],
+        groth16_vk,
+    )
+    .map_err(|e| anyhow!("could not verify spell proof: {:?}", e))
 }
 
 pub fn by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
@@ -228,6 +306,11 @@ pub fn by_txid(prev_txs: &[Tx]) -> BTreeMap<TxId, Tx> {
 mod tests {
     use super::*;
     use std::str::FromStr;
+
+    #[test]
+    fn current_sp1_vk_root_matches_hardcoded_constant() {
+        assert_eq!(SP1_V6_2_VK_ROOT, *sp1_verifier::VK_ROOT_BYTES);
+    }
 
     #[test]
     fn spell_vk_unsupported_version_typed_error() {
