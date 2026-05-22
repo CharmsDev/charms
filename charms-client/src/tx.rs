@@ -108,11 +108,7 @@ pub fn extended_normalized_spell(
     tx.virtual_spell(spell_vk, next_spell)
 }
 
-pub fn spell_vk<'a>(
-    spell_version: u32,
-    spell_vk: &'a [u8; 32],
-    mock: bool,
-) -> anyhow::Result<&'a [u8; 32]> {
+pub fn spell_vk(spell_version: u32, spell_vk: &[u8; 32], mock: bool) -> anyhow::Result<&[u8; 32]> {
     if mock {
         return Ok(&MOCK_SPELL_VK);
     }

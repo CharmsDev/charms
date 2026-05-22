@@ -468,8 +468,8 @@ pub fn is_correct(
     // result below. The zkVM spell-checker asserts `Ok(true)` and so refuses to
     // prove until the binding is in place; host-side callers that run before
     // the server hop tolerate `Ok(false)`.
-    let scrolls_ok = !hosting_chain_is_bitcoin(spell, prev_txs)
-        || check_scroll_outputs(spell, scroll_outputs)?;
+    let scrolls_ok =
+        !hosting_chain_is_bitcoin(spell, prev_txs) || check_scroll_outputs(spell, scroll_outputs)?;
 
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
@@ -642,15 +642,13 @@ pub fn check_input_apps_are_referenced(
         let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
             Some(beam_source) => {
                 let beam_source_utxo_id = &beam_source.0;
-                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(
-                    || {
-                        anyhow!(
-                            "missing prev spell for beam source utxo {} (input #{})",
-                            beam_source_utxo_id,
-                            i
-                        )
-                    },
-                )?;
+                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(|| {
+                    anyhow!(
+                        "missing prev spell for beam source utxo {} (input #{})",
+                        beam_source_utxo_id,
+                        i
+                    )
+                })?;
                 (prev_spell, beam_source_utxo_id)
             }
             None => {
@@ -732,16 +730,15 @@ pub fn check_prev_versioned_apps_consistency(
 /// beam source's spell (since that is where the spent charm's metadata lives).
 ///
 /// Scope notes:
-/// - Reference inputs (`spell.tx.refs`) are **not** consulted here: refs are read-only and
-///   don't "spend" a charm, so the version-bump rules don't apply. Cross-tx version
-///   consistency for ref-source spells is still enforced by
-///   [`check_prev_versioned_apps_consistency`], which sees every prev spell.
-/// - This function tolerates the case where a spent charm's `vk` is not referenced by the
-///   spending spell (no successor `(version, wasm_hash)` to constrain). In the full
-///   `is_correct` flow that situation is independently rejected earlier by
-///   [`check_input_apps_are_referenced`], because allowing it would let an app's contract
-///   be bypassed entirely. Keeping the local tolerance here makes this function a pure
-///   per-input rule that can be reasoned about in isolation.
+/// - Reference inputs (`spell.tx.refs`) are **not** consulted here: refs are read-only and don't
+///   "spend" a charm, so the version-bump rules don't apply. Cross-tx version consistency for
+///   ref-source spells is still enforced by [`check_prev_versioned_apps_consistency`], which sees
+///   every prev spell.
+/// - This function tolerates the case where a spent charm's `vk` is not referenced by the spending
+///   spell (no successor `(version, wasm_hash)` to constrain). In the full `is_correct` flow that
+///   situation is independently rejected earlier by [`check_input_apps_are_referenced`], because
+///   allowing it would let an app's contract be bypassed entirely. Keeping the local tolerance here
+///   makes this function a pure per-input rule that can be reasoned about in isolation.
 pub fn check_app_version_continuity(
     spell: &NormalizedSpell,
     prev_spells: &BTreeMap<TxId, (NormalizedSpell, usize)>,
@@ -751,23 +748,20 @@ pub fn check_app_version_continuity(
         unreachable!("called after well_formed");
     };
 
-    let referenced_vks: BTreeSet<&B32> =
-        spell.app_public_inputs.keys().map(|a| &a.vk).collect();
+    let referenced_vks: BTreeSet<&B32> = spell.app_public_inputs.keys().map(|a| &a.vk).collect();
 
     for (i, input_utxo_id) in tx_ins.iter().enumerate() {
         // Resolve which prev spell + utxo carries the spent charms (handling beaming).
         let (source_spell, source_utxo_id) = match tx_ins_beamed_source_utxos.get(&i) {
             Some(beam_source) => {
                 let beam_source_utxo_id = &beam_source.0;
-                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(
-                    || {
-                        anyhow!(
-                            "missing prev spell for beam source utxo {} (input #{})",
-                            beam_source_utxo_id,
-                            i
-                        )
-                    },
-                )?;
+                let (prev_spell, _) = prev_spells.get(&beam_source_utxo_id.0).ok_or_else(|| {
+                    anyhow!(
+                        "missing prev spell for beam source utxo {} (input #{})",
+                        beam_source_utxo_id,
+                        i
+                    )
+                })?;
                 (prev_spell, beam_source_utxo_id)
             }
             None => {
@@ -965,22 +959,20 @@ fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()
 ///
 /// Returns:
 ///
-/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map
-///   is present and every check passes.
-/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied
-///   (the client preflight path, where `coins[i].dest` for those outputs is also
-///   still empty -- the prover server fills both in via `fill_scroll_outputs`).
-/// * `Err(_)` -- the signed map is present but a structural or cryptographic check
-///   failed.
+/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map is present and
+///   every check passes.
+/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied (the client
+///   preflight path, where `coins[i].dest` for those outputs is also still empty -- the prover
+///   server fills both in via `fill_scroll_outputs`).
+/// * `Err(_)` -- the signed map is present but a structural or cryptographic check failed.
 ///
 /// When the signed map is present, these MUST all hold:
 ///
 /// * its keys equal `spell.tx.scrolls`,
-/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded),
-///   pinning the Bitcoin output to the canister-controlled script,
+/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded), pinning the Bitcoin
+///   output to the canister-controlled script,
 /// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
-///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15`
-///   canister signs).
+///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15` canister signs).
 fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,
@@ -998,11 +990,10 @@ fn check_scroll_outputs(
         signed_keys,
         scrolls
     );
-    let coins = spell
-        .tx
-        .coins
-        .as_ref()
-        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set"))?;
+    let coins =
+        spell.tx.coins.as_ref().ok_or_else(|| {
+            anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set")
+        })?;
     for (&i, signed_spk_hex) in &scroll_outputs.script_pubkeys {
         let coin = coins.get(i as usize).ok_or_else(|| {
             anyhow!(
@@ -1335,10 +1326,9 @@ mod test {
         prev_ver: Option<VersionedApp>,
         cur_ver: Option<VersionedApp>,
     ) -> (NormalizedSpell, BTreeMap<TxId, (NormalizedSpell, usize)>) {
-        let prev_tx_id = TxId::from_str(
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let prev_tx_id =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         let prev_utxo = UtxoId(prev_tx_id, 0);
 
         let mut prev_spell = NormalizedSpell::default();
@@ -1349,12 +1339,18 @@ mod test {
             c.insert(0, Data::empty());
             c
         }];
-        prev_spell.tx.coins.get_or_insert_with(Vec::new).push(NativeOutput {
-            amount: 0,
-            dest: vec![],
-            content: None,
-        });
-        prev_spell.app_public_inputs.insert(app.clone(), Data::empty());
+        prev_spell
+            .tx
+            .coins
+            .get_or_insert_with(Vec::new)
+            .push(NativeOutput {
+                amount: 0,
+                dest: vec![],
+                content: None,
+            });
+        prev_spell
+            .app_public_inputs
+            .insert(app.clone(), Data::empty());
         if let Some(v) = prev_ver {
             prev_spell.versioned_apps.insert(app.vk.clone(), v);
         }
@@ -1478,10 +1474,7 @@ mod test {
         let err = authorize_version_changes(&spell, &changed, None)
             .unwrap_err()
             .to_string();
-        assert!(
-            err.contains("no app binaries provided"),
-            "got: {err}"
-        );
+        assert!(err.contains("no app binaries provided"), "got: {err}");
         assert!(
             err.contains("A version change requires running the new app binary"),
             "got: {err}"
@@ -1553,21 +1546,24 @@ mod test {
     #[test]
     fn input_apps_referenced_no_input_charms_ok() {
         // Input UTXO has no charms attached -> nothing to require.
-        let prev_tx_id = TxId::from_str(
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
+        let prev_tx_id =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
         let prev_utxo = UtxoId(prev_tx_id, 0);
 
         let mut prev_spell = NormalizedSpell::default();
         prev_spell.tx.ins = Some(vec![]);
         prev_spell.tx.refs = Some(vec![]);
         prev_spell.tx.outs = vec![NormalizedCharms::new()]; // empty charms
-        prev_spell.tx.coins.get_or_insert_with(Vec::new).push(NativeOutput {
-            amount: 0,
-            dest: vec![],
-            content: None,
-        });
+        prev_spell
+            .tx
+            .coins
+            .get_or_insert_with(Vec::new)
+            .push(NativeOutput {
+                amount: 0,
+                dest: vec![],
+                content: None,
+            });
 
         let mut spell = NormalizedSpell::default();
         spell.tx.ins = Some(vec![prev_utxo]);
@@ -1589,14 +1585,12 @@ mod test {
     #[test]
     fn prev_versioned_apps_consistent_same_hash_ok() {
         let app = an_app();
-        let tx1 = TxId::from_str(
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let tx2 = TxId::from_str(
-            "2222222222222222222222222222222222222222222222222222222222222222",
-        )
-        .unwrap();
+        let tx1 =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let tx2 =
+            TxId::from_str("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
         let mut prev_spells = BTreeMap::new();
         prev_spells.insert(
             tx1,
@@ -1612,14 +1606,12 @@ mod test {
     #[test]
     fn prev_versioned_apps_different_hash_same_version_rejected() {
         let app = an_app();
-        let tx1 = TxId::from_str(
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let tx2 = TxId::from_str(
-            "2222222222222222222222222222222222222222222222222222222222222222",
-        )
-        .unwrap();
+        let tx1 =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let tx2 =
+            TxId::from_str("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
         let mut prev_spells = BTreeMap::new();
         prev_spells.insert(
             tx1,
@@ -1639,14 +1631,12 @@ mod test {
     fn prev_versioned_apps_different_versions_ok() {
         // Same vk, different versions, different hashes — fine, they're different versions.
         let app = an_app();
-        let tx1 = TxId::from_str(
-            "1111111111111111111111111111111111111111111111111111111111111111",
-        )
-        .unwrap();
-        let tx2 = TxId::from_str(
-            "2222222222222222222222222222222222222222222222222222222222222222",
-        )
-        .unwrap();
+        let tx1 =
+            TxId::from_str("1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let tx2 =
+            TxId::from_str("2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
         let mut prev_spells = BTreeMap::new();
         prev_spells.insert(
             tx1,
@@ -1665,9 +1655,7 @@ mod test {
         // This must be rejected by `is_correct` (and so by the zkVM proof), not just by
         // the host-side validator.
         let app = an_app();
-        let other_vk = b32(
-            "9999999999999999999999999999999999999999999999999999999999999999",
-        );
+        let other_vk = b32("9999999999999999999999999999999999999999999999999999999999999999");
         let mut spell = NormalizedSpell::default();
         spell.tx.ins = Some(vec![]);
         spell.tx.outs = vec![];

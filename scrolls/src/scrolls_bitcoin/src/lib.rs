@@ -499,8 +499,8 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
 /// the canister's BIP-340/secp256k1 Schnorr chain key under derivation path
 /// `[b"sign"]`. Returns the hex-encoded signature.
 async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::Result<String> {
-    let message_bytes =
-        util::write(script_pubkeys).context("System error: serializing script_pubkeys for signing")?;
+    let message_bytes = util::write(script_pubkeys)
+        .context("System error: serializing script_pubkeys for signing")?;
     let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
         .to_byte_array()
         .to_vec();

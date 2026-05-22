@@ -364,8 +364,8 @@ pub fn parse_spell_and_proof_from_witness(
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
     use super::*;
+    use std::str::FromStr;
 
     fn compute_finality_target(target_bits: u32) -> CompactTarget {
         let compact = CompactTarget::from_consensus(target_bits);
@@ -400,7 +400,9 @@ mod tests {
 
     #[test]
     fn scrolls_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
-        use ic_pub_key::{derive_schnorr_key, CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs};
+        use ic_pub_key::{
+            CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, derive_schnorr_key,
+        };
 
         // Textual canister ID for rpgc6-oqaaa-aaaak-qy3uq-cai.
         let canister_id = CanisterId::from_str("rpgc6-oqaaa-aaaak-qy3uq-cai").unwrap();
@@ -419,7 +421,11 @@ mod tests {
         // The crate (and the live management canister) returns the Schnorr public key
         // in SEC1 compressed form (33 bytes, 0x02/0x03 prefix + 32-byte x coord).
         // SCROLLS_ADDRS_PUBKEY stores the 32-byte x-only form used for BIP-340 verification.
-        assert_eq!(result.public_key.len(), 33, "expected 33-byte SEC1 compressed key");
+        assert_eq!(
+            result.public_key.len(),
+            33,
+            "expected 33-byte SEC1 compressed key"
+        );
         let derived_x_only: [u8; 32] = result.public_key[1..].try_into().unwrap();
 
         assert_eq!(SCROLLS_ADDRS_PUBKEY, derived_x_only);
