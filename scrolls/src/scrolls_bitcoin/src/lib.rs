@@ -563,7 +563,7 @@ pub struct SignRequest {
 /// same `nat64` types).
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
 pub struct V14SignInput {
-    pub index: usize,
+    pub index: u64,
     pub nonce: u64,
 }
 
@@ -658,7 +658,7 @@ async fn do_sign(
 /// [`check_existing_witnesses`] would still trip, but with a confusing
 /// "already has a signature" message — surface the real reason here.
 fn check_v14_overlap(sign_inputs: &[u32], v14_sign_inputs: &[V14SignInput]) -> anyhow::Result<()> {
-    let local: HashSet<usize> = sign_inputs.iter().map(|&i| i as usize).collect();
+    let local: HashSet<u64> = sign_inputs.iter().map(|&i| i as u64).collect();
     for v14_input in v14_sign_inputs {
         ensure!(
             !local.contains(&v14_input.index),
