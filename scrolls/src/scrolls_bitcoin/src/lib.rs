@@ -608,17 +608,18 @@ async fn do_sign(
     } = sign_request;
 
     let bitcoin_tx = parse_bitcoin_tx(&tx_to_sign)?;
+    // Validate `sign_inputs` and `v14_sign_inputs` against the parsed tx
+    // (bounds + dedup + no overlap) up front, so any malformed request fails
+    // before the inter-canister call to the v14 canister.
+    let signing = check_sign_inputs_indices(bitcoin_tx.input.len(), &sign_inputs)?;
 
-    // If any inputs spend Scrolls v14 UTXOs, validate them against the parsed
-    // tx (bounds + dedup + no overlap with `sign_inputs`) up front so any
-    // malformed request fails before the inter-canister call, then delegate
-    // their signing to the v14 `scrolls_bitcoin` canister. The returned hex
-    // carries v14 witnesses already populated, so the
-    // `check_existing_witnesses` invariant below sees those inputs as
-    // already-signed.
+    // If any inputs spend Scrolls v14 UTXOs, delegate their signing to the v14
+    // `scrolls_bitcoin` canister. The returned hex carries v14 witnesses
+    // already populated, so the `check_existing_witnesses` invariant below
+    // sees those inputs as already-signed.
     let (bitcoin_tx, tx_to_sign) = match v14_sign_inputs {
         Some(v14_inputs) if !v14_inputs.is_empty() => {
-            check_v14_inputs(bitcoin_tx.input.len(), &sign_inputs, &v14_inputs)?;
+            check_v14_inputs(bitcoin_tx.input.len(), &signing, &v14_inputs)?;
             let new_hex =
                 sign_with_v14_canister(&network_str, tx_to_sign, prev_txs.clone(), v14_inputs)
                     .await?;
@@ -628,7 +629,7 @@ async fn do_sign(
         _ => (bitcoin_tx, tx_to_sign),
     };
 
-    check_existing_witnesses(&bitcoin_tx, &sign_inputs)?;
+    check_existing_witnesses(&bitcoin_tx, &signing)?;
 
     let prev_txs: BTreeMap<Txid, Transaction> = txid_to_tx(&bitcoin_tx, prev_txs)?;
     let spell = verify_spell_impl(tx_to_sign, true, None, Vec::new())
@@ -669,16 +670,16 @@ fn parse_bitcoin_tx(tx_hex: &str) -> anyhow::Result<Transaction> {
 
 /// Validate `v14_sign_inputs` before any inter-canister call: each index must
 /// fit in the transaction's input range, indices must be unique within
-/// `v14_sign_inputs`, and none may also appear in `sign_inputs`. Catching all
-/// three locally surfaces clear errors instead of opaque failures from the
-/// v14 canister or a confusing "already has a signature" trip in
-/// [`check_existing_witnesses`] after v14 has signed.
+/// `v14_sign_inputs`, and none may also appear in `signing` (the already-
+/// validated `sign_inputs` set). Catching all three locally surfaces clear
+/// errors instead of opaque failures from the v14 canister or a confusing
+/// "already has a signature" trip in [`check_existing_witnesses`] after v14
+/// has signed.
 fn check_v14_inputs(
     input_count: usize,
-    sign_inputs: &[u32],
+    signing: &HashSet<usize>,
     v14_sign_inputs: &[V14SignInput],
 ) -> anyhow::Result<()> {
-    let local: HashSet<u64> = sign_inputs.iter().map(|&i| i as u64).collect();
     let mut seen: HashSet<u64> = HashSet::new();
     for v14_input in v14_sign_inputs {
         ensure!(
@@ -687,8 +688,9 @@ fn check_v14_inputs(
             v14_input.index,
             input_count
         );
+        let idx_usize = v14_input.index as usize;
         ensure!(
-            !local.contains(&v14_input.index),
+            !signing.contains(&idx_usize),
             "Input error: input_index {} appears in both sign_inputs and v14_sign_inputs",
             v14_input.index
         );
@@ -744,17 +746,16 @@ async fn sign_with_v14_canister(
     }
 }
 
-/// Validate `sign_inputs` and ensure every input that this call is NOT going to
-/// sign already carries a signature (witness or `script_sig`). After the call,
-/// every input must be spendable, and the only ones we will populate here are
-/// those listed in `sign_inputs` — everything else must already be signed by
-/// the caller.
+/// Validate `sign_inputs`: every index must be in range and unique. Returns
+/// the set of indices for downstream use by [`check_existing_witnesses`] and
+/// [`check_v14_inputs`] (so neither has to rebuild the same set).
 ///
-/// Bounds and duplicate detection happen first so that an out-of-range or
-/// repeated `sign_inputs` index produces an accurate error message instead of
-/// a misleading "input N has no witness" report.
-fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Result<()> {
-    let input_count = tx.input.len();
+/// Runs before any inter-canister call so a malformed `sign_inputs` fails
+/// fast instead of after burning cycles on a v14 `sign` call.
+fn check_sign_inputs_indices(
+    input_count: usize,
+    sign_inputs: &[u32],
+) -> anyhow::Result<HashSet<usize>> {
     let mut signing: HashSet<usize> = HashSet::new();
     for &idx in sign_inputs {
         let idx_usize = idx as usize;
@@ -770,6 +771,16 @@ fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Re
             idx
         );
     }
+    Ok(signing)
+}
+
+/// Ensure every input that this call is NOT going to sign already carries a
+/// signature (witness or `script_sig`), and every input we ARE going to sign
+/// is still unsigned. After the call, every input must be spendable, and the
+/// only ones we will populate here are those in `signing` — everything else
+/// must already be signed by the caller (or by the v14 canister, which runs
+/// just before this check in [`do_sign`]).
+fn check_existing_witnesses(tx: &Transaction, signing: &HashSet<usize>) -> anyhow::Result<()> {
     for (i, input) in tx.input.iter().enumerate() {
         let is_signed = !input.witness.is_empty() || !input.script_sig.is_empty();
         if signing.contains(&i) {
