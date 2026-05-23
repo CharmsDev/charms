@@ -607,31 +607,26 @@ async fn do_sign(
         v14_sign_inputs,
     } = sign_request;
 
-    // If any inputs spend Scrolls v14 UTXOs, delegate their signing to the
-    // v14 `scrolls_bitcoin` canister first. The returned hex carries v14
-    // witnesses already populated, so the `check_existing_witnesses`
-    // invariant below sees those inputs as already-signed.
-    let tx_to_sign = match v14_sign_inputs {
+    let bitcoin_tx = parse_bitcoin_tx(&tx_to_sign)?;
+
+    // If any inputs spend Scrolls v14 UTXOs, validate them against the parsed
+    // tx (bounds + dedup + no overlap with `sign_inputs`) up front so any
+    // malformed request fails before the inter-canister call, then delegate
+    // their signing to the v14 `scrolls_bitcoin` canister. The returned hex
+    // carries v14 witnesses already populated, so the
+    // `check_existing_witnesses` invariant below sees those inputs as
+    // already-signed.
+    let (bitcoin_tx, tx_to_sign) = match v14_sign_inputs {
         Some(v14_inputs) if !v14_inputs.is_empty() => {
-            check_v14_overlap(&sign_inputs, &v14_inputs)?;
-            sign_with_v14_canister(&network_str, tx_to_sign, prev_txs.clone(), v14_inputs).await?
+            check_v14_inputs(bitcoin_tx.input.len(), &sign_inputs, &v14_inputs)?;
+            let new_hex =
+                sign_with_v14_canister(&network_str, tx_to_sign, prev_txs.clone(), v14_inputs)
+                    .await?;
+            let new_tx = parse_bitcoin_tx(&new_hex)?;
+            (new_tx, new_hex)
         }
-        _ => tx_to_sign,
+        _ => (bitcoin_tx, tx_to_sign),
     };
-
-    let tx: Tx = BitcoinTx::from_hex(&tx_to_sign)
-        .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
-        .into();
-
-    let Tx::Bitcoin(BitcoinTx::Simple(bitcoin_tx)) = tx.clone() else {
-        unreachable!()
-    };
-
-    // Ensure transaction has at least one input to prevent underflow in signable_inputs calculation
-    ensure!(
-        !bitcoin_tx.input.is_empty(),
-        "Input error: transaction must have at least one input"
-    );
 
     check_existing_witnesses(&bitcoin_tx, &sign_inputs)?;
 
@@ -653,16 +648,53 @@ async fn do_sign(
     })
 }
 
-/// Reject overlap between locally-signed `sign_inputs` and `v14_sign_inputs`.
-/// An overlap would cause the v14 canister to sign first, after which
-/// [`check_existing_witnesses`] would still trip, but with a confusing
-/// "already has a signature" message — surface the real reason here.
-fn check_v14_overlap(sign_inputs: &[u32], v14_sign_inputs: &[V14SignInput]) -> anyhow::Result<()> {
+/// Parse a hex-encoded Bitcoin transaction and assert it has at least one
+/// input. Used twice in [`do_sign`]: once on the caller's `tx_to_sign`, and a
+/// second time on the hex returned by the v14 canister after it signs its
+/// inputs.
+fn parse_bitcoin_tx(tx_hex: &str) -> anyhow::Result<Transaction> {
+    let tx: Tx = BitcoinTx::from_hex(tx_hex)
+        .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
+        .into();
+    let Tx::Bitcoin(BitcoinTx::Simple(bitcoin_tx)) = tx else {
+        unreachable!()
+    };
+    // Prevents underflow in signable_inputs and gives a clear error early.
+    ensure!(
+        !bitcoin_tx.input.is_empty(),
+        "Input error: transaction must have at least one input"
+    );
+    Ok(bitcoin_tx)
+}
+
+/// Validate `v14_sign_inputs` before any inter-canister call: each index must
+/// fit in the transaction's input range, indices must be unique within
+/// `v14_sign_inputs`, and none may also appear in `sign_inputs`. Catching all
+/// three locally surfaces clear errors instead of opaque failures from the
+/// v14 canister or a confusing "already has a signature" trip in
+/// [`check_existing_witnesses`] after v14 has signed.
+fn check_v14_inputs(
+    input_count: usize,
+    sign_inputs: &[u32],
+    v14_sign_inputs: &[V14SignInput],
+) -> anyhow::Result<()> {
     let local: HashSet<u64> = sign_inputs.iter().map(|&i| i as u64).collect();
+    let mut seen: HashSet<u64> = HashSet::new();
     for v14_input in v14_sign_inputs {
+        ensure!(
+            v14_input.index < input_count as u64,
+            "Input error: v14 input_index {} is out of range [0, {})",
+            v14_input.index,
+            input_count
+        );
         ensure!(
             !local.contains(&v14_input.index),
             "Input error: input_index {} appears in both sign_inputs and v14_sign_inputs",
+            v14_input.index
+        );
+        ensure!(
+            seen.insert(v14_input.index),
+            "Input error: duplicate v14 input_index: {}",
             v14_input.index
         );
     }
