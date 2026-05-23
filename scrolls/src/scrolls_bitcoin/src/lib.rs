@@ -705,6 +705,14 @@ fn check_v14_inputs(
 /// Returns the hex-encoded transaction with v14 input witnesses populated;
 /// inputs not listed in `v14_sign_inputs` come back untouched and are signed
 /// locally afterwards.
+///
+/// **v14 compatibility assumption.** v14's `sign` does *not* apply v15's
+/// "every input not in `sign_inputs` must already carry a witness" rule
+/// (v14 has no equivalent of [`check_existing_witnesses`]). That is what
+/// lets us forward a mixed tx where the v15 inputs are still unsigned and
+/// have v14 sign just its own indices. If a future v14 build adds that
+/// rule, the inter-canister call here will start rejecting every mixed-input
+/// transaction with an opaque error.
 async fn sign_with_v14_canister(
     network_str: &str,
     tx_to_sign: String,
