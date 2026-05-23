@@ -56,6 +56,9 @@ const SECRET_PREFIX_LEN: usize = 32;
 /// endpoint from being spammed with dust.
 const MIN_DEPOSIT_CYCLES: u128 = 1_000_000_000_000;
 
+/// Canister ID of the `scrolls_bitcoin` canister for the Charms v14.
+const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
+
 /// Canister ID of the `scrolls_bitcoin` canister for the *next* major Charms version.
 ///
 /// `verify_spell` delegates verification of spells with versions higher than those
@@ -544,6 +547,34 @@ pub struct SignRequest {
     sign_inputs: Vec<u32>,
     prev_txs: Vec<String>,
     tx_to_sign: String,
+    /// Inputs spending Scrolls v14 UTXOs. When present and non-empty, signing
+    /// of these inputs is delegated to the v14 `scrolls_bitcoin` canister
+    /// identified by `V14_SCROLLS_BITCOIN_CANISTER_ID` before the remaining
+    /// inputs listed in `sign_inputs` are signed locally.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    v14_sign_inputs: Option<Vec<V14SignInput>>,
+}
+
+/// One entry of [`SignRequest::v14_sign_inputs`]. Identifies an input that
+/// needs to be signed by the v14 `scrolls_bitcoin` canister: `index` is the
+/// input's position in the transaction, `nonce` is the v14 derivation nonce.
+///
+/// Wire-compatible with the v14 canister's `SignInput` (same field names,
+/// same `nat64` types).
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+pub struct V14SignInput {
+    pub index: usize,
+    pub nonce: u64,
+}
+
+/// Request body for the v14 canister's `sign` method. Mirrors the v14
+/// `SignRequest` record exactly so it can be passed across an
+/// inter-canister call.
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+struct V14SignRequest {
+    sign_inputs: Vec<V14SignInput>,
+    prev_txs: Vec<String>,
+    tx_to_sign: String,
 }
 
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
@@ -573,7 +604,20 @@ async fn do_sign(
         sign_inputs,
         prev_txs,
         tx_to_sign,
+        v14_sign_inputs,
     } = sign_request;
+
+    // If any inputs spend Scrolls v14 UTXOs, delegate their signing to the
+    // v14 `scrolls_bitcoin` canister first. The returned hex carries v14
+    // witnesses already populated, so the `check_existing_witnesses`
+    // invariant below sees those inputs as already-signed.
+    let tx_to_sign = match v14_sign_inputs {
+        Some(v14_inputs) if !v14_inputs.is_empty() => {
+            check_v14_overlap(&sign_inputs, &v14_inputs)?;
+            sign_with_v14_canister(&network_str, tx_to_sign, prev_txs.clone(), v14_inputs).await?
+        }
+        _ => tx_to_sign,
+    };
 
     let tx: Tx = BitcoinTx::from_hex(&tx_to_sign)
         .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
@@ -607,6 +651,57 @@ async fn do_sign(
         txid: signed_tx.compute_txid().to_string(),
         wtxid: signed_tx.compute_wtxid().to_string(),
     })
+}
+
+/// Reject overlap between locally-signed `sign_inputs` and `v14_sign_inputs`.
+/// An overlap would cause the v14 canister to sign first, after which
+/// [`check_existing_witnesses`] would still trip, but with a confusing
+/// "already has a signature" message — surface the real reason here.
+fn check_v14_overlap(sign_inputs: &[u32], v14_sign_inputs: &[V14SignInput]) -> anyhow::Result<()> {
+    let local: HashSet<usize> = sign_inputs.iter().map(|&i| i as usize).collect();
+    for v14_input in v14_sign_inputs {
+        ensure!(
+            !local.contains(&v14_input.index),
+            "Input error: input_index {} appears in both sign_inputs and v14_sign_inputs",
+            v14_input.index
+        );
+    }
+    Ok(())
+}
+
+/// Delegate signing of `v14_sign_inputs` to the v14 `scrolls_bitcoin` canister.
+/// Returns the hex-encoded transaction with v14 input witnesses populated;
+/// inputs not listed in `v14_sign_inputs` come back untouched and are signed
+/// locally afterwards.
+async fn sign_with_v14_canister(
+    network_str: &str,
+    tx_to_sign: String,
+    prev_txs: Vec<String>,
+    v14_sign_inputs: Vec<V14SignInput>,
+) -> anyhow::Result<String> {
+    let principal = Principal::from_text(V14_SCROLLS_BITCOIN_CANISTER_ID)
+        .context("System error: parsing V14_SCROLLS_BITCOIN_CANISTER_ID")?;
+    let req = V14SignRequest {
+        sign_inputs: v14_sign_inputs,
+        prev_txs,
+        tx_to_sign,
+    };
+    let response = Call::unbounded_wait(principal, "sign")
+        .with_args(&(network_str.to_string(), req))
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "System error: inter-canister call to v14 sign failed: {}",
+                e
+            )
+        })?;
+    let (inner,): (Result<String, String>,) = response
+        .candid_tuple()
+        .map_err(|e| anyhow!("System error: decoding v14 sign response: {}", e))?;
+    match inner {
+        Ok(signed_hex) => Ok(signed_hex),
+        Err(e) => bail!("Input error: v14 sign failed: {}", e),
+    }
 }
 
 /// Validate `sign_inputs` and ensure every input that this call is NOT going to
