@@ -56,6 +56,9 @@ const SECRET_PREFIX_LEN: usize = 32;
 /// endpoint from being spammed with dust.
 const MIN_DEPOSIT_CYCLES: u128 = 1_000_000_000_000;
 
+/// Canister ID of the `scrolls_bitcoin` canister for the Charms v14.
+const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
+
 /// Canister ID of the `scrolls_bitcoin` canister for the *next* major Charms version.
 ///
 /// `verify_spell` delegates verification of spells with versions higher than those
@@ -544,6 +547,34 @@ pub struct SignRequest {
     sign_inputs: Vec<u32>,
     prev_txs: Vec<String>,
     tx_to_sign: String,
+    /// Inputs spending Scrolls v14 UTXOs. When present and non-empty, signing
+    /// of these inputs is delegated to the v14 `scrolls_bitcoin` canister
+    /// identified by `V14_SCROLLS_BITCOIN_CANISTER_ID` before the remaining
+    /// inputs listed in `sign_inputs` are signed locally.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    v14_sign_inputs: Option<Vec<V14SignInput>>,
+}
+
+/// One entry of [`SignRequest::v14_sign_inputs`]. Identifies an input that
+/// needs to be signed by the v14 `scrolls_bitcoin` canister: `index` is the
+/// input's position in the transaction, `nonce` is the v14 derivation nonce.
+///
+/// Wire-compatible with the v14 canister's `SignInput` (same field names,
+/// same `nat64` types).
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+pub struct V14SignInput {
+    pub index: u64,
+    pub nonce: u64,
+}
+
+/// Request body for the v14 canister's `sign` method. Mirrors the v14
+/// `SignRequest` record exactly so it can be passed across an
+/// inter-canister call.
+#[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
+struct V14SignRequest {
+    sign_inputs: Vec<V14SignInput>,
+    prev_txs: Vec<String>,
+    tx_to_sign: String,
 }
 
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
@@ -573,23 +604,32 @@ async fn do_sign(
         sign_inputs,
         prev_txs,
         tx_to_sign,
+        v14_sign_inputs,
     } = sign_request;
 
-    let tx: Tx = BitcoinTx::from_hex(&tx_to_sign)
-        .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
-        .into();
+    let bitcoin_tx = parse_bitcoin_tx(&tx_to_sign)?;
+    // Validate `sign_inputs` and `v14_sign_inputs` against the parsed tx
+    // (bounds + dedup + no overlap) up front, so any malformed request fails
+    // before the inter-canister call to the v14 canister.
+    let signing = check_sign_inputs_indices(bitcoin_tx.input.len(), &sign_inputs)?;
 
-    let Tx::Bitcoin(BitcoinTx::Simple(bitcoin_tx)) = tx.clone() else {
-        unreachable!()
+    // If any inputs spend Scrolls v14 UTXOs, delegate their signing to the v14
+    // `scrolls_bitcoin` canister. The returned hex carries v14 witnesses
+    // already populated, so the `check_existing_witnesses` invariant below
+    // sees those inputs as already-signed.
+    let (bitcoin_tx, tx_to_sign) = match v14_sign_inputs {
+        Some(v14_inputs) if !v14_inputs.is_empty() => {
+            check_v14_inputs(bitcoin_tx.input.len(), &signing, &v14_inputs)?;
+            let new_hex =
+                sign_with_v14_canister(&network_str, tx_to_sign, prev_txs.clone(), v14_inputs)
+                    .await?;
+            let new_tx = parse_bitcoin_tx(&new_hex)?;
+            (new_tx, new_hex)
+        }
+        _ => (bitcoin_tx, tx_to_sign),
     };
 
-    // Ensure transaction has at least one input to prevent underflow in signable_inputs calculation
-    ensure!(
-        !bitcoin_tx.input.is_empty(),
-        "Input error: transaction must have at least one input"
-    );
-
-    check_existing_witnesses(&bitcoin_tx, &sign_inputs)?;
+    check_existing_witnesses(&bitcoin_tx, &signing)?;
 
     let prev_txs: BTreeMap<Txid, Transaction> = txid_to_tx(&bitcoin_tx, prev_txs)?;
     let spell = verify_spell_impl(tx_to_sign, true, None, Vec::new())
@@ -609,17 +649,113 @@ async fn do_sign(
     })
 }
 
-/// Validate `sign_inputs` and ensure every input that this call is NOT going to
-/// sign already carries a signature (witness or `script_sig`). After the call,
-/// every input must be spendable, and the only ones we will populate here are
-/// those listed in `sign_inputs` — everything else must already be signed by
-/// the caller.
+/// Parse a hex-encoded Bitcoin transaction and assert it has at least one
+/// input. Used twice in [`do_sign`]: once on the caller's `tx_to_sign`, and a
+/// second time on the hex returned by the v14 canister after it signs its
+/// inputs.
+fn parse_bitcoin_tx(tx_hex: &str) -> anyhow::Result<Transaction> {
+    let tx: Tx = BitcoinTx::from_hex(tx_hex)
+        .map_err(|e| anyhow!("Input error: parsing tx: {}", e))?
+        .into();
+    let Tx::Bitcoin(BitcoinTx::Simple(bitcoin_tx)) = tx else {
+        unreachable!()
+    };
+    // Prevents underflow in signable_inputs and gives a clear error early.
+    ensure!(
+        !bitcoin_tx.input.is_empty(),
+        "Input error: transaction must have at least one input"
+    );
+    Ok(bitcoin_tx)
+}
+
+/// Validate `v14_sign_inputs` before any inter-canister call: each index must
+/// fit in the transaction's input range, indices must be unique within
+/// `v14_sign_inputs`, and none may also appear in `signing` (the already-
+/// validated `sign_inputs` set). Catching all three locally surfaces clear
+/// errors instead of opaque failures from the v14 canister or a confusing
+/// "already has a signature" trip in [`check_existing_witnesses`] after v14
+/// has signed.
+fn check_v14_inputs(
+    input_count: usize,
+    signing: &HashSet<usize>,
+    v14_sign_inputs: &[V14SignInput],
+) -> anyhow::Result<()> {
+    let mut seen: HashSet<u64> = HashSet::new();
+    for v14_input in v14_sign_inputs {
+        ensure!(
+            v14_input.index < input_count as u64,
+            "Input error: v14 input_index {} is out of range [0, {})",
+            v14_input.index,
+            input_count
+        );
+        let idx_usize = v14_input.index as usize;
+        ensure!(
+            !signing.contains(&idx_usize),
+            "Input error: input_index {} appears in both sign_inputs and v14_sign_inputs",
+            v14_input.index
+        );
+        ensure!(
+            seen.insert(v14_input.index),
+            "Input error: duplicate v14 input_index: {}",
+            v14_input.index
+        );
+    }
+    Ok(())
+}
+
+/// Delegate signing of `v14_sign_inputs` to the v14 `scrolls_bitcoin` canister.
+/// Returns the hex-encoded transaction with v14 input witnesses populated;
+/// inputs not listed in `v14_sign_inputs` come back untouched and are signed
+/// locally afterwards.
 ///
-/// Bounds and duplicate detection happen first so that an out-of-range or
-/// repeated `sign_inputs` index produces an accurate error message instead of
-/// a misleading "input N has no witness" report.
-fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Result<()> {
-    let input_count = tx.input.len();
+/// **v14 compatibility assumption.** v14's `sign` does *not* apply v15's
+/// "every input not in `sign_inputs` must already carry a witness" rule
+/// (v14 has no equivalent of [`check_existing_witnesses`]). That is what
+/// lets us forward a mixed tx where the v15 inputs are still unsigned and
+/// have v14 sign just its own indices. If a future v14 build adds that
+/// rule, the inter-canister call here will start rejecting every mixed-input
+/// transaction with an opaque error.
+async fn sign_with_v14_canister(
+    network_str: &str,
+    tx_to_sign: String,
+    prev_txs: Vec<String>,
+    v14_sign_inputs: Vec<V14SignInput>,
+) -> anyhow::Result<String> {
+    let principal = Principal::from_text(V14_SCROLLS_BITCOIN_CANISTER_ID)
+        .context("System error: parsing V14_SCROLLS_BITCOIN_CANISTER_ID")?;
+    let req = V14SignRequest {
+        sign_inputs: v14_sign_inputs,
+        prev_txs,
+        tx_to_sign,
+    };
+    let response = Call::unbounded_wait(principal, "sign")
+        .with_args(&(network_str.to_string(), req))
+        .await
+        .map_err(|e| {
+            anyhow!(
+                "System error: inter-canister call to v14 sign failed: {}",
+                e
+            )
+        })?;
+    let (inner,): (Result<String, String>,) = response
+        .candid_tuple()
+        .map_err(|e| anyhow!("System error: decoding v14 sign response: {}", e))?;
+    match inner {
+        Ok(signed_hex) => Ok(signed_hex),
+        Err(e) => bail!("Input error: v14 sign failed: {}", e),
+    }
+}
+
+/// Validate `sign_inputs`: every index must be in range and unique. Returns
+/// the set of indices for downstream use by [`check_existing_witnesses`] and
+/// [`check_v14_inputs`] (so neither has to rebuild the same set).
+///
+/// Runs before any inter-canister call so a malformed `sign_inputs` fails
+/// fast instead of after burning cycles on a v14 `sign` call.
+fn check_sign_inputs_indices(
+    input_count: usize,
+    sign_inputs: &[u32],
+) -> anyhow::Result<HashSet<usize>> {
     let mut signing: HashSet<usize> = HashSet::new();
     for &idx in sign_inputs {
         let idx_usize = idx as usize;
@@ -635,6 +771,16 @@ fn check_existing_witnesses(tx: &Transaction, sign_inputs: &[u32]) -> anyhow::Re
             idx
         );
     }
+    Ok(signing)
+}
+
+/// Ensure every input that this call is NOT going to sign already carries a
+/// signature (witness or `script_sig`), and every input we ARE going to sign
+/// is still unsigned. After the call, every input must be spendable, and the
+/// only ones we will populate here are those in `signing` — everything else
+/// must already be signed by the caller (or by the v14 canister, which runs
+/// just before this check in [`do_sign`]).
+fn check_existing_witnesses(tx: &Transaction, signing: &HashSet<usize>) -> anyhow::Result<()> {
     for (i, input) in tx.input.iter().enumerate() {
         let is_signed = !input.witness.is_empty() || !input.script_sig.is_empty();
         if signing.contains(&i) {
