@@ -41,11 +41,11 @@ type PallasMultiasset = BTreeMap<PallasPolicyId, BTreeMap<PallasAssetName, u64>>
 pub const ONE_ADA: u64 = 1000000;
 pub const TWO_ADA: u64 = 2000000;
 
-const V14_NFT_TX_HASH: [u8; 32] =
-    hex!("c51ff980a4f5cb969d8c198720bc8e1d74cca2bbeab86dbea4107726dd71e1ab");
-const V14_NFT_OUTPUT_INDEX: u64 = 0;
+const V15_NFT_TX_HASH: [u8; 32] =
+    hex!("571e628237e20f35f55d62890d75a5cf9e2e43ceaaf0c8ec0c86ac56e4648e0c");
+const V15_NFT_OUTPUT_INDEX: u64 = 0;
 
-const SCROLLS_V10_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
+const SCROLLS_CANISTER_ID: &str = "tty7k-waaaa-aaaak-qvngq-cai";
 
 /// Script hash for the Scrolls withdraw validator (parameterized with the required vkey_hash)
 const SCROLLS_WITHDRAW_SCRIPT_HASH: [u8; 28] =
@@ -83,7 +83,7 @@ async fn call_scrolls_sign(tx_cbor: &[u8]) -> anyhow::Result<Vec<u8>> {
     dbg!(&tx_hex);
 
     let canister_id =
-        Principal::from_text(SCROLLS_V10_CANISTER_ID).context("Failed to parse canister ID")?;
+        Principal::from_text(SCROLLS_CANISTER_ID).context("Failed to parse canister ID")?;
 
     let args = Encode!(&tx_hex).context("Failed to encode Candid arguments")?;
 
@@ -460,8 +460,8 @@ pub fn from_spell(
 
     // Add reference input (V10 NFT with script)
     let ref_input = Input::new(
-        pallas_crypto::hash::Hash::new(V14_NFT_TX_HASH),
-        V14_NFT_OUTPUT_INDEX,
+        pallas_crypto::hash::Hash::new(V15_NFT_TX_HASH),
+        V15_NFT_OUTPUT_INDEX,
     );
     staging_tx = staging_tx.reference_input(ref_input);
 
