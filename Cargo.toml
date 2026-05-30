@@ -50,7 +50,7 @@ ark-relations = { version = "0.6.0" }
 ark-serialize = { version = "0.6.0" }
 ark-snark = { version = "0.6.0" }
 ark-std = { version = "0.6.0" }
-bitcoin = { version = "0.32.9" }
+bitcoin = { version = "0.32.100" }
 ciborium = { version = "0.2.2" }
 ciborium-io = { version = "0.2.2" }
 cml-chain = { version = "6.2.0", default-features = false }
@@ -67,11 +67,11 @@ serde = { version = "1.0" }
 serde_json = { version = "1.0.150" }
 serde_yaml = { version = "0.9.34" }
 sha2 = { version = "0.10.9" }
-sp1-primitives = { version = "6.2.1" }
-sp1-prover = { version = "6.2.1" }
-sp1-sdk = { version = "6.2.1", default-features = false, features = ["network"] }
-sp1-verifier = { version = "6.2.1", default-features = false }
-sp1-zkvm = { version = "6.2.1" }
+sp1-primitives = { version = "6.2.2" }
+sp1-prover = { version = "6.2.2" }
+sp1-sdk = { version = "6.2.2", default-features = false, features = ["network"] }
+sp1-verifier = { version = "6.2.2", default-features = false }
+sp1-zkvm = { version = "6.2.2" }
 test-strategy = { version = "0.4.5" }
 tracing = { version = "0.1" }
 
@@ -116,7 +116,7 @@ pallas-primitives = { workspace = true }
 pallas-txbuilder = { workspace = true }
 redis = { version = "0.32.7", optional = true, features = ["tokio-rustls-comp"] }
 redis-macros = { version = "0.5.6" }
-reqwest = { version = "0.13.3", features = ["json"] }
+reqwest = { version = "0.13.4", features = ["json"] }
 rslock = { version = "0.7.4", optional = true, features = ["tokio-comp"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

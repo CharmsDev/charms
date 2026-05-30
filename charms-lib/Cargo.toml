@@ -21,7 +21,7 @@ charms-client = { path = "../charms-client", version = "15.0.0" }
 getrandom = { version = "0.4.2", optional = true, features = ["wasm_js"] }
 hex-literal = { version = "1.1.0" }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
-wasm-bindgen = { version = "0.2.121", optional = true }
+wasm-bindgen = { version = "0.2.122", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

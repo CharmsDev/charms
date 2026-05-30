@@ -11,8 +11,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = { version = "1.0.102" }
-bitcoin = { version = "0.32.9" }
-candid = { version = "0.10.28" }
+bitcoin = { version = "0.32.100" }
+candid = { version = "0.10.29" }
 hex = { version = "0.4" }
 charms-data = { version = "15.0.0", path = "../../../charms-data" }
 charms-lib = { version = "15.0.0", path = "../../../charms-lib" }
