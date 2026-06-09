@@ -51,12 +51,74 @@ fn do_build() -> Result<String> {
 fn wasm_path() -> Result<String> {
     let cargo_toml_contents = fs::read("./Cargo.toml")?;
     let toml_value: toml::Value = toml::from_slice(&cargo_toml_contents)?;
-    toml_value
+    let name = toml_value
         .get("package")
         .and_then(|package| package.get("name"))
         .and_then(|name| name.as_str())
-        .and_then(|name| Some(format!("./target/wasm32-wasip1/release/{}.wasm", name)))
-        .ok_or_else(|| anyhow!("Cargo.toml should set a package name"))
+        .ok_or_else(|| anyhow!("Cargo.toml should set a package name"))?;
+    let prefix = workspace_target_prefix()?;
+    Ok(format!("{prefix}target/wasm32-wasip1/release/{name}.wasm"))
+}
+
+/// Relative path prefix from the current crate directory to the workspace root,
+/// including a trailing slash. Standalone crates and workspace roots use `./`.
+fn workspace_target_prefix() -> Result<String> {
+    let cwd = std::env::current_dir().context("failed to get current directory")?;
+    let workspace_root = find_workspace_root(&cwd)?;
+    if workspace_root == cwd {
+        return Ok("./".to_string());
+    }
+    let rel = relative_path(&cwd, &workspace_root)?;
+    Ok(format!("{}/", rel.display()))
+}
+
+fn find_workspace_root(start: &Path) -> Result<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists() {
+            let contents = fs::read(&cargo_toml)?;
+            let value: toml::Value = toml::from_slice(&contents)?;
+            if value.get("workspace").is_some() {
+                return Ok(dir);
+            }
+        }
+        if !dir.pop() {
+            return Ok(start.to_path_buf());
+        }
+    }
+}
+
+fn relative_path(from: &Path, to: &Path) -> Result<PathBuf> {
+    let from = from
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", from.display()))?;
+    let to = to
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize {}", to.display()))?;
+
+    let from_components: Vec<_> = from.components().collect();
+    let to_components: Vec<_> = to.components().collect();
+
+    let mut common = 0;
+    while common < from_components.len()
+        && common < to_components.len()
+        && from_components[common] == to_components[common]
+    {
+        common += 1;
+    }
+
+    let mut result = PathBuf::new();
+    for _ in common..from_components.len() {
+        result.push("..");
+    }
+    for component in &to_components[common..] {
+        result.push(component.as_os_str());
+    }
+    if result.as_os_str().is_empty() {
+        result.push(".");
+    }
+    Ok(result)
 }
 
 pub fn build() -> Result<()> {
@@ -278,4 +340,32 @@ pub fn read_app_signatures(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
     let map: BTreeMap<B32, AppSignature> = serde_yaml::from_slice(&bytes)
         .with_context(|| format!("failed to parse app signatures: {}", path.display()))?;
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_workspace_root_from_member() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let member = repo_root.join("charms-data");
+        assert_eq!(find_workspace_root(&member)?, repo_root);
+        Ok(())
+    }
+
+    #[test]
+    fn find_workspace_root_from_root() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(find_workspace_root(&repo_root)?, repo_root);
+        Ok(())
+    }
+
+    #[test]
+    fn relative_path_to_workspace_root() -> Result<()> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let member = repo_root.join("charms-data");
+        assert_eq!(relative_path(&member, &repo_root)?, PathBuf::from(".."));
+        Ok(())
+    }
 }
