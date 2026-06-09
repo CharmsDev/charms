@@ -9,7 +9,20 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    str::FromStr as _,
 };
+
+const APP_KEY_FILE: &str = ".charms/app-key.json";
+
+fn default_app_key_path() -> PathBuf {
+    PathBuf::from(APP_KEY_FILE)
+}
+
+fn signatures_path_for_wasm(wasm_path: impl AsRef<Path>) -> PathBuf {
+    let mut path = wasm_path.as_ref().as_os_str().to_os_string();
+    path.push(".sig.yaml");
+    PathBuf::from(path)
+}
 
 pub fn new(name: &str) -> Result<()> {
     if !Command::new("which")
@@ -123,7 +136,27 @@ fn relative_path(from: &Path, to: &Path) -> Result<PathBuf> {
 
 pub fn build() -> Result<()> {
     let bin_path = do_build()?;
+    maybe_auto_sign(&bin_path)?;
     println!("{}", bin_path);
+    Ok(())
+}
+
+fn maybe_auto_sign(wasm_path: &str) -> Result<()> {
+    let key_path = default_app_key_path();
+    if !key_path.exists() {
+        return Ok(());
+    }
+    let (vk, app_sig) = sign_wasm_at(&key_path, Path::new(wasm_path))?;
+    write_signed_wasm(&signatures_path_for_wasm(wasm_path), vk, app_sig)
+}
+
+fn write_signed_wasm(path: &Path, vk: B32, app_sig: AppSignature) -> Result<()> {
+    write_app_signatures(path, &[(vk, app_sig)])?;
+    eprintln!(
+        "signed wasm module; wrote app signature to {} (pass to `charms spell prove \
+         --app-signatures` / `charms spell check --app-signatures`)",
+        path.display()
+    );
     Ok(())
 }
 
@@ -208,18 +241,18 @@ pub fn keygen(out: Option<PathBuf>) -> Result<()> {
         vk: hex::encode(vk),
     };
 
-    let s = serde_json::to_string_pretty(&keypair)?;
-    match out {
-        Some(p) => write_secret_file(&p, s.as_bytes())?,
-        None => {
-            eprintln!(
-                "WARNING: writing the secret key to stdout. Capture it directly (e.g. \
-                 `... > key.json`) and protect the file; do not paste into chats or logs. \
-                 Prefer `--out <FILE>` (which writes with mode 0600 on Unix)."
-            );
-            println!("{}", s);
-        }
+    let out = out.unwrap_or_else(default_app_key_path);
+    if out.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(out.parent().expect("parent path"))
+            .with_context(|| format!("failed to create {}", out.parent().unwrap().display()))?;
     }
+    let s = serde_json::to_string_pretty(&keypair)?;
+    write_secret_file(&out, s.as_bytes())?;
+    eprintln!(
+        "wrote app signing keypair to {} (keep this file secret; do not commit it to source \
+         control)",
+        out.display()
+    );
     Ok(())
 }
 
@@ -246,14 +279,42 @@ fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
 }
 
 pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<()> {
+    let wasm_path = match bin {
+        Some(p) => p,
+        None => {
+            let path = wasm_path()?;
+            ensure!(
+                Path::new(&path).exists(),
+                "wasm binary not found at {path}; run `charms app build` first or pass --bin"
+            );
+            PathBuf::from(path)
+        }
+    };
+    let (vk, app_sig) = sign_wasm_at(&key, &wasm_path)?;
+    match out {
+        Some(p) => {
+            if p.extension().is_some_and(|ext| ext == "yaml" || ext == "yml") {
+                write_signed_wasm(&p, vk, app_sig)?;
+            } else {
+                let s = serde_json::to_string_pretty(&app_sig)?;
+                fs::write(&p, s.as_bytes())
+                    .with_context(|| format!("failed to write {}", p.display()))?;
+            }
+        }
+        None => write_signed_wasm(&signatures_path_for_wasm(&wasm_path), vk, app_sig)?,
+    }
+    Ok(())
+}
+
+fn sign_wasm_at(key_path: &Path, wasm_path: &Path) -> Result<(B32, AppSignature)> {
     let secp = Secp256k1::new();
-    let keypair = load_keypair(&secp, &key)?;
+    let keypair = load_keypair(&secp, key_path)?;
+    let app_keypair = read_app_keypair(key_path)?;
+    let vk = B32::from_str(&app_keypair.vk).context("invalid vk in keypair file")?;
     let (xonly_pk, _parity) = keypair.x_only_public_key();
 
-    let binary = match bin {
-        Some(p) => fs::read(p)?,
-        None => fs::read(do_build()?)?,
-    };
+    let binary = fs::read(wasm_path)
+        .with_context(|| format!("failed to read wasm binary: {}", wasm_path.display()))?;
     let binary_hash: [u8; 32] = Sha256::digest(&binary).into();
     let msg = Message::from_digest(binary_hash);
 
@@ -267,22 +328,35 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
         public_key: B32(xonly_pk.serialize()),
         signature: *signature.as_ref(),
     };
-    let s = serde_json::to_string_pretty(&app_sig)?;
-    match out {
-        Some(p) => fs::write(p, s.as_bytes())?,
-        None => println!("{}", s),
+    Ok((vk, app_sig))
+}
+
+fn write_app_signatures(path: &Path, entries: &[(B32, AppSignature)]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
     }
+    let map: BTreeMap<B32, AppSignature> = entries.iter().cloned().collect();
+    let s = serde_yaml::to_string(&map)?;
+    fs::write(path, s.as_bytes())
+        .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
+}
+
+fn read_app_keypair(path: &Path) -> Result<AppKeypair> {
+    let s = fs::read_to_string(path)
+        .with_context(|| format!("failed to read keypair file: {}", path.display()))?;
+    serde_json::from_str(&s)
+        .with_context(|| format!("failed to parse keypair JSON: {}", path.display()))
 }
 
 /// Load a keypair, deriving the verifying key from the on-disk secret key and rejecting
 /// inconsistent `public_key` / `vk` fields. Catches accidental edits or swaps in the file
 /// before any signed material is produced.
 fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Result<Keypair> {
-    let s = fs::read_to_string(path)
-        .with_context(|| format!("failed to read keypair file: {}", path.display()))?;
-    let kp: AppKeypair = serde_json::from_str(&s)
-        .with_context(|| format!("failed to parse keypair JSON: {}", path.display()))?;
+    let kp = read_app_keypair(path)?;
     let secret_bytes = hex::decode(&kp.secret_key).context("invalid hex in secret_key")?;
     let sk = SecretKey::from_slice(&secret_bytes)
         .map_err(|e| anyhow!("invalid secp256k1 secret key: {}", e))?;
@@ -366,6 +440,31 @@ mod tests {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let member = repo_root.join("charms-data");
         assert_eq!(relative_path(&member, &repo_root)?, PathBuf::from(".."));
+        Ok(())
+    }
+
+    #[test]
+    fn signatures_path_for_wasm_appends_suffix() {
+        assert_eq!(
+            signatures_path_for_wasm("./target/wasm32-wasip1/release/myapp.wasm"),
+            PathBuf::from("./target/wasm32-wasip1/release/myapp.wasm.sig.yaml")
+        );
+    }
+
+    #[test]
+    fn write_app_signatures_roundtrip() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("charms-app-test-{}", std::process::id()));
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("app-signatures.yaml");
+        let vk = B32([1u8; 32]);
+        let sig = AppSignature {
+            public_key: B32([2u8; 32]),
+            signature: [3u8; 64],
+        };
+        write_app_signatures(&path, &[(vk.clone(), sig.clone())])?;
+        let parsed = read_app_signatures(&path)?;
+        assert_eq!(parsed.get(&vk), Some(&sig));
+        fs::remove_dir_all(dir)?;
         Ok(())
     }
 }
