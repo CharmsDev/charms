@@ -9,7 +9,6 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    str::FromStr as _,
 };
 
 const APP_KEY_FILE: &str = ".charms/app-key.json";
@@ -142,11 +141,14 @@ pub fn build() -> Result<()> {
 }
 
 fn maybe_auto_sign(wasm_path: &str) -> Result<()> {
-    let key_path = default_app_key_path();
+    maybe_auto_sign_with_key(&default_app_key_path(), wasm_path)
+}
+
+fn maybe_auto_sign_with_key(key_path: &Path, wasm_path: &str) -> Result<()> {
     if !key_path.exists() {
         return Ok(());
     }
-    let (vk, app_sig) = sign_wasm_at(&key_path, Path::new(wasm_path))?;
+    let (vk, app_sig) = sign_wasm_at(key_path, Path::new(wasm_path))?;
     write_signed_wasm(&signatures_path_for_wasm(wasm_path), vk, app_sig)
 }
 
@@ -242,6 +244,11 @@ pub fn keygen(out: Option<PathBuf>) -> Result<()> {
     };
 
     let out = out.unwrap_or_else(default_app_key_path);
+    ensure!(
+        !out.exists(),
+        "refusing to overwrite existing keypair at {}; delete it first or pass --out <path>",
+        out.display()
+    );
     if out.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(out.parent().expect("parent path"))
             .with_context(|| format!("failed to create {}", out.parent().unwrap().display()))?;
@@ -308,9 +315,7 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
 
 fn sign_wasm_at(key_path: &Path, wasm_path: &Path) -> Result<(B32, AppSignature)> {
     let secp = Secp256k1::new();
-    let keypair = load_keypair(&secp, key_path)?;
-    let app_keypair = read_app_keypair(key_path)?;
-    let vk = B32::from_str(&app_keypair.vk).context("invalid vk in keypair file")?;
+    let (keypair, vk) = load_keypair(&secp, key_path)?;
     let (xonly_pk, _parity) = keypair.x_only_public_key();
 
     let binary = fs::read(wasm_path)
@@ -355,7 +360,7 @@ fn read_app_keypair(path: &Path) -> Result<AppKeypair> {
 /// Load a keypair, deriving the verifying key from the on-disk secret key and rejecting
 /// inconsistent `public_key` / `vk` fields. Catches accidental edits or swaps in the file
 /// before any signed material is produced.
-fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Result<Keypair> {
+fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Result<(Keypair, B32)> {
     let kp = read_app_keypair(path)?;
     let secret_bytes = hex::decode(&kp.secret_key).context("invalid hex in secret_key")?;
     let sk = SecretKey::from_slice(&secret_bytes)
@@ -383,7 +388,7 @@ fn load_keypair<C: secp256k1::Signing>(secp: &Secp256k1<C>, path: &Path) -> Resu
         hex::encode(derived_vk)
     );
 
-    Ok(keypair)
+    Ok((keypair, B32(derived_vk)))
 }
 
 /// Read a BIP-340 x-only public key from `path`. Accepts either:
@@ -419,6 +424,18 @@ pub fn read_app_signatures(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let n = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir().join(format!("{prefix}-{n}-{}", std::process::id()))
+    }
+
+    fn remove_test_dir(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn find_workspace_root_from_member() -> Result<()> {
@@ -453,7 +470,7 @@ mod tests {
 
     #[test]
     fn write_app_signatures_roundtrip() -> Result<()> {
-        let dir = std::env::temp_dir().join(format!("charms-app-test-{}", std::process::id()));
+        let dir = unique_test_dir("charms-app-signatures");
         fs::create_dir_all(&dir)?;
         let path = dir.join("app-signatures.yaml");
         let vk = B32([1u8; 32]);
@@ -464,7 +481,56 @@ mod tests {
         write_app_signatures(&path, &[(vk.clone(), sig.clone())])?;
         let parsed = read_app_signatures(&path)?;
         assert_eq!(parsed.get(&vk), Some(&sig));
-        fs::remove_dir_all(dir)?;
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn maybe_auto_sign_writes_signatures_yaml() -> Result<()> {
+        let dir = unique_test_dir("charms-auto-sign");
+        fs::create_dir_all(&dir)?;
+        let key_path = dir.join("app-key.json");
+        let wasm_path = dir.join("app.wasm");
+        fs::write(&wasm_path, b"test wasm binary")?;
+        keygen(Some(key_path.clone()))?;
+
+        maybe_auto_sign_with_key(&key_path, wasm_path.to_str().unwrap())?;
+
+        let sig_path = signatures_path_for_wasm(&wasm_path);
+        let parsed = read_app_signatures(&sig_path)?;
+        assert_eq!(parsed.len(), 1);
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn maybe_auto_sign_skips_when_key_missing() -> Result<()> {
+        let dir = unique_test_dir("charms-auto-sign-skip");
+        fs::create_dir_all(&dir)?;
+        let wasm_path = dir.join("app.wasm");
+        fs::write(&wasm_path, b"test wasm binary")?;
+        let key_path = dir.join("missing-key.json");
+        let sig_path = signatures_path_for_wasm(&wasm_path);
+
+        maybe_auto_sign_with_key(&key_path, wasm_path.to_str().unwrap())?;
+
+        assert!(!sig_path.exists());
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn keygen_refuses_to_overwrite_existing_key() -> Result<()> {
+        let dir = unique_test_dir("charms-keygen-overwrite");
+        fs::create_dir_all(&dir)?;
+        let key_path = dir.join("app-key.json");
+        keygen(Some(key_path.clone()))?;
+        let err = keygen(Some(key_path)).unwrap_err();
+        assert!(
+            err.to_string().contains("refusing to overwrite"),
+            "unexpected error: {err}"
+        );
+        remove_test_dir(&dir);
         Ok(())
     }
 }

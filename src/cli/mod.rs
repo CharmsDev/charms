@@ -395,6 +395,7 @@ pub enum AppCommands {
         bin: Option<PathBuf>,
 
         /// Path to write the signature to (default: `<wasm-path>.sig.yaml`).
+        /// `.yaml`/`.yml` extensions write a VK-keyed YAML map; other extensions write JSON.
         #[arg(long)]
         out: Option<PathBuf>,
     },
