@@ -244,11 +244,6 @@ pub fn keygen(out: Option<PathBuf>) -> Result<()> {
     };
 
     let out = out.unwrap_or_else(default_app_key_path);
-    ensure!(
-        !out.exists(),
-        "refusing to overwrite existing keypair at {}; delete it first or pass --out <path>",
-        out.display()
-    );
     if out.parent().is_some_and(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(out.parent().expect("parent path"))
             .with_context(|| format!("failed to create {}", out.parent().unwrap().display()))?;
@@ -263,25 +258,28 @@ pub fn keygen(out: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
 fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("failed to open {} for writing", path.display()))?;
     use std::io::Write as _;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    opts.mode(0o600);
+
+    let mut file = opts.open(path).map_err(|e| {
+        if e.kind() == io::ErrorKind::AlreadyExists {
+            anyhow!(
+                "refusing to overwrite existing keypair at {}; delete it first or pass --out <path>",
+                path.display()
+            )
+        } else {
+            e.into()
+        }
+    })?;
     file.write_all(contents)
         .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
-    fs::write(path, contents).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
