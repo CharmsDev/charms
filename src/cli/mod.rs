@@ -347,7 +347,8 @@ pub enum AppCommands {
 
     /// Build the app to WebAssembly (wasm32-wasip1).
     ///
-    /// Prints the path to the built .wasm binary to stdout.
+    /// Prints the path to the built .wasm binary to stdout. If `.charms/app-key.json`
+    /// exists (from `app keygen`), also signs the binary and writes `<wasm-path>.sig.yaml`.
     Build,
 
     /// Show verification key (VK) for an app.
@@ -369,30 +370,32 @@ pub enum AppCommands {
     /// Generate a new BIP-340 Schnorr signing keypair (secp256k1) for a versioned app.
     ///
     /// Writes a JSON object with hex-encoded `public_key`, `secret_key`, and computed `vk`
-    /// (SHA-256 of public key) to `--out` (or stdout if omitted).
+    /// (SHA-256 of public key) to `--out` (default: `.charms/app-key.json`).
     ///
-    /// **Security:** the `secret_key` field is sensitive. Prefer `--out` to a file you
-    /// trust; do not commit it to source control or paste it into chats/logs.
+    /// **Security:** the `secret_key` field is sensitive. Do not commit it to source
+    /// control or paste it into chats/logs.
     Keygen {
-        /// Path to write the keypair JSON to. Prints to stdout if omitted.
+        /// Path to write the keypair JSON to (default: `.charms/app-key.json`).
         #[arg(long)]
         out: Option<PathBuf>,
     },
 
     /// Sign a Wasm binary's SHA-256 hash with an app signing key.
     ///
-    /// Writes a JSON `{public_key, signature}` (hex) to `--out` (or stdout). The signature
-    /// is a BIP-340 Schnorr signature (over secp256k1) of the binary's SHA-256 hash.
+    /// The signature is a BIP-340 Schnorr signature (over secp256k1) of the binary's
+    /// SHA-256 hash. By default writes `<wasm-path>.sig.yaml` (same as `app build`
+    /// auto-signing).
     Sign {
-        /// Path to the keypair JSON produced by `app keygen`.
-        #[arg(long)]
+        /// Path to the keypair JSON produced by `app keygen` (default: `.charms/app-key.json`).
+        #[arg(long, default_value = ".charms/app-key.json")]
         key: PathBuf,
 
-        /// Path to the Wasm binary to sign (builds the app if omitted).
+        /// Path to the Wasm binary to sign (uses the release build output if omitted).
         #[arg(long)]
         bin: Option<PathBuf>,
 
-        /// Path to write the signature JSON to. Prints to stdout if omitted.
+        /// Path to write the signature to (default: `<wasm-path>.sig.yaml`).
+        /// `.yaml`/`.yml` extensions write a VK-keyed YAML map; other extensions write JSON.
         #[arg(long)]
         out: Option<PathBuf>,
     },
