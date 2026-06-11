@@ -17,7 +17,7 @@ hex = { version = "0.4" }
 charms-data = { version = "15.0.0", path = "../../../charms-data" }
 charms-lib = { version = "15.0.0", path = "../../../charms-lib" }
 getrandom = { version = "0.2", features = ["custom"] }
-ic-cdk = { version = "0.20.1" }
+ic-cdk = { version = "0.20.2" }
 ic-cdk-bitcoin-canister = { version = "0.2" }
 ic-cdk-management-canister = { version = "0.1" }
 ic-cdk-timers = { version = "1.0" }
