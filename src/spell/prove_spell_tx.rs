@@ -180,7 +180,7 @@ impl ProveSpellTxImpl {
 }
 
 impl ProveSpellTx for ProveSpellTxImpl {
-    #[tracing::instrument(level = "debug")]
+    #[tracing::instrument(level = "info")]
     fn new(mock: bool) -> Self {
         let charms_fee_settings = charms_fee_settings();
 
