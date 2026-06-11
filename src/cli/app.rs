@@ -162,30 +162,39 @@ fn write_signed_wasm(path: &Path, vk: B32, app_sig: AppSignature) -> Result<()> 
     Ok(())
 }
 
-pub fn vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<()> {
+fn resolve_app_vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<B32> {
     ensure!(
         !(path.is_some() && pubkey.is_some()),
         "pass at most one of <PATH> or --pubkey: <PATH> computes SHA-256 of a Wasm binary \
          (simple app VK), --pubkey computes SHA-256 of a signing public key (versioned app VK)"
     );
-    let vk = match pubkey {
+    match pubkey {
         Some(pubkey_path) => {
             let pk_bytes = read_public_key(&pubkey_path)?;
-            B32(Sha256::digest(&pk_bytes).into())
+            Ok(B32(Sha256::digest(&pk_bytes).into()))
         }
-        None => {
-            let binary = match path {
-                Some(path) => fs::read(path)?,
-                None => {
-                    let bin_path = do_build()?;
-                    fs::read(bin_path)?
+        None => match path {
+            Some(path) => {
+                let binary = fs::read(path)?;
+                Ok(B32(Sha256::digest(&binary).into()))
+            }
+            None => {
+                let key_path = default_app_key_path();
+                if key_path.exists() {
+                    let secp = Secp256k1::new();
+                    let (_, vk) = load_keypair(&secp, &key_path)?;
+                    return Ok(vk);
                 }
-            };
-            B32(Sha256::digest(&binary).into())
-        }
-    };
+                let bin_path = do_build()?;
+                let binary = fs::read(bin_path)?;
+                Ok(B32(Sha256::digest(&binary).into()))
+            }
+        },
+    }
+}
 
-    println!("{}", vk);
+pub fn vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<()> {
+    println!("{}", resolve_app_vk(path, pubkey)?);
     Ok(())
 }
 
@@ -298,7 +307,9 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
     let (vk, app_sig) = sign_wasm_at(&key, &wasm_path)?;
     match out {
         Some(p) => {
-            if p.extension().is_some_and(|ext| ext == "yaml" || ext == "yml") {
+            if p.extension()
+                .is_some_and(|ext| ext == "yaml" || ext == "yml")
+            {
                 write_signed_wasm(&p, vk, app_sig)?;
             } else {
                 let s = serde_json::to_string_pretty(&app_sig)?;
@@ -343,8 +354,7 @@ fn write_app_signatures(path: &Path, entries: &[(B32, AppSignature)]) -> Result<
     }
     let map: BTreeMap<B32, AppSignature> = entries.iter().cloned().collect();
     let s = serde_yaml::to_string(&map)?;
-    fs::write(path, s.as_bytes())
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    fs::write(path, s.as_bytes()).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -513,6 +523,26 @@ mod tests {
         maybe_auto_sign_with_key(&key_path, wasm_path.to_str().unwrap())?;
 
         assert!(!sig_path.exists());
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn vk_uses_app_key_when_no_path_or_pubkey() -> Result<()> {
+        use std::str::FromStr;
+
+        let dir = unique_test_dir("charms-vk-app-key");
+        fs::create_dir_all(dir.join(".charms"))?;
+        let key_path = dir.join(".charms/app-key.json");
+        keygen(Some(key_path.clone()))?;
+        let expected_vk = B32::from_str(&read_app_keypair(&key_path)?.vk)?;
+
+        let prev_cwd = std::env::current_dir()?;
+        std::env::set_current_dir(&dir)?;
+        let vk = resolve_app_vk(None, None)?;
+        std::env::set_current_dir(prev_cwd)?;
+
+        assert_eq!(vk, expected_vk);
         remove_test_dir(&dir);
         Ok(())
     }
