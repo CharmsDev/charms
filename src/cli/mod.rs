@@ -402,6 +402,20 @@ pub enum AppCommands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+
+    /// Verify a Wasm binary signature produced by `app sign`.
+    ///
+    /// Checks the BIP-340 Schnorr signature over the binary's SHA-256 hash.
+    /// By default reads `<wasm-path>.sig.yaml` (same as `app sign` / `app build` auto-signing).
+    Verify {
+        /// Path to the Wasm binary to verify (uses the release build output if omitted).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+
+        /// Path to the signature file (default: `<wasm-path>.sig.yaml`).
+        #[arg(long)]
+        sig: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -479,6 +493,7 @@ pub async fn run() -> anyhow::Result<()> {
             AppCommands::Build => app::build(),
             AppCommands::Keygen { out } => app::keygen(out),
             AppCommands::Sign { key, bin, out } => app::sign(key, bin, out),
+            AppCommands::Verify { bin, sig } => app::verify(bin, sig),
         },
         Commands::Wallet { command } => {
             let wallet_cli = wallet_cli();

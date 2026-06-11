@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow, ensure};
 use charms_app_runner::AppRunner;
 use charms_data::{AppSignature, B32};
-use secp256k1::{Keypair, Message, Secp256k1, SecretKey};
+use secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey, schnorr};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -292,18 +292,22 @@ fn write_secret_file(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<()> {
-    let wasm_path = match bin {
-        Some(p) => p,
+fn resolve_wasm_path(bin: Option<PathBuf>) -> Result<PathBuf> {
+    match bin {
+        Some(p) => Ok(p),
         None => {
             let path = wasm_path()?;
             ensure!(
                 Path::new(&path).exists(),
                 "wasm binary not found at {path}; run `charms app build` first or pass --bin"
             );
-            PathBuf::from(path)
+            Ok(PathBuf::from(path))
         }
-    };
+    }
+}
+
+pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<()> {
+    let wasm_path = resolve_wasm_path(bin)?;
     let (vk, app_sig) = sign_wasm_at(&key, &wasm_path)?;
     match out {
         Some(p) => {
@@ -318,6 +322,56 @@ pub fn sign(key: PathBuf, bin: Option<PathBuf>, out: Option<PathBuf>) -> Result<
             }
         }
         None => write_signed_wasm(&signatures_path_for_wasm(&wasm_path), vk, app_sig)?,
+    }
+    Ok(())
+}
+
+pub fn verify(bin: Option<PathBuf>, sig: Option<PathBuf>) -> Result<()> {
+    let wasm_path = resolve_wasm_path(bin)?;
+    let sig_path = sig.unwrap_or_else(|| signatures_path_for_wasm(&wasm_path));
+    verify_wasm_at(&wasm_path, &sig_path)?;
+    eprintln!(
+        "signature verified for {} (signature file: {})",
+        wasm_path.display(),
+        sig_path.display()
+    );
+    Ok(())
+}
+
+fn verify_wasm_at(wasm_path: &Path, sig_path: &Path) -> Result<()> {
+    let binary = fs::read(wasm_path)
+        .with_context(|| format!("failed to read wasm binary: {}", wasm_path.display()))?;
+    let binary_hash: [u8; 32] = Sha256::digest(&binary).into();
+    let msg = Message::from_digest(binary_hash);
+
+    let signatures = read_app_signatures(sig_path)?;
+    ensure!(
+        !signatures.is_empty(),
+        "no signatures found in {}",
+        sig_path.display()
+    );
+
+    let secp = Secp256k1::verification_only();
+    for (vk, app_sig) in &signatures {
+        let pk_hash = B32(Sha256::digest(&app_sig.public_key.0).into());
+        ensure!(
+            pk_hash == *vk,
+            "public key hash does not match VK key in signature file (vk {}, derived {})",
+            vk,
+            pk_hash
+        );
+        let xonly_pk = XOnlyPublicKey::from_slice(&app_sig.public_key.0)
+            .map_err(|e| anyhow!("invalid BIP-340 x-only public key: {}", e))?;
+        let signature = schnorr::Signature::from_slice(&app_sig.signature)
+            .map_err(|e| anyhow!("invalid BIP-340 Schnorr signature: {}", e))?;
+        secp.verify_schnorr(&signature, &msg, &xonly_pk)
+            .map_err(|e| {
+                anyhow!(
+                    "BIP-340 Schnorr signature verification failed for vk {}: {}",
+                    vk,
+                    e
+                )
+            })?;
     }
     Ok(())
 }
@@ -543,6 +597,41 @@ mod tests {
         std::env::set_current_dir(prev_cwd)?;
 
         assert_eq!(vk, expected_vk);
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn verify_accepts_signature_from_sign() -> Result<()> {
+        let dir = unique_test_dir("charms-verify-ok");
+        fs::create_dir_all(&dir)?;
+        let key_path = dir.join("app-key.json");
+        let wasm_path = dir.join("app.wasm");
+        fs::write(&wasm_path, b"test wasm binary")?;
+        keygen(Some(key_path.clone()))?;
+        sign(key_path, Some(wasm_path.clone()), None)?;
+
+        verify(Some(wasm_path.clone()), None)?;
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn verify_rejects_tampered_binary() -> Result<()> {
+        let dir = unique_test_dir("charms-verify-bad-binary");
+        fs::create_dir_all(&dir)?;
+        let key_path = dir.join("app-key.json");
+        let wasm_path = dir.join("app.wasm");
+        fs::write(&wasm_path, b"test wasm binary")?;
+        keygen(Some(key_path.clone()))?;
+        sign(key_path, Some(wasm_path.clone()), None)?;
+
+        fs::write(&wasm_path, b"tampered wasm binary")?;
+        let err = verify(Some(wasm_path), None).unwrap_err();
+        assert!(
+            err.to_string().contains("signature verification failed"),
+            "unexpected error: {err}"
+        );
         remove_test_dir(&dir);
         Ok(())
     }
