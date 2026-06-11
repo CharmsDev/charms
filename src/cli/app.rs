@@ -178,19 +178,20 @@ fn resolve_app_vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<B32>
                 let binary = fs::read(path)?;
                 Ok(B32(Sha256::digest(&binary).into()))
             }
-            None => {
-                let key_path = default_app_key_path();
-                if key_path.exists() {
-                    let secp = Secp256k1::new();
-                    let (_, vk) = load_keypair(&secp, &key_path)?;
-                    return Ok(vk);
-                }
-                let bin_path = do_build()?;
-                let binary = fs::read(bin_path)?;
-                Ok(B32(Sha256::digest(&binary).into()))
-            }
+            None => app_vk_from_key_or_wasm(&default_app_key_path()),
         },
     }
+}
+
+fn app_vk_from_key_or_wasm(key_path: &Path) -> Result<B32> {
+    if key_path.exists() {
+        let secp = Secp256k1::signing_only();
+        let (_, vk) = load_keypair(&secp, key_path)?;
+        return Ok(vk);
+    }
+    let bin_path = do_build()?;
+    let binary = fs::read(bin_path)?;
+    Ok(B32(Sha256::digest(&binary).into()))
 }
 
 pub fn vk(path: Option<PathBuf>, pubkey: Option<PathBuf>) -> Result<()> {
@@ -344,7 +345,7 @@ fn verify_wasm_at(wasm_path: &Path, sig_path: &Path) -> Result<()> {
     let binary_hash: [u8; 32] = Sha256::digest(&binary).into();
     let msg = Message::from_digest(binary_hash);
 
-    let signatures = read_app_signatures(sig_path)?;
+    let signatures = read_signature_entries(sig_path)?;
     ensure!(
         !signatures.is_empty(),
         "no signatures found in {}",
@@ -475,12 +476,22 @@ fn read_public_key(path: &Path) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("public key must be 32 bytes (hex-encoded as 64 characters)"))
 }
 
-pub fn read_app_signatures(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
+fn read_signature_entries(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
     let bytes = fs::read(path)
-        .with_context(|| format!("failed to read app signatures file: {}", path.display()))?;
+        .with_context(|| format!("failed to read signature file: {}", path.display()))?;
+    if path.extension().is_some_and(|ext| ext == "json") {
+        let app_sig: AppSignature = serde_json::from_slice(&bytes)
+            .with_context(|| format!("failed to parse JSON signature: {}", path.display()))?;
+        let vk = B32(Sha256::digest(&app_sig.public_key.0).into());
+        return Ok(BTreeMap::from([(vk, app_sig)]));
+    }
     let map: BTreeMap<B32, AppSignature> = serde_yaml::from_slice(&bytes)
         .with_context(|| format!("failed to parse app signatures: {}", path.display()))?;
     Ok(map)
+}
+
+pub fn read_app_signatures(path: &Path) -> Result<BTreeMap<B32, AppSignature>> {
+    read_signature_entries(path)
 }
 
 #[cfg(test)]
@@ -591,11 +602,7 @@ mod tests {
         keygen(Some(key_path.clone()))?;
         let expected_vk = B32::from_str(&read_app_keypair(&key_path)?.vk)?;
 
-        let prev_cwd = std::env::current_dir()?;
-        std::env::set_current_dir(&dir)?;
-        let vk = resolve_app_vk(None, None)?;
-        std::env::set_current_dir(prev_cwd)?;
-
+        let vk = app_vk_from_key_or_wasm(&key_path)?;
         assert_eq!(vk, expected_vk);
         remove_test_dir(&dir);
         Ok(())
@@ -612,6 +619,22 @@ mod tests {
         sign(key_path, Some(wasm_path.clone()), None)?;
 
         verify(Some(wasm_path.clone()), None)?;
+        remove_test_dir(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn verify_accepts_json_signature_from_sign() -> Result<()> {
+        let dir = unique_test_dir("charms-verify-json");
+        fs::create_dir_all(&dir)?;
+        let key_path = dir.join("app-key.json");
+        let wasm_path = dir.join("app.wasm");
+        let sig_path = dir.join("sig.json");
+        fs::write(&wasm_path, b"test wasm binary")?;
+        keygen(Some(key_path.clone()))?;
+        sign(key_path, Some(wasm_path.clone()), Some(sig_path.clone()))?;
+
+        verify(Some(wasm_path), Some(sig_path))?;
         remove_test_dir(&dir);
         Ok(())
     }
