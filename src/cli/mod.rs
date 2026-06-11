@@ -355,9 +355,12 @@ pub enum AppCommands {
     ///
     /// For a simple (immutable) app the VK is SHA-256 of the Wasm binary.
     /// For a versioned app, pass `--pubkey` to compute SHA-256 of the signing public key.
+    /// When neither `<PATH>` nor `--pubkey` is given, uses the `vk` from `.charms/app-key.json`
+    /// if that file exists (from `app keygen`); otherwise builds the app and hashes the Wasm.
     /// Prints the hex-encoded VK to stdout.
     Vk {
-        /// Path to app Wasm binary (builds the app if omitted, ignored when --pubkey is set).
+        /// Path to app Wasm binary (ignored when `--pubkey` is set; otherwise builds the app
+        /// if omitted and `.charms/app-key.json` does not exist).
         path: Option<PathBuf>,
 
         /// Path to a BIP-340 x-only public key (secp256k1) in hex, or app keypair JSON.
@@ -398,6 +401,20 @@ pub enum AppCommands {
         /// `.yaml`/`.yml` extensions write a VK-keyed YAML map; other extensions write JSON.
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+
+    /// Verify a Wasm binary signature produced by `app sign`.
+    ///
+    /// Checks the BIP-340 Schnorr signature over the binary's SHA-256 hash.
+    /// By default reads `<wasm-path>.sig.yaml` (same as `app sign` / `app build` auto-signing).
+    Verify {
+        /// Path to the Wasm binary to verify (uses the release build output if omitted).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+
+        /// Path to the signature file (default: `<wasm-path>.sig.yaml`).
+        #[arg(long)]
+        sig: Option<PathBuf>,
     },
 }
 
@@ -476,6 +493,7 @@ pub async fn run() -> anyhow::Result<()> {
             AppCommands::Build => app::build(),
             AppCommands::Keygen { out } => app::keygen(out),
             AppCommands::Sign { key, bin, out } => app::sign(key, bin, out),
+            AppCommands::Verify { bin, sig } => app::verify(bin, sig),
         },
         Commands::Wallet { command } => {
             let wallet_cli = wallet_cli();
