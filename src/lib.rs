@@ -39,68 +39,84 @@ mod test {
     use charms_data::util;
     use charms_lib::SPELL_VK;
     use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1Stdin, SP1VerifyingKey};
-    use std::{collections::BTreeMap, time::SystemTime};
+    use std::collections::BTreeMap;
 
-    const SPELL_CHECKER_VK_PATH: &str = "./src/bin/charms-spell-checker-vk.bin";
-    const PROOF_WRAPPER_VK_PATH: &str = "./src/bin/charms-proof-wrapper-vk.bin";
+    const SPELL_CHECKER_ELF_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-spell-checker");
+    const PROOF_WRAPPER_ELF_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-proof-wrapper");
+    const SPELL_CHECKER_VK_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-spell-checker-vk.bin");
+    const PROOF_WRAPPER_VK_PATH: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-proof-wrapper-vk.bin");
 
-    fn file_modified(path: &str) -> SystemTime {
-        std::fs::metadata(path)
-            .unwrap_or_else(|_| panic!("missing file: {path}"))
-            .modified()
-            .unwrap()
+    fn read_cached_vk(vk_path: &str) -> Option<SP1VerifyingKey> {
+        let bytes = std::fs::read(vk_path).ok()?;
+        bincode::deserialize(&bytes).ok()
     }
 
-    fn cached_vk_is_stale(elf_path: &str, vk_path: &str) -> bool {
-        match std::fs::metadata(vk_path) {
-            Ok(vk_meta) if vk_meta.len() > 0 => {
-                file_modified(elf_path) > vk_meta.modified().unwrap()
+    async fn ensure_cached_vk(
+        vk_path: &str,
+        elf: Elf,
+        expected_vk: impl Fn(&SP1VerifyingKey) -> bool,
+    ) -> SP1VerifyingKey {
+        if let Some(vk) = read_cached_vk(vk_path) {
+            if expected_vk(&vk) {
+                return vk;
             }
-            _ => true,
         }
+
+        let client = ProverClient::builder().light().build().await;
+        let pk = client.setup(elf).await.unwrap();
+        let vk = pk.verifying_key().clone();
+        let bytes = bincode::serialize(&vk).unwrap();
+        std::fs::write(vk_path, bytes).unwrap();
+        vk
     }
 
-    async fn ensure_cached_vk(elf_path: &str, vk_path: &str, elf: Elf) -> SP1VerifyingKey {
-        if cached_vk_is_stale(elf_path, vk_path) {
-            let client = ProverClient::builder().light().build().await;
-            let pk = client.setup(elf).await.unwrap();
-            let vk = pk.verifying_key().clone();
-            let bytes = bincode::serialize(&vk).unwrap();
-            std::fs::write(vk_path, bytes).unwrap();
-            vk
-        } else {
-            let bytes = std::fs::read(vk_path).unwrap();
-            bincode::deserialize(&bytes).unwrap()
-        }
+    #[test]
+    fn cached_sp1_vks_match_embedded() {
+        let spell_checker_vk: SP1VerifyingKey =
+            bincode::deserialize(SPELL_CHECKER_VK_BYTES).expect("spell-checker VK bytes");
+        assert_eq!(SPELL_CHECKER_VK, spell_checker_vk.hash_u32());
+
+        let proof_wrapper_vk: SP1VerifyingKey =
+            bincode::deserialize(PROOF_WRAPPER_VK_BYTES).expect("proof-wrapper VK bytes");
+        assert_eq!(
+            charms_client::tx::vk_hex(&SPELL_VK)[2..],
+            proof_wrapper_vk.bytes32()[2..]
+        );
     }
 
     #[tokio::test]
+    #[ignore = "regenerates src/bin cache files; run: cargo test ensure_cached_sp1_vks -- --ignored --nocapture"]
     async fn ensure_cached_sp1_vks() {
-        let spell_checker_elf_modified = file_modified("./src/bin/charms-spell-checker");
-        let proof_wrapper_elf_modified = file_modified("./src/bin/charms-proof-wrapper");
+        let spell_checker_elf_modified = std::fs::metadata(SPELL_CHECKER_ELF_PATH)
+            .expect("spell-checker ELF")
+            .modified()
+            .unwrap();
+        let proof_wrapper_elf_modified = std::fs::metadata(PROOF_WRAPPER_ELF_PATH)
+            .expect("proof-wrapper ELF")
+            .modified()
+            .unwrap();
         assert!(
             spell_checker_elf_modified <= proof_wrapper_elf_modified,
             "charms-spell-checker MUST NOT be NEWER than charms-proof-wrapper"
         );
 
         let spell_checker_vk = ensure_cached_vk(
-            "./src/bin/charms-spell-checker",
             SPELL_CHECKER_VK_PATH,
             Elf::Static(SPELL_CHECKER_BINARY),
+            |vk| vk.hash_u32() == SPELL_CHECKER_VK,
         )
         .await;
-        assert_eq!(SPELL_CHECKER_VK, spell_checker_vk.hash_u32());
 
         let proof_wrapper_vk = ensure_cached_vk(
-            "./src/bin/charms-proof-wrapper",
             PROOF_WRAPPER_VK_PATH,
             Elf::Static(PROOF_WRAPPER_BINARY),
+            |vk| vk.bytes32()[2..] == charms_client::tx::vk_hex(&SPELL_VK)[2..],
         )
         .await;
-        assert_eq!(
-            charms_client::tx::vk_hex(&SPELL_VK)[2..],
-            proof_wrapper_vk.bytes32()[2..]
-        );
 
         assert_eq!(
             bincode::serialize(&spell_checker_vk).unwrap(),
