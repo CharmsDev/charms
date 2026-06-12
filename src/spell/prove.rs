@@ -1,5 +1,5 @@
 use crate::{
-    PROOF_WRAPPER_BINARY, SPELL_CHECKER_BINARY,
+    PROOF_WRAPPER_BINARY, PROOF_WRAPPER_VK_BYTES, SPELL_CHECKER_BINARY, SPELL_CHECKER_VK_BYTES,
     utils::{BoxedSP1Prover, Shared},
 };
 use anyhow::{anyhow, ensure};
@@ -92,9 +92,16 @@ pub struct Prover {
 
 impl Prover {
     pub fn new(app_prover: Arc<app::Prover>, prover_client: Arc<Shared<BoxedSP1Prover>>) -> Self {
-        let (spell_checker_pk, spell_checker_vk) = prover_client.get().setup(SPELL_CHECKER_BINARY);
+        let (spell_checker_pk, spell_checker_vk) =
+            crate::utils::prover::load_cached_sp1_proving_key(
+                SPELL_CHECKER_BINARY,
+                SPELL_CHECKER_VK_BYTES,
+            );
         assert_eq!(crate::SPELL_CHECKER_VK, spell_checker_vk.hash_u32());
-        let (proof_wrapper_pk, vk) = prover_client.get().setup(PROOF_WRAPPER_BINARY);
+        let (proof_wrapper_pk, vk) = crate::utils::prover::load_cached_sp1_proving_key(
+            PROOF_WRAPPER_BINARY,
+            PROOF_WRAPPER_VK_BYTES,
+        );
         assert_eq!(charms_client::tx::vk_hex(&SPELL_VK), vk.bytes32());
         Self {
             spell_prover_client: app_prover.sp1_client.clone(),

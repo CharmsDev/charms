@@ -6,6 +6,21 @@ use sp1_sdk::{
 };
 use std::{future::IntoFuture, time::Duration};
 
+/// Load a cached SP1 verifying key and construct the corresponding proving key.
+pub(crate) fn load_cached_sp1_proving_key(
+    elf: &[u8],
+    vk_bytes: &[u8],
+) -> (SP1ProvingKey, SP1VerifyingKey) {
+    let vk: SP1VerifyingKey = bincode::deserialize(vk_bytes).unwrap_or_else(|e| {
+        panic!(
+            "failed to deserialize cached SP1 verifying key: {e}. \
+             Regenerate cache files with: cargo test ensure_cached_sp1_vks -- --ignored --nocapture"
+        )
+    });
+    let pk = SP1ProvingKey::new(vk.clone(), Elf::from(elf));
+    (pk, vk)
+}
+
 pub trait CharmsSP1Prover: Send + Sync {
     fn setup(&self, elf: &[u8]) -> (SP1ProvingKey, SP1VerifyingKey);
     fn prove(
