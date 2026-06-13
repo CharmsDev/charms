@@ -3711,6 +3711,7 @@ dependencies = [
  "ic-cdk-timers",
  "ic-vetkeys",
  "serde",
+ "serde_json",
  "serde_yaml",
 ]
 

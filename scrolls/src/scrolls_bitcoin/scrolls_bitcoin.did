@@ -17,6 +17,44 @@ type Config = record {
   fixed_cost : nat64;
   fee_basis_points : nat64;
 };
+// # HTTP Header.
+//
+// Represents a HTTP header.
+//
+// See [`HttpRequestArgs::headers`] and [`HttpRequestResult::headers`].
+type HttpHeader = record {
+  // Value of the header.
+  value : text;
+  // Name of the header.
+  name : text;
+};
+// # HTTP Request Result
+//
+// Result type of [`http_request`](https://internetcomputer.org/docs/current/references/ic-interface-spec/#ic-http_request).
+type HttpRequestResult = record {
+  // The response status (e.g. 200, 404).
+  status : nat;
+  // The response’s body.
+  body : blob;
+  // List of HTTP response headers and their corresponding values.
+  headers : vec HttpHeader;
+};
+// # Transform Args.
+//
+// ```text
+// record {
+// response : http_response;
+// context : blob;
+// }
+// ```
+//
+// See [`TransformContext`].
+type TransformArgs = record {
+  // Context for response transformation
+  context : blob;
+  // Raw response from remote service, to be transformed
+  response : HttpRequestResult;
+};
 type Result = variant { Ok : Addresses; Err : text };
 type Result_1 = variant { Ok : nat; Err : text };
 type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
@@ -74,6 +112,10 @@ service : () -> {
   // and the system refunds the caller automatically.
   deposit_cycles : () -> (Result_1);
   sign_and_submit : (text, SignRequest) -> (Result_2);
+  // Transform function for HTTP outcalls. Strips headers so all replicas reach consensus
+  // on the same response. If mempool.space reports the transaction already exists,
+  // normalizes the response to HTTP 200 with the txid from transform context.
+  transform_http : (TransformArgs) -> (HttpRequestResult) query;
   // Verify that a Bitcoin transaction carries a correct spell.
   // 
   // Returns the extracted `NormalizedSpell` (as hex-encoded CBOR) on success.

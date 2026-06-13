@@ -20,9 +20,10 @@ use getrandom::register_custom_getrandom;
 use ic_cdk::call::Call;
 use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, HttpHeader, HttpMethod, HttpRequestArgs,
-    SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs, VetKDCurve,
-    VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs, ecdsa_public_key, http_request, raw_rand,
-    sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key, vetkd_public_key,
+    HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs,
+    TransformArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
+    ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa, sign_with_schnorr,
+    transform_context_from_query, vetkd_derive_key, vetkd_public_key,
 };
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
@@ -820,6 +821,7 @@ fn mempool_broadcast_url(network: Network) -> anyhow::Result<&'static str> {
 async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
     let url = mempool_broadcast_url(network)?;
     let tx_hex = hex::encode(serialize(tx));
+    let txid = tx.compute_txid().to_string();
 
     let request = HttpRequestArgs {
         url: url.to_string(),
@@ -830,9 +832,11 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
             value: "text/plain".to_string(),
         }],
         body: Some(tx_hex.into_bytes()),
-        transform: None,
-        // Broadcast is non-idempotent: only one replica should POST the tx.
-        is_replicated: Some(false),
+        transform: Some(transform_context_from_query(
+            "transform_http".to_string(),
+            txid.into_bytes(),
+        )),
+        is_replicated: None,
     };
 
     let response = http_request(&request)
@@ -855,6 +859,85 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
         status,
         body.trim()
     );
+}
+
+/// Transform function for HTTP outcalls. Strips headers so all replicas reach consensus
+/// on the same response. If mempool.space reports the transaction already exists,
+/// normalize the response to HTTP 200 with the txid from transform context.
+#[ic_cdk::query]
+fn transform_http(args: TransformArgs) -> HttpRequestResult {
+    let TransformArgs { context, response } = args;
+    let status: u16 = response
+        .status
+        .0
+        .clone()
+        .try_into()
+        .unwrap_or(u16::MAX);
+
+    if status == 200 {
+        return HttpRequestResult {
+            status: response.status,
+            headers: vec![],
+            body: response.body,
+        };
+    }
+
+    let body = String::from_utf8_lossy(&response.body);
+    if is_tx_already_exists_error(status, body.as_ref())
+        && let Ok(txid) = std::str::from_utf8(&context)
+    {
+        return HttpRequestResult {
+            status: candid::Nat::from(200u32),
+            headers: vec![],
+            body: txid.as_bytes().to_vec(),
+        };
+    }
+
+    HttpRequestResult {
+        status: response.status,
+        headers: vec![],
+        body: response.body,
+    }
+}
+
+fn is_tx_already_exists_error(status: u16, body: &str) -> bool {
+    if status != 400 {
+        return false;
+    }
+
+    let body_lower = body.to_ascii_lowercase();
+    if body_lower.contains("txn-already-in-mempool")
+        || body_lower.contains("already in block chain")
+        || body_lower.contains("already in the block chain")
+        || body_lower.contains("already in mempool")
+        || body_lower.contains("already exists")
+        || body_lower.contains("transaction already")
+    {
+        return true;
+    }
+
+    // mempool.space wraps bitcoind errors as:
+    // sendrawtransaction RPC error: {"code":-27,"message":"..."}
+    let json_start = body.find('{').unwrap_or(body.len());
+    let json = &body[json_start..];
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
+        return false;
+    };
+    let Some(code) = value.get("code").and_then(|c| c.as_i64()) else {
+        return false;
+    };
+    match code {
+        -27 => true,
+        -26 => value
+            .get("message")
+            .and_then(|m| m.as_str())
+            .is_some_and(|message| {
+                let message_lower = message.to_ascii_lowercase();
+                message_lower.contains("already")
+                    || message_lower.contains("txn-already-in-mempool")
+            }),
+        _ => false,
+    }
 }
 
 fn check_network(network: &str) -> anyhow::Result<bitcoin::Network> {
@@ -1130,6 +1213,30 @@ fn txid_to_tx(
         );
     }
     Ok(prev_txs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_tx_already_exists_error;
+
+    #[test]
+    fn detects_already_in_chain_rpc_error() {
+        let body = r#"sendrawtransaction RPC error: {"code":-27,"message":"Transaction already in block chain"}"#;
+        assert!(is_tx_already_exists_error(400, body));
+    }
+
+    #[test]
+    fn detects_already_in_mempool_rpc_error() {
+        let body = r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
+        assert!(is_tx_already_exists_error(400, body));
+    }
+
+    #[test]
+    fn rejects_unrelated_broadcast_errors() {
+        let body = r#"sendrawtransaction RPC error: {"code":-22,"message":"TX decode failed. Make sure the tx has at least one input."}"#;
+        assert!(!is_tx_already_exists_error(400, body));
+        assert!(!is_tx_already_exists_error(500, body));
+    }
 }
 
 // Enable Candid export
