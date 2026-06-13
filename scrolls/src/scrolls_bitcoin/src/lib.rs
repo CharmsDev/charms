@@ -79,6 +79,9 @@ const MEMPOOL_TESTNET4_BROADCAST_URL: &str = "https://mempool.space/testnet4/api
 /// Upper bound on the mempool.space broadcast response body (txid is 64 hex chars).
 const MAX_BROADCAST_RESPONSE_BYTES: u64 = 1024;
 
+/// bitcoind `sendrawtransaction` RPC code for an already-confirmed transaction.
+const MEMPOOL_TX_ALREADY_EXISTS_RPC_CODE: i64 = -27;
+
 pub type BitcoinAddresses = BTreeMap<String, String>;
 
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
@@ -834,7 +837,7 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
         body: Some(tx_hex.into_bytes()),
         transform: Some(transform_context_from_query(
             "transform_http".to_string(),
-            txid.into_bytes(),
+            txid.clone().into_bytes(),
         )),
         is_replicated: None,
     };
@@ -850,6 +853,10 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
         .map_err(|_| anyhow!("System error: invalid HTTP status from mempool.space"))?;
 
     if status == 200 {
+        ensure!(
+            response_body_matches_txid(&response.body, &txid),
+            "System error: mempool.space returned unexpected txid in response body"
+        );
         return Ok(());
     }
 
@@ -896,47 +903,34 @@ fn transform_http(args: TransformArgs) -> HttpRequestResult {
     HttpRequestResult {
         status: response.status,
         headers: vec![],
-        body: response.body,
+        body: normalized_broadcast_error_body(status, body.as_ref()),
     }
 }
 
+fn response_body_matches_txid(body: &[u8], expected_txid: &str) -> bool {
+    std::str::from_utf8(body)
+        .map(|body| body.trim().eq_ignore_ascii_case(expected_txid))
+        .unwrap_or(false)
+}
+
+/// mempool.space wraps bitcoind errors as:
+/// `sendrawtransaction RPC error: {"code":-27,"message":"..."}`
+fn mempool_sendrawtransaction_rpc_code(body: &str) -> Option<i64> {
+    let json_start = body.find('{')?;
+    let value = serde_json::from_str::<serde_json::Value>(&body[json_start..]).ok()?;
+    value.get("code")?.as_i64()
+}
+
 fn is_tx_already_exists_error(status: u16, body: &str) -> bool {
-    if status != 400 {
-        return false;
-    }
+    status == 400
+        && mempool_sendrawtransaction_rpc_code(body) == Some(MEMPOOL_TX_ALREADY_EXISTS_RPC_CODE)
+}
 
-    let body_lower = body.to_ascii_lowercase();
-    if body_lower.contains("txn-already-in-mempool")
-        || body_lower.contains("already in block chain")
-        || body_lower.contains("already in the block chain")
-        || body_lower.contains("already in mempool")
-        || body_lower.contains("already exists")
-        || body_lower.contains("transaction already")
-    {
-        return true;
-    }
-
-    // mempool.space wraps bitcoind errors as:
-    // sendrawtransaction RPC error: {"code":-27,"message":"..."}
-    let json_start = body.find('{').unwrap_or(body.len());
-    let json = &body[json_start..];
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
-        return false;
-    };
-    let Some(code) = value.get("code").and_then(|c| c.as_i64()) else {
-        return false;
-    };
-    match code {
-        -27 => true,
-        -26 => value
-            .get("message")
-            .and_then(|m| m.as_str())
-            .is_some_and(|message| {
-                let message_lower = message.to_ascii_lowercase();
-                message_lower.contains("already")
-                    || message_lower.contains("txn-already-in-mempool")
-            }),
-        _ => false,
+fn normalized_broadcast_error_body(status: u16, body: &str) -> Vec<u8> {
+    if let Some(code) = mempool_sendrawtransaction_rpc_code(body) {
+        format!("rpc_code:{code}").into_bytes()
+    } else {
+        format!("http_status:{status}").into_bytes()
     }
 }
 
@@ -1226,9 +1220,9 @@ mod tests {
     }
 
     #[test]
-    fn detects_already_in_mempool_rpc_error() {
+    fn rejects_already_in_mempool_rpc_error() {
         let body = r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
-        assert!(is_tx_already_exists_error(400, body));
+        assert!(!is_tx_already_exists_error(400, body));
     }
 
     #[test]
@@ -1236,6 +1230,12 @@ mod tests {
         let body = r#"sendrawtransaction RPC error: {"code":-22,"message":"TX decode failed. Make sure the tx has at least one input."}"#;
         assert!(!is_tx_already_exists_error(400, body));
         assert!(!is_tx_already_exists_error(500, body));
+    }
+
+    #[test]
+    fn rejects_broad_already_exists_substring_without_rpc_code() {
+        let body = "UTXO already exists in set";
+        assert!(!is_tx_already_exists_error(400, body));
     }
 }
 
