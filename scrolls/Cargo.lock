@@ -1263,26 +1263,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
-name = "datasize"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e65c07d59e45d77a8bda53458c24a828893a99ac6cdd9c84111e09176ab739a2"
-dependencies = [
- "datasize_derive",
-]
-
-[[package]]
-name = "datasize_derive"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613e4ee15899913285b7612004bbd490abd605be7b11d35afada5902fb6b91d5"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "deepsize2"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1972,18 +1952,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ic-btc-interface"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b07cca9319498684a7477a77a66d87377ecd698b5465a3b8523484fcca16bff"
-dependencies = [
- "candid",
- "datasize",
- "serde",
- "serde_bytes",
-]
-
-[[package]]
 name = "ic-cdk"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1997,17 +1965,6 @@ dependencies = [
  "pin-project-lite",
  "serde",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "ic-cdk-bitcoin-canister"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e8bf6dd432d5750428b8658bbe6fb0cbc26f6ad634e20d48994f48d7bf84da9"
-dependencies = [
- "candid",
- "ic-btc-interface",
- "ic-cdk",
 ]
 
 [[package]]
@@ -3750,7 +3707,6 @@ dependencies = [
  "getrandom 0.2.16",
  "hex",
  "ic-cdk",
- "ic-cdk-bitcoin-canister",
  "ic-cdk-management-canister",
  "ic-cdk-timers",
  "ic-vetkeys",

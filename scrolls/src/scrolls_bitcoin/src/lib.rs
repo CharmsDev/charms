@@ -18,14 +18,11 @@ use charms_lib::{
 };
 use getrandom::register_custom_getrandom;
 use ic_cdk::call::Call;
-use ic_cdk_bitcoin_canister::{
-    Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
-};
 use ic_cdk_management_canister::{
-    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs,
-    SignWithSchnorrArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
-    ecdsa_public_key, raw_rand, sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key,
-    vetkd_public_key,
+    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, HttpHeader, HttpMethod, HttpRequestArgs,
+    SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs, VetKDCurve,
+    VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs, ecdsa_public_key, http_request, raw_rand,
+    sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key, vetkd_public_key,
 };
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
@@ -71,6 +68,15 @@ const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
 /// misconfigured chain (A → B → A, A → B → C → A, etc.) is detected before the
 /// forwarding inter-canister call is made.
 const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "";
+
+/// mempool.space REST endpoint for broadcasting a raw transaction on mainnet.
+const MEMPOOL_MAINNET_BROADCAST_URL: &str = "https://mempool.space/api/tx";
+
+/// mempool.space REST endpoint for broadcasting a raw transaction on testnet4.
+const MEMPOOL_TESTNET4_BROADCAST_URL: &str = "https://mempool.space/testnet4/api/tx";
+
+/// Upper bound on the mempool.space broadcast response body (txid is 64 hex chars).
+const MAX_BROADCAST_RESPONSE_BYTES: u64 = 1024;
 
 pub type BitcoinAddresses = BTreeMap<String, String>;
 
@@ -800,23 +806,55 @@ fn check_existing_witnesses(tx: &Transaction, signing: &HashSet<usize>) -> anyho
     Ok(())
 }
 
-async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
-    let btc_network = match network {
-        Network::Bitcoin => BtcNetwork::Mainnet,
-        Network::Testnet4 => BtcNetwork::Testnet,
+fn mempool_broadcast_url(network: Network) -> anyhow::Result<&'static str> {
+    match network {
+        Network::Bitcoin => Ok(MEMPOOL_MAINNET_BROADCAST_URL),
+        Network::Testnet4 => Ok(MEMPOOL_TESTNET4_BROADCAST_URL),
         _ => bail!(
             "Input error: unsupported network for submission: {}",
             network
         ),
+    }
+}
+
+async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
+    let url = mempool_broadcast_url(network)?;
+    let tx_hex = hex::encode(serialize(tx));
+
+    let request = HttpRequestArgs {
+        url: url.to_string(),
+        max_response_bytes: Some(MAX_BROADCAST_RESPONSE_BYTES),
+        method: HttpMethod::POST,
+        headers: vec![HttpHeader {
+            name: "Content-Type".to_string(),
+            value: "text/plain".to_string(),
+        }],
+        body: Some(tx_hex.into_bytes()),
+        transform: None,
+        // Broadcast is non-idempotent: only one replica should POST the tx.
+        is_replicated: Some(false),
     };
-    let request = SendTransactionRequest {
-        transaction: serialize(tx),
-        network: btc_network.into(),
-    };
-    bitcoin_send_transaction(&request)
+
+    let response = http_request(&request)
         .await
-        .map_err(|e| anyhow!("System error: bitcoin_send_transaction failed: {}", e))?;
-    Ok(())
+        .map_err(|e| anyhow!("System error: mempool.space HTTP outcall failed: {}", e))?;
+
+    let status: u16 = response
+        .status
+        .0
+        .try_into()
+        .map_err(|_| anyhow!("System error: invalid HTTP status from mempool.space"))?;
+
+    if status == 200 {
+        return Ok(());
+    }
+
+    let body = String::from_utf8_lossy(&response.body);
+    bail!(
+        "System error: mempool.space returned HTTP {}: {}",
+        status,
+        body.trim()
+    );
 }
 
 fn check_network(network: &str) -> anyhow::Result<bitcoin::Network> {
