@@ -18,14 +18,12 @@ use charms_lib::{
 };
 use getrandom::register_custom_getrandom;
 use ic_cdk::call::Call;
-use ic_cdk_bitcoin_canister::{
-    Network as BtcNetwork, SendTransactionRequest, bitcoin_send_transaction,
-};
 use ic_cdk_management_canister::{
-    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs,
-    SignWithSchnorrArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
-    ecdsa_public_key, raw_rand, sign_with_ecdsa, sign_with_schnorr, vetkd_derive_key,
-    vetkd_public_key,
+    EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, HttpHeader, HttpMethod, HttpRequestArgs,
+    HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs,
+    TransformArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
+    ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa, sign_with_schnorr,
+    transform_context_from_query, vetkd_derive_key, vetkd_public_key,
 };
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
@@ -71,6 +69,18 @@ const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
 /// misconfigured chain (A → B → A, A → B → C → A, etc.) is detected before the
 /// forwarding inter-canister call is made.
 const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "";
+
+/// mempool.space REST endpoint for broadcasting a raw transaction on mainnet.
+const MEMPOOL_MAINNET_BROADCAST_URL: &str = "https://mempool.space/api/tx";
+
+/// mempool.space REST endpoint for broadcasting a raw transaction on testnet4.
+const MEMPOOL_TESTNET4_BROADCAST_URL: &str = "https://mempool.space/testnet4/api/tx";
+
+/// Upper bound on the mempool.space broadcast response body (txid is 64 hex chars).
+const MAX_BROADCAST_RESPONSE_BYTES: u64 = 1024;
+
+/// bitcoind `sendrawtransaction` RPC code for an already-confirmed transaction.
+const MEMPOOL_TX_ALREADY_EXISTS_RPC_CODE: i64 = -27;
 
 pub type BitcoinAddresses = BTreeMap<String, String>;
 
@@ -800,23 +810,128 @@ fn check_existing_witnesses(tx: &Transaction, signing: &HashSet<usize>) -> anyho
     Ok(())
 }
 
-async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
-    let btc_network = match network {
-        Network::Bitcoin => BtcNetwork::Mainnet,
-        Network::Testnet4 => BtcNetwork::Testnet,
+fn mempool_broadcast_url(network: Network) -> anyhow::Result<&'static str> {
+    match network {
+        Network::Bitcoin => Ok(MEMPOOL_MAINNET_BROADCAST_URL),
+        Network::Testnet4 => Ok(MEMPOOL_TESTNET4_BROADCAST_URL),
         _ => bail!(
             "Input error: unsupported network for submission: {}",
             network
         ),
+    }
+}
+
+async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
+    let url = mempool_broadcast_url(network)?;
+    let tx_hex = hex::encode(serialize(tx));
+    let txid = tx.compute_txid().to_string();
+
+    let request = HttpRequestArgs {
+        url: url.to_string(),
+        max_response_bytes: Some(MAX_BROADCAST_RESPONSE_BYTES),
+        method: HttpMethod::POST,
+        headers: vec![HttpHeader {
+            name: "Content-Type".to_string(),
+            value: "text/plain".to_string(),
+        }],
+        body: Some(tx_hex.into_bytes()),
+        transform: Some(transform_context_from_query(
+            "transform_http".to_string(),
+            txid.clone().into_bytes(),
+        )),
+        is_replicated: None,
     };
-    let request = SendTransactionRequest {
-        transaction: serialize(tx),
-        network: btc_network.into(),
-    };
-    bitcoin_send_transaction(&request)
+
+    let response = http_request(&request)
         .await
-        .map_err(|e| anyhow!("System error: bitcoin_send_transaction failed: {}", e))?;
-    Ok(())
+        .map_err(|e| anyhow!("System error: mempool.space HTTP outcall failed: {}", e))?;
+
+    let status: u16 = response
+        .status
+        .0
+        .try_into()
+        .map_err(|_| anyhow!("System error: invalid HTTP status from mempool.space"))?;
+
+    if status == 200 {
+        ensure!(
+            response_body_matches_txid(&response.body, &txid),
+            "System error: mempool.space returned unexpected txid in response body"
+        );
+        return Ok(());
+    }
+
+    let body = String::from_utf8_lossy(&response.body);
+    bail!(
+        "System error: mempool.space returned HTTP {}: {}",
+        status,
+        body.trim()
+    );
+}
+
+/// Transform function for HTTP outcalls. Strips headers so all replicas reach consensus
+/// on the same response. If mempool.space reports the transaction already exists,
+/// normalize the response to HTTP 200 with the txid from transform context.
+#[ic_cdk::query]
+fn transform_http(args: TransformArgs) -> HttpRequestResult {
+    let TransformArgs { context, response } = args;
+    let status: u16 = response
+        .status
+        .0
+        .clone()
+        .try_into()
+        .unwrap_or(u16::MAX);
+
+    if status == 200 {
+        return HttpRequestResult {
+            status: response.status,
+            headers: vec![],
+            body: response.body,
+        };
+    }
+
+    let body = String::from_utf8_lossy(&response.body);
+    if is_tx_already_exists_error(status, body.as_ref())
+        && let Ok(txid) = std::str::from_utf8(&context)
+    {
+        return HttpRequestResult {
+            status: candid::Nat::from(200u32),
+            headers: vec![],
+            body: txid.as_bytes().to_vec(),
+        };
+    }
+
+    HttpRequestResult {
+        status: response.status,
+        headers: vec![],
+        body: normalized_broadcast_error_body(status, body.as_ref()),
+    }
+}
+
+fn response_body_matches_txid(body: &[u8], expected_txid: &str) -> bool {
+    std::str::from_utf8(body)
+        .map(|body| body.trim().eq_ignore_ascii_case(expected_txid))
+        .unwrap_or(false)
+}
+
+/// mempool.space wraps bitcoind errors as:
+/// `sendrawtransaction RPC error: {"code":-27,"message":"..."}`
+fn mempool_sendrawtransaction_rpc_code(body: &str) -> Option<i64> {
+    let json_start = body.find('{')?;
+    let value = serde_json::from_str::<serde_json::Value>(&body[json_start..]).ok()?;
+    value.get("code")?.as_i64()
+}
+
+fn is_tx_already_exists_error(status: u16, body: &str) -> bool {
+    status == 400
+        && mempool_sendrawtransaction_rpc_code(body) == Some(MEMPOOL_TX_ALREADY_EXISTS_RPC_CODE)
+}
+
+fn normalized_broadcast_error_body(status: u16, body: &str) -> Vec<u8> {
+    if let Some(code) = mempool_sendrawtransaction_rpc_code(body) {
+        format!("rpc_code:{code}").into_bytes()
+    } else {
+        format!("http_status:{status}").into_bytes()
+    }
 }
 
 fn check_network(network: &str) -> anyhow::Result<bitcoin::Network> {
@@ -1092,6 +1207,36 @@ fn txid_to_tx(
         );
     }
     Ok(prev_txs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_tx_already_exists_error;
+
+    #[test]
+    fn detects_already_in_chain_rpc_error() {
+        let body = r#"sendrawtransaction RPC error: {"code":-27,"message":"Transaction already in block chain"}"#;
+        assert!(is_tx_already_exists_error(400, body));
+    }
+
+    #[test]
+    fn rejects_already_in_mempool_rpc_error() {
+        let body = r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
+        assert!(!is_tx_already_exists_error(400, body));
+    }
+
+    #[test]
+    fn rejects_unrelated_broadcast_errors() {
+        let body = r#"sendrawtransaction RPC error: {"code":-22,"message":"TX decode failed. Make sure the tx has at least one input."}"#;
+        assert!(!is_tx_already_exists_error(400, body));
+        assert!(!is_tx_already_exists_error(500, body));
+    }
+
+    #[test]
+    fn rejects_broad_already_exists_substring_without_rpc_code() {
+        let body = "UTXO already exists in set";
+        assert!(!is_tx_already_exists_error(400, body));
+    }
 }
 
 // Enable Candid export

@@ -18,9 +18,9 @@ charms-data = { version = "15.0.0", path = "../../../charms-data" }
 charms-lib = { version = "15.0.0", path = "../../../charms-lib" }
 getrandom = { version = "0.2", features = ["custom"] }
 ic-cdk = { version = "0.20.2" }
-ic-cdk-bitcoin-canister = { version = "0.2" }
 ic-cdk-management-canister = { version = "0.1" }
 ic-cdk-timers = { version = "1.0" }
 ic-vetkeys = { version = "0.7" }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = { version = "0.9.34" }
