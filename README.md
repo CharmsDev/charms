@@ -3,17 +3,18 @@
 ---
 [![crates.io](https://img.shields.io/crates/v/charms)](https://crates.io/crates/charms)
 
-`charms` is a library, CLI tool and web API for programmable tokens and NFTs on top of Bitcoin.
+`charms` is a library, CLI tool and web API for programmable tokens and NFTs on top of Bitcoin (and Cardano).
 
-_Charms_ are bundles of tokens, NFTs and arbitrary app state, enchanting Bitcoin UTXOs, that can be used to build
-**apps** directly on Bitcoin.
+_Charms_ are bundles of tokens, NFTs and arbitrary app state, enchanting UTXOs, that can be used to build
+**apps** directly on Bitcoin — no extra chains or layer-2s required.
 
 For example: Charms NFTs have state, so it's easy to create a token managed by an NFT: the token's remaining unminted
 supply is stored in the NFT state, and you can only mint the token when updating the NFT state accordingly (in the same
 transaction).
 
-Charms are created using _spells_ — special messages added to Bitcoin transactions, manifesting creation and
-**transformation** of charms.
+Charms are created using _spells_ — special messages added to transactions, manifesting creation and
+**transformation** of charms. Their correctness is enforced by recursive zero-knowledge proofs (SP1 → Groth16), so the
+base chain needs no changes. As of v15, the same charms can also live on Cardano and move across chains via _beaming_.
 
 ## Get Started
 
