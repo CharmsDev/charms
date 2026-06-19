@@ -13,7 +13,7 @@ homepage.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
-charms-data = { path = "../charms-data", version = "15.0.0" }
+charms-data = { path = "../charms-data", version = "15.1.0" }
 rand = { version = "0.10.1" }
 secp256k1 = { version = "0.29", default-features = false, features = ["std"] }
 sha2 = { workspace = true }

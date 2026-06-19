@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "charms-app-runner"
-version = "15.0.0"
+version = "15.1.0"
 dependencies = [
  "anyhow",
  "charms-data",
@@ -621,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "charms-client"
-version = "15.0.0"
+version = "15.1.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "charms-data"
-version = "15.0.0"
+version = "15.1.0"
 dependencies = [
  "anyhow",
  "ark-std",
@@ -665,7 +665,7 @@ dependencies = [
 
 [[package]]
 name = "charms-spell-checker"
-version = "15.0.0"
+version = "15.1.0"
 dependencies = [
  "charms-client",
  "charms-data",

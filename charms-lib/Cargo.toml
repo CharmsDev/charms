@@ -17,7 +17,7 @@ default = []
 wasm = ["wasm-bindgen", "serde-wasm-bindgen", "getrandom"]
 
 [dependencies]
-charms-client = { path = "../charms-client", version = "15.0.0" }
+charms-client = { path = "../charms-client", version = "15.1.0" }
 getrandom = { version = "0.4.2", optional = true, features = ["wasm_js"] }
 hex-literal = { version = "1.1.0" }
 serde-wasm-bindgen = { version = "0.6.5", optional = true }
