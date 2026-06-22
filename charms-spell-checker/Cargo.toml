@@ -12,7 +12,7 @@ license = "MIT"
 [dependencies]
 charms-client = { path = "../charms-client", version = "15.1.0" }
 charms-data = { path = "../charms-data", version = "15.1.0" }
-sp1-zkvm = { version = "6.2.4", features = ["verify"] }
+sp1-zkvm = { version = "6.3.0", features = ["verify"] }
 
 [profile.release]
 codegen-units = 1
