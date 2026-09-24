@@ -8,14 +8,14 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-anyhow = { version = "1.0.102" }
+anyhow = { version = "1.0.104" }
 axum = { version = "0.8", default-features = false, features = ["json", "macros"] }
-candid = { version = "0.10.24" }
+candid = { version = "0.10.36" }
 gloo-timers = { version = "0.3.0", features = ["futures"] }
-ic-agent = { version = "0.46.0", default-features = false, features = ["wasm-bindgen"] }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = { version = "1.0.149" }
-tower-http = { version = "0.6.8", features = ["cors"] }
+ic-agent = { version = "0.49.2", default-features = false, features = ["wasm-bindgen"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151" }
+tower-http = { version = "0.6.11", features = ["cors"] }
 tower-service = { version = "0.3.3" }
 worker = { version = "0.7.5", features = ['http', 'axum'] }
 

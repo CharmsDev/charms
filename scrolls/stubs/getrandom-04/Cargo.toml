@@ -1,6 +1,6 @@
 [package]
 name = "getrandom"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 
 # Stub of getrandom 0.4.x for ICP/wasm32-unknown-unknown. Always returns

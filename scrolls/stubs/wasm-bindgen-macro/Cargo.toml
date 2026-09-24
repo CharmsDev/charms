@@ -1,6 +1,6 @@
 [package]
 name = "wasm-bindgen-macro"
-version = "0.2.121"
+version = "0.2.128"
 edition = "2021"
 
 [lib]
