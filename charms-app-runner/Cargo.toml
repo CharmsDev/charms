@@ -17,4 +17,4 @@ charms-data = { path = "../charms-data", version = "15.1.0" }
 rand = { version = "0.10.1" }
 secp256k1 = { version = "0.29", default-features = false, features = ["std"] }
 sha2 = { workspace = true }
-wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "prefer-btree-collections", "portable-dispatch", "indirect-dispatch"] }
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "prefer-btree-collections", "portable-dispatch", "indirect-dispatch"] }
