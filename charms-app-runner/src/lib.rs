@@ -10,7 +10,9 @@ use std::{
     io::Write,
     sync::{Arc, Mutex, OnceLock},
 };
-use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc};
+use wasmi::{
+    Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc,
+};
 
 /// Single shared verification-only secp256k1 context. The context owns precomputed tables
 /// (~1 MB) and is expensive to allocate; `verify_app_binary` may be called many times per
@@ -262,6 +264,7 @@ impl AppRunner {
         if count_cycles {
             config.consume_fuel(true);
         }
+        config.compilation_mode(CompilationMode::LazyTranslation);
         Self {
             count_cycles,
             engine: Engine::new(&config),
