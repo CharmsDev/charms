@@ -29,14 +29,14 @@ hex = { workspace = true }
 hex-literal = { version = "1.1.0" }
 pallas-crypto = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_with = { version = "3.21.0", features = ["hex", "base64"] }
+serde_with = { version = "3.23.0", features = ["hex", "base64"] }
 sha2 = { workspace = true }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true, default-features = false }
 strum = { version = "0.28.0", features = ["derive"] }
 thiserror = { version = "2" }
 tracing = { workspace = true }
-uplc = { version = "=1.1.21" }
+uplc = { version = "=1.1.23" }
 
 [dev-dependencies]
 charms-data = { path = "../charms-data", version = "15.1.0", features = ["test"] }
