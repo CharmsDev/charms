@@ -35,20 +35,27 @@ struct HostState {
     prng: Arc<Mutex<StdRng>>,
 }
 
-fn guest_offset(value: i32) -> Result<usize> {
-    usize::try_from(value).map_err(|_| anyhow::anyhow!("guest offset out of range"))
+// Wasm32 addresses are `u32`. Values at or above 2 GiB arrive as a negative `i32`.
+fn guest_addr(value: i32) -> usize {
+    value as u32 as usize
 }
 
-fn iovec_addr(iovs: i32, index: i32) -> Result<i32> {
-    let offset = index
+// Lengths at or above 2 GiB stay rejected. Zero-extending them would allocate gigabytes.
+fn guest_len(value: i32) -> Result<usize> {
+    usize::try_from(value).map_err(|_| anyhow::anyhow!("guest length out of range"))
+}
+
+fn iovec_addr(iovs: i32, index: i32) -> Result<u32> {
+    let offset = (index as u32)
         .checked_mul(8)
         .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))?;
-    iovs.checked_add(offset)
+    (iovs as u32)
+        .checked_add(offset)
         .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))
 }
 
-fn read_i32(memory: &Memory, caller: &mut Caller<'_, HostState>, ptr: i32) -> Result<i32> {
-    let data = read_memory(memory, caller, guest_offset(ptr)?, 4)?;
+fn read_i32(memory: &Memory, caller: &mut Caller<'_, HostState>, ptr: u32) -> Result<i32> {
+    let data = read_memory(memory, caller, ptr as usize, 4)?;
     Ok(i32::from_le_bytes(data.try_into().unwrap()))
 }
 
@@ -59,7 +66,7 @@ fn write_i32(
     value: i32,
 ) -> Result<()> {
     let data = value.to_le_bytes();
-    write_memory(memory, caller, guest_offset(ptr)?, &data)
+    write_memory(memory, caller, guest_addr(ptr), &data)
 }
 
 fn read_memory(
@@ -84,11 +91,11 @@ fn read_iovec(
     index: i32,
 ) -> Result<(usize, usize)> {
     let iov_addr = iovec_addr(iovs, index)?;
-    let buf_ptr = guest_offset(read_i32(memory, caller, iov_addr)?)?;
+    let buf_ptr = guest_addr(read_i32(memory, caller, iov_addr)?);
     let len_addr = iov_addr
         .checked_add(4)
         .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))?;
-    let buf_len = guest_offset(read_i32(memory, caller, len_addr)?)?;
+    let buf_len = guest_len(read_i32(memory, caller, len_addr)?)?;
     Ok((buf_ptr, buf_len))
 }
 
@@ -269,8 +276,8 @@ fn random_get_impl(mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32) ->
         .get_export("memory")
         .and_then(Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("No memory export"))?;
-    let buf = guest_offset(buf)?;
-    let buf_len = guest_offset(buf_len)?;
+    let buf = guest_addr(buf);
+    let buf_len = guest_len(buf_len)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(buf_len)
@@ -603,6 +610,17 @@ mod tests {
         0x02, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x01, 0x41, 0x10, 0x10, 0x00, 0x1a, 0x0b,
     ];
 
+    const FD_READ_HIGH_IOV: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x22, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69,
+        0x5f, 0x73, 0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69,
+        0x65, 0x77, 0x31, 0x07, 0x66, 0x64, 0x5f, 0x72, 0x65, 0x61, 0x64, 0x00, 0x01, 0x03, 0x02,
+        0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f,
+        0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x13,
+        0x01, 0x11, 0x00, 0x41, 0x00, 0x41, 0x80, 0x80, 0x80, 0x80, 0x78, 0x41, 0x01, 0x41, 0x00,
+        0x10, 0x00, 0x1a, 0x0b,
+    ];
+
     const MEMORY64: &[u8] = &[
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
         0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x04, 0x01, 0x07, 0x13, 0x02, 0x06, b'm', b'e', b'm',
@@ -611,12 +629,28 @@ mod tests {
     ];
 
     #[test]
+    fn wasm32_address_at_or_above_2gib_is_zero_extended() {
+        assert_eq!(guest_addr(i32::MIN), 0x8000_0000);
+        assert_eq!(guest_addr(-1), 0xFFFF_FFFF);
+        assert_eq!(iovec_addr(i32::MIN, 0).unwrap(), 0x8000_0000);
+        assert_eq!(iovec_addr(i32::MIN, 1).unwrap(), 0x8000_0008);
+    }
+
+    #[test]
     fn guest_controlled_shim_args_trap() {
-        for wasm in [RANDOM_NEG_LEN, RANDOM_NEG_PTR, FD_READ_NEG_LEN] {
+        for wasm in [RANDOM_NEG_LEN, FD_READ_NEG_LEN] {
             let err = run_wasm(&AppRunner::new(false), wasm)
                 .unwrap_err()
                 .to_string();
-            assert!(err.contains("guest offset out of range"), "{err}");
+            assert!(err.contains("guest length out of range"), "{err}");
+        }
+        for wasm in [RANDOM_NEG_PTR, FD_READ_HIGH_IOV] {
+            let err = run_wasm(&AppRunner::new(false), wasm)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("out of bounds"), "{err}");
+            assert!(!err.contains("guest length out of range"), "{err}");
+            assert!(!err.contains("iovec address overflow"), "{err}");
         }
     }
 
