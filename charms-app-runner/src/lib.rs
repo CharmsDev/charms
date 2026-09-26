@@ -10,9 +10,7 @@ use std::{
     io::Write,
     sync::{Arc, Mutex, OnceLock},
 };
-use wasmi::{
-    Caller, CompilationMode, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc,
-};
+use wasmi::{Caller, Config, Engine, Extern, Linker, Memory, Module, Store, TypedFunc};
 
 /// Single shared verification-only secp256k1 context. The context owns precomputed tables
 /// (~1 MB) and is expensive to allocate; `verify_app_binary` may be called many times per
@@ -264,7 +262,6 @@ impl AppRunner {
         if count_cycles {
             config.consume_fuel(true);
         }
-        config.compilation_mode(CompilationMode::Lazy);
         Self {
             count_cycles,
             engine: Engine::new(&config),
@@ -460,5 +457,86 @@ impl AppRunner {
             .collect::<Result<_>>()?;
 
         Ok(app_cycles)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID_START: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, b'm', b'e', b'm',
+        b'o', b'r', b'y', 0x02, 0x00, 0x06, b'_', b's', b't', b'a', b'r', b't', 0x00, 0x00, 0x0a,
+        0x04, 0x01, 0x02, 0x00, 0x0b,
+    ];
+
+    const UNCALLED_ILL_TYPED: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
+        0x03, 0x02, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, b'm', b'e',
+        b'm', b'o', b'r', b'y', 0x02, 0x00, 0x06, b'_', b's', b't', b'a', b'r', b't', 0x00, 0x00,
+        0x0a, 0x08, 0x02, 0x02, 0x00, 0x0b, 0x03, 0x00, 0x6a, 0x0b,
+    ];
+
+    fn run_wasm(runner: &AppRunner, wasm: &[u8]) -> Result<u64> {
+        let app = App {
+            tag: 't',
+            identity: B32::default(),
+            vk: runner.vk(wasm),
+        };
+        let tx = Transaction {
+            ins: vec![],
+            refs: vec![],
+            outs: vec![],
+            coin_ins: None,
+            coin_outs: None,
+            prev_txs: BTreeMap::new(),
+            app_public_inputs: BTreeMap::new(),
+        };
+        let empty = Data::empty();
+        runner.run(
+            wasm,
+            &app,
+            &tx,
+            &empty,
+            &empty,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn valid_start_without_fuel_returns_zero() {
+        let cycles = run_wasm(&AppRunner::new(false), VALID_START).unwrap();
+        assert_eq!(cycles, 0);
+    }
+
+    #[test]
+    fn valid_start_with_fuel_returns_observed_cycles() {
+        let cycles = run_wasm(&AppRunner::new(true), VALID_START).unwrap();
+        assert_eq!(cycles, 15);
+    }
+
+    #[test]
+    fn uncalled_ill_typed_function_is_rejected() {
+        for count_cycles in [false, true] {
+            let err = run_wasm(&AppRunner::new(count_cycles), UNCALLED_ILL_TYPED)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("type mismatch: expected i32 but nothing on stack"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_module_is_rejected() {
+        for count_cycles in [false, true] {
+            let err = run_wasm(&AppRunner::new(count_cycles), b"\0asm")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("unexpected end-of-file"), "{err}");
+        }
     }
 }
