@@ -35,9 +35,20 @@ struct HostState {
     prng: Arc<Mutex<StdRng>>,
 }
 
-// Helper functions for memory access
+fn guest_offset(value: i32) -> Result<usize> {
+    usize::try_from(value).map_err(|_| anyhow::anyhow!("guest offset out of range"))
+}
+
+fn iovec_addr(iovs: i32, index: i32) -> Result<i32> {
+    let offset = index
+        .checked_mul(8)
+        .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))?;
+    iovs.checked_add(offset)
+        .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))
+}
+
 fn read_i32(memory: &Memory, caller: &mut Caller<'_, HostState>, ptr: i32) -> Result<i32> {
-    let data = read_memory(memory, caller, ptr as usize, 4)?;
+    let data = read_memory(memory, caller, guest_offset(ptr)?, 4)?;
     Ok(i32::from_le_bytes(data.try_into().unwrap()))
 }
 
@@ -48,7 +59,7 @@ fn write_i32(
     value: i32,
 ) -> Result<()> {
     let data = value.to_le_bytes();
-    write_memory(memory, caller, ptr as usize, &data)
+    write_memory(memory, caller, guest_offset(ptr)?, &data)
 }
 
 fn read_memory(
@@ -57,9 +68,28 @@ fn read_memory(
     ptr: usize,
     len: usize,
 ) -> Result<Vec<u8>> {
-    let mut buffer = vec![0; len];
+    let mut buffer = Vec::new();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| anyhow::anyhow!("guest buffer too large"))?;
+    buffer.resize(len, 0);
     memory.read(caller, ptr, &mut buffer)?;
     Ok(buffer)
+}
+
+fn read_iovec(
+    memory: &Memory,
+    caller: &mut Caller<'_, HostState>,
+    iovs: i32,
+    index: i32,
+) -> Result<(usize, usize)> {
+    let iov_addr = iovec_addr(iovs, index)?;
+    let buf_ptr = guest_offset(read_i32(memory, caller, iov_addr)?)?;
+    let len_addr = iov_addr
+        .checked_add(4)
+        .ok_or_else(|| anyhow::anyhow!("iovec address overflow"))?;
+    let buf_len = guest_offset(read_i32(memory, caller, len_addr)?)?;
+    Ok((buf_ptr, buf_len))
 }
 
 fn write_memory(
@@ -88,14 +118,9 @@ fn fd_read_impl(
         .and_then(Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("No memory export"))?;
 
-    // First, read iovec addresses and lengths
-    let iov_size = 8;
     let mut iov_info = Vec::new();
     for i in 0..iovs_len {
-        let iov_addr = iovs + i * iov_size;
-        let buf_ptr = read_i32(&memory, &mut caller, iov_addr).unwrap() as usize;
-        let buf_len = read_i32(&memory, &mut caller, iov_addr + 4).unwrap() as usize;
-        iov_info.push((buf_ptr, buf_len));
+        iov_info.push(read_iovec(&memory, &mut caller, iovs, i)?);
     }
 
     // Then, read from stdin and prepare operations
@@ -122,7 +147,7 @@ fn fd_read_impl(
 
     // Now perform memory writes without holding any borrows
     for (buf_ptr, data) in stdin_data.0 {
-        write_memory(&memory, &mut caller, buf_ptr, &data).unwrap();
+        write_memory(&memory, &mut caller, buf_ptr, &data)?;
     }
 
     // Write number of bytes read to nread
@@ -147,18 +172,11 @@ fn fd_write_impl(
         .and_then(Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("No memory export"))?;
 
-    // Read iovec array from WASM memory
-    let iov_size = 8; // sizeof(wasi_iovec_t) = ptr (i32) + len (i32)
     let mut total_written = 0;
     let mut all_data = Vec::new();
 
     for i in 0..iovs_len {
-        let iov_addr = iovs + i * iov_size;
-        // Read iovec (buf: i32, buf_len: i32)
-        let buf_ptr = read_i32(&memory, &mut caller, iov_addr)? as usize;
-        let buf_len = read_i32(&memory, &mut caller, iov_addr + 4)? as usize;
-
-        // Read buffer from WASM memory
+        let (buf_ptr, buf_len) = read_iovec(&memory, &mut caller, iovs, i)?;
         let data = read_memory(&memory, &mut caller, buf_ptr, buf_len)?;
         all_data.extend_from_slice(&data);
         total_written += buf_len;
@@ -191,11 +209,14 @@ fn fd_write(
     })
 }
 
-fn fd_read(caller: Caller<'_, HostState>, fd: i32, iovs: i32, iovs_len: i32, nread: i32) -> i32 {
-    fd_read_impl(caller, fd, iovs, iovs_len, nread).unwrap_or_else(|e| {
-        eprintln!("error: {}", e);
-        -1
-    })
+fn fd_read(
+    caller: Caller<'_, HostState>,
+    fd: i32,
+    iovs: i32,
+    iovs_len: i32,
+    nread: i32,
+) -> Result<i32, wasmi::Error> {
+    fd_read_impl(caller, fd, iovs, iovs_len, nread).map_err(|e| wasmi::Error::new(e.to_string()))
 }
 
 fn environ_sizes_get_impl(
@@ -243,17 +264,25 @@ fn environ_get(caller: Caller<'_, HostState>, environ_ptr: i32, environ_buf_ptr:
     })
 }
 
-fn random_get(mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> i32 {
+fn random_get_impl(mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> Result<i32> {
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
-        .expect("No memory export");
-    let mut bytes = vec![0u8; buf_len as usize];
+        .ok_or_else(|| anyhow::anyhow!("No memory export"))?;
+    let buf = guest_offset(buf)?;
+    let buf_len = guest_offset(buf_len)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(buf_len)
+        .map_err(|_| anyhow::anyhow!("guest buffer too large"))?;
+    bytes.resize(buf_len, 0);
     caller.data().prng.lock().unwrap().fill(&mut bytes);
-    memory
-        .write(&mut caller, buf as usize, &bytes)
-        .expect("failed to write random bytes");
-    0
+    memory.write(&mut caller, buf, &bytes)?;
+    Ok(0)
+}
+
+fn random_get(caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> Result<i32, wasmi::Error> {
+    random_get_impl(caller, buf, buf_len).map_err(|e| wasmi::Error::new(e.to_string()))
 }
 
 const MAX_FUEL_PER_RUN: u64 = 1000000000;
@@ -541,5 +570,61 @@ mod tests {
                 .to_string();
             assert!(err.contains("unexpected end-of-file"), "{err}");
         }
+    }
+
+    const RANDOM_NEG_LEN: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0b, 0x01, 0x09, 0x00, 0x41, 0x00, 0x41, 0x7f, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_NEG_PTR: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0b, 0x01, 0x09, 0x00, 0x41, 0x7f, 0x41, 0x10, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const FD_READ_NEG_LEN: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0c, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x22, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69,
+        0x5f, 0x73, 0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69,
+        0x65, 0x77, 0x31, 0x07, 0x66, 0x64, 0x5f, 0x72, 0x65, 0x61, 0x64, 0x00, 0x01, 0x03, 0x02,
+        0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f,
+        0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a, 0x1d,
+        0x01, 0x1b, 0x00, 0x41, 0x00, 0x41, 0x00, 0x36, 0x02, 0x00, 0x41, 0x04, 0x41, 0x7f, 0x36,
+        0x02, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x01, 0x41, 0x10, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const MEMORY64: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x04, 0x01, 0x07, 0x13, 0x02, 0x06, b'm', b'e', b'm',
+        b'o', b'r', b'y', 0x02, 0x00, 0x06, b'_', b's', b't', b'a', b'r', b't', 0x00, 0x00, 0x0a,
+        0x04, 0x01, 0x02, 0x00, 0x0b,
+    ];
+
+    #[test]
+    fn guest_controlled_shim_args_trap() {
+        for wasm in [RANDOM_NEG_LEN, RANDOM_NEG_PTR, FD_READ_NEG_LEN] {
+            let err = run_wasm(&AppRunner::new(false), wasm)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("guest offset out of range"), "{err}");
+        }
+    }
+
+    #[test]
+    fn memory64_module_is_rejected() {
+        let err = run_wasm(&AppRunner::new(false), MEMORY64)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("memory64"), "{err}");
     }
 }
