@@ -24,8 +24,8 @@ fn secp_verifier() -> &'static Secp256k1<VerifyOnly> {
 
 #[derive(Clone)]
 pub struct AppRunner {
-    pub count_cycles: bool,
-    pub engine: Engine,
+    count_cycles: bool,
+    engine: Engine,
 }
 
 #[derive(Clone)]
