@@ -10,7 +10,8 @@ license = "MIT"
 [workspace]
 
 [dependencies]
-charms-client = { path = "../charms-client", version = "15.1.0" }
+# Guest build leaves wasmi validation off. A panic fails the proof.
+charms-client = { path = "../charms-client", version = "15.1.0", default-features = false }
 charms-data = { path = "../charms-data", version = "15.1.0" }
 sp1-zkvm = { version = "6.8.1", features = ["verify"] }
 
