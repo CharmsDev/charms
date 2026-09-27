@@ -11,6 +11,10 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["validate"]
+validate = ["wasmi/validate"]
+
 [dependencies]
 anyhow = { workspace = true }
 charms-data = { path = "../charms-data", version = "15.1.0" }

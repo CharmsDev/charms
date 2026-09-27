@@ -415,7 +415,10 @@ impl AppRunner {
         )?;
         linker.func_wrap("wasi_snapshot_preview1", "random_get", random_get)?;
 
-        // SAFETY: the `validate` feature is off, so Wasmi does not check this binary.
+        #[cfg(feature = "validate")]
+        let module = Module::new(&self.engine, app_binary)?;
+        #[cfg(not(feature = "validate"))]
+        // SAFETY: this build leaves wasmi validation off. Invalid wasm is undefined behavior.
         let module = unsafe { Module::new_unchecked(&self.engine, app_binary) }?;
 
         let instance = linker.instantiate_and_start(&mut store, &module)?;
@@ -557,6 +560,21 @@ mod tests {
         assert_eq!(cycles, 15);
     }
 
+    #[cfg(feature = "validate")]
+    #[test]
+    fn uncalled_ill_typed_function_is_rejected() {
+        for count_cycles in [false, true] {
+            let err = run_wasm(&AppRunner::new(count_cycles), UNCALLED_ILL_TYPED)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("type mismatch: expected i32 but nothing on stack"),
+                "{err}"
+            );
+        }
+    }
+
+    #[cfg(not(feature = "validate"))]
     #[test]
     fn uncalled_ill_typed_function_is_not_checked() {
         assert_eq!(
@@ -654,6 +672,16 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "validate")]
+    #[test]
+    fn memory64_module_is_rejected() {
+        let err = run_wasm(&AppRunner::new(false), MEMORY64)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("memory64"), "{err}");
+    }
+
+    #[cfg(not(feature = "validate"))]
     #[test]
     #[should_panic(expected = "received invalid `MemoryType` from `wasmparser`")]
     fn memory64_module_panics_without_validation() {
