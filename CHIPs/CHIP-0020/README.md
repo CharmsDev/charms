@@ -28,6 +28,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
 | Finality out of Ethereum | A new `scrolls_ethereum` canister signs the Charms tx id after the execution block is beacon-finalized. Same pattern as Cardano's `FINALITY_VKEY`. |
 | Guest | Unchanged for Ethereum-local use. Rebuilt once, as v16, when `Tx` gains an `Ethereum` arm. |
+| Upgrade | UUPS (EIP-1822). Callers use a proxy that delegatecalls every call. Upgrade logic lives in the implementation, so `transact` and `transfer` do not pay an admin check. The proxy address is the stable `Charms` address. |
 
 ## What a caller does
 
@@ -89,9 +90,11 @@ The other direction marks `beamed_outs` on an Ethereum spell whose token sums st
 
 ## Contracts
 
-Three deployed pieces. Everything else is internal to `Charms`.
+Deploy a proxy, an implementation, and a timelock. Token clones and the external Groth16 verifier sit beside them. Everything else is internal to the implementation.
 
-- `Charms` is immutable. No proxy. It owns UTXOs, supply, balances, the vault, anchors, and the version registry. It deploys token clones.
+- `CharmsProxy` is the address wallets, tokens, and the guest call `Charms`. Its `fallback` and `receive` always `delegatecall` the implementation in the ERC-1967 slot. It has no other functions and no admin branch. That is the UUPS shape from EIP-1822: every call is delegated, and the upgrade function is not on this bytecode, so a transfer does not pay for an admin check the way a transparent proxy does.
+- `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, anchors, and the version registry, in the proxy's storage. It deploys token clones. It also exposes `upgradeToAndCall`.
+- `CharmsTimelock` is the only address allowed to upgrade. Its delay is 14 days. The proposer is a multisig named at deploy time. A guardian may cancel a scheduled upgrade and may retire a spell version. The guardian cannot schedule an upgrade.
 - `CharmToken` is an EIP-1167 clone, one per `t` app. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances.
 - `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
@@ -162,16 +165,29 @@ interface ICharms {
         external view returns (UtxoRef[] memory page, uint256 nextCursor);
     function vaultOf(address token) external view returns (App memory app, uint8 scale, uint256 locked);
     function beamSourceAt(bytes32 txId) external view returns (uint256 blockNumber);
+
+    /// UUPS. Only the timelock, and only by a call that arrived through the proxy.
+    function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
+    /// ERC-1967 implementation slot. The next implementation must return the same value.
+    function proxiableUUID() external view returns (bytes32);
 }
 ```
 
 `ICharmToken` is IERC-20, IERC-20 metadata, and EIP-2612. It adds `charms()`, `app()`, and `emitTransfer(from, to, amount)`. Only `Charms` may call `emitTransfer`. Allowances live only here. The token decrements the allowance, then calls `tokenTransfer`. Infinite allowances are not decremented.
 
-CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. The clone is deployed the first time that app gets a non-zero Ethereum-resident supply, and the caller of that transact pays for it.
+CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. The clone is deployed the first time that app gets a non-zero Ethereum-resident supply, and the caller of that transact pays for it. The CREATE2 deployer in that formula is the proxy, so an upgrade does not move token addresses.
+
+### Upgrade
+
+Deploy the implementation first. Its constructor calls `_disableInitializers()`, so nobody can initialize the implementation contract itself and then `selfdestruct` it out from under the proxy. Deploy the timelock second. Deploy the proxy third, with CREATE2 salt `keccak256("charms-proxy-v1")` and a constructor that writes the implementation into the ERC-1967 slot and `delegatecall`s `initialize(timelock, guardian)`. That proxy address is `ETHEREUM_CHARMS`. It is the `address(Charms)` mixed into `ethTxId`, the vault identity, and `tokenAddress`. Replacing the implementation does not change those ids.
+
+`upgradeToAndCall` runs only when `msg.sender` is the timelock and `address(this)` is the proxy. The new implementation must return the same `proxiableUUID` (the ERC-1967 implementation slot). The timelock schedules the call and waits 14 days. Anyone may execute it after that. The guardian may cancel it during the wait. A fix that preserves `SpellCodec` output and the `ethTxId` preimage does not need a guest rebuild. A fix that changes those bytes is a protocol bump, with a new `programVKey`, not a silent patch.
+
+The version registry stays for a new `programVKey` when the bytecode does not have to change. `proposeVersion` uses the same timelock and the same 14-day wait. `retireVersion` stays immediate and one-way, and the guardian may call it. An upgrade and a registry entry are different operations: one replaces code, the other appends a key.
 
 ## State
 
-`_apply` is the only writer. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
+`_apply` is the only writer of UTXO, supply, balance, and vault state. `proposeVersion` and `retireVersion` write the registry. `upgradeToAndCall` writes the ERC-1967 implementation slot. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
 
 | Store | Key | Value | Role |
 |---|---|---|---|
@@ -187,6 +203,8 @@ CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, byt
 | `versions` | protocol version | verifier, `programVKey`, `activeAt`, `retired` | Append-only. See [Protocol version](#protocol-version). |
 
 `utxoKey = keccak256(abi.encodePacked(ethTxId, uint32 index))` is internal. It is not the `UtxoId`.
+
+Those variables live in the proxy's storage, because every call delegatecalls. The ERC-1967 implementation slot is `bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)`, above the sequential layout, so it does not collide with `supply` or `head`. The v1 layout ends with `uint256[50] private __gap`. An upgrade may take slots from that gap or append new variables after it. It must not reorder, insert, or retype an existing variable. The proxy bytecode itself is not upgraded.
 
 Kind is one function of the output's charms:
 
@@ -498,7 +516,7 @@ App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and 
 
 The Groth16 circuit key is not assumed to change and is not assumed to stay. v15's `groth16_vk.bin` aliases v14's because that bump did not rebuild the wrapper. v16 rebuilds the wrapper. If the new `groth16_vk.bin` is byte-identical, alias it and keep the stock verifier. If it is not, publish the new bytes; the proof's 4-byte prefix follows them. Either way the value that changes for certain is the wrapper's `programVKey`, because the wrapper hardcodes the spell-checker key. `to_serialized_pv` stays on the v15 arm (`([u8; 32], NormalizedSpell)`). Bitcoin and Cardano transaction layouts do not change.
 
-The version registry is append-only and is the one piece of governance in an otherwise immutable contract. A proposed entry becomes active after 14 days. It can set the verifier address and `programVKey` for a new version. It cannot change `_apply`. Retiring a version is one-way and immediate, so a bad key can be switched off. The admin identity is a multisig named at deploy time. Token addresses survive a version bump because they are CREATE2 from the same `Charms` address. Replacing `Charms` itself would change every token address and the `ETHEREUM_CHARMS` constant inside the next guest; that is a new deployment, not an upgrade.
+The version registry is append-only. A proposed entry becomes active after 14 days. It sets the verifier address and `programVKey` for a new version. Retiring a version is one-way and immediate, so a bad key can be switched off. Logic changes go through `upgradeToAndCall` on the same 14-day timelock, not through the registry. The proposer multisig is named at deploy time. Token addresses and `ETHEREUM_CHARMS` stay on the proxy across both kinds of change. A new proxy would change every token address and the guest constant. That is a new deployment, not an upgrade.
 
 The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoin` delegation, `scrolls_cardano`, and `charms-lib`'s `SPELL_VK`. `CHARMS_PROVE_API_URL` becomes `https://v16.charms.dev/spells/prove`.
 
@@ -518,7 +536,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 
 **Phase 0. Codec and verifier, no protocol change.** `SpellCodec` and `CborWellFormed`, golden vectors from `util::write` over generated spells, and a fork test that feeds a real v15 Bitcoin proof to the deployed SP1 verifier with public values the codec built. This is the gate for the id preimage and the proof statement. Done when the vectors match and that proof verifies.
 
-**Phase 1. Ethereum-local, still v15.** `Charms` and `CharmToken`: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and a registry whose only entry is native v15. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables. Audit, then a deterministic deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
+**Phase 1. Ethereum-local, still v15.** `CharmsProxy`, `Charms`, `CharmsTimelock`, and `CharmToken`: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, UUPS upgrade, and a registry whose only entry is native v15. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables, plus a test that an upgrade keeps token addresses and existing `UtxoId`s. Audit, then the CREATE2 proxy deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
 
 **Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build, because the guest hardcodes `ETHEREUM_FINALITY_VKEY`. Add `Tx::Ethereum` and the `is_correct` guards. Rebuild the spell-checker and the wrapper. Publish `programVKey`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. Propose the v16 registry entry and wait 14 days. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
 
@@ -539,8 +557,9 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 | `balanceOf` counts only single-token UTXOs, and attributes bundles to `address(Charms)` | `balanceOf` would not be the total on that address's UTXOs. The requirement is the total. Custom-tag bundles stay in the balance and out of automatic selection instead. |
 | Beacon light client inside the guest | Finality would be trustless, and every beacon consensus change would be a guest rebuild. Cardano already chose a Scrolls signature for the same reason. |
 | Bitcoin and Cardano light clients in Solidity | A second copy of `proven_final`. The proof is already that check. |
-| A new `Charms` deployment per protocol version | CREATE2 token addresses and the vault identity are functions of the contract address. A redeploy splits liquidity and changes `ETHEREUM_CHARMS` in the guest. |
-| An upgradeable proxy | Governance would cover every rule, not only which verifying key is accepted. |
+| A new `Charms` deployment per protocol version | CREATE2 token addresses and the vault identity are functions of the proxy address. A new proxy splits liquidity and changes `ETHEREUM_CHARMS` in the guest. |
+| A transparent proxy | Every call would check `msg.sender` against an admin before delegating. UUPS keeps that check on `upgradeToAndCall` only, so `transact` and `transfer` pay one `delegatecall`. |
+| A beacon proxy | One `Charms` proxy does not need a second contract read on every call to find the implementation. |
 | Wei on `NativeOutput.amount` | `u64` overflows near 18 ETH, native coins are not beamable, and ETH would have two representations. The vault charm is the one representation. |
 | Store the Groth16 proof beside the spell and require the guest to verify it for every Ethereum ancestor | The contract has already verified it, or the spell was native and the contract checked the sums. The ancestor proof is not part of the id. Carrying it as a sidecar means an id that does not commit to the statement the next chain trusts. |
 
@@ -552,10 +571,10 @@ A `SpellCodec` that diverges from `util::write` is a liveness failure: proofs do
 
 Outbound beams stall if the EVM RPC providers disagree or the canister is out of cycles. The attestation can be retried. The UTXO is already spent; the funds are not returned and not lost.
 
-A malicious registry entry can make the proved path accept anything, after 14 days. The native path and the vault rules are not behind the registry. Holders can unwrap or beam out during the delay. The registered `programVKey` has to equal the reproducible `charms spell vk` output.
+A malicious registry entry can make the proved path accept anything, after 14 days. An upgrade scheduled on the same timelock can change the native path and the vault as well. Holders can unwrap or beam out during the delay. The registered `programVKey` has to equal the reproducible `charms spell vk` output. Watch the ERC-1967 implementation slot. An upgrade that changes `SpellCodec` or the `ethTxId` preimage without a protocol bump desynchronizes new spells from the guest.
 
 ## What is not decided here
 
-The registry admin's addresses are chosen at deploy time. The design does not name them.
+The timelock proposer's addresses, and the guardian's, are chosen at deploy time. The design does not name them.
 
 Whether v16 should raise Bitcoin's finality work target is a separate security parameter. The default is to leave `FINALITY_TARGET_BITS` alone and rely on the vault cap. Confirm that before the v16 guest is built if the cap is not enough.
