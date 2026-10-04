@@ -9,27 +9,29 @@ Created: 2026-10-04
 
 # CHIP-0020. Charms on Ethereum
 
-Ethereum hosts Charms spells, UTXOs, and beams. Charm tokens live in one `Charms` contract and are exposed as ERC-20s. Locked ERC-20s and ETH become vault charms. Those charms beam to Bitcoin and Cardano. Burning the charm on Ethereum unlocks the underlying asset.
+Ethereum becomes a third host for the existing spell, UTXO, and beaming protocol. It does not get a second asset protocol.
 
-`Charms` checks each Ethereum Charms transaction. Local UTXOs, ERC-20 transfers, and the vault use protocol v15 and the current spell-checker guest. A beam that reads an Ethereum transaction uses protocol v16 and a rebuilt guest.
+Charm tokens already defined by an `App` are held as UTXOs inside one `Charms` contract and projected as ERC-20s. Existing ERC-20s and ETH are locked in that contract and minted as vault charms, which beam to Bitcoin and Cardano and unlock only by burning the charm back on Ethereum.
+
+The contract is the consensus for Ethereum Charms transactions, in the same role Bitcoin consensus has for a Bitcoin transaction. The spell-checker guest is not rebuilt until a spell on some chain has to read an Ethereum transaction. That rebuild is protocol v16, and it is required before any beam crosses Ethereum. Local UTXOs, ERC-20 transfers, and the vault ship on v15 with no guest change.
 
 ## Decisions
 
 | Question | Decision |
 |---|---|
-| UTXO model | One `Charms.transact` creates every output of one Charms transaction. Each output is its own `UtxoId`. A later transaction spends that output on its own. |
-| UTXO id | `ethTxId = keccak256(preimage)` from [Identity](#identity). `TxId.0` is `reverse(ethTxId)`, the same byte order as `cardano_tx::tx_id`. |
-| Simple transfer | The contract checks the spell. `proof` is empty. A non-empty proof reverts with `ProofNotRequired`. |
-| Proved spell | The contract verifies Groth16 on Ethereum. Public values are CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled, the same bytes Bitcoin and Cardano verify. |
-| ERC-20 facade | One CREATE2 clone per `t` app. `balanceOf` sums that token across the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. |
-| ETH and existing ERC-20s | `Charms` enforces the vault rules. `VAULT_VK` is a constant with no wasm preimage and no BIP-340 preimage. On other chains the charm transfers and beams. |
-| Finality into Ethereum | The v16 proof calls the existing `proven_final`. Bitcoin uses work. Cardano uses the Scrolls signature. |
-| Finality out of Ethereum | `scrolls_ethereum` signs the Charms tx id after the execution block is beacon-finalized. The check matches Cardano's `FINALITY_VKEY`. |
-| Guest | v15 for Ethereum-local use. One v16 rebuild when `Tx` gains an `Ethereum` arm. |
+| UTXO model | One `Charms.transact` creates every output of one Charms transaction. Each output is its own `UtxoId` and is spent on its own later. |
+| UTXO id | Content-addressed. Not the Ethereum transaction hash and not a counter. `TxId.0` is the reverse of that id, matching `UtxoId::to_bytes` and Cardano's `tx_id`. |
+| Simple transfer | The contract checks it. The proof is empty. A proof on a spell the contract can check itself is rejected. |
+| Anything else | Groth16 is verified on Ethereum, against the same public values Bitcoin and Cardano already use: CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled. |
+| ERC-20 facade | CREATE2 clone per `t` app. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. |
+| ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
+| Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
+| Finality out of Ethereum | A new `scrolls_ethereum` canister signs the Charms tx id after the execution block is beacon-finalized. Same pattern as Cardano's `FINALITY_VKEY`. |
+| Guest | Unchanged for Ethereum-local use. Rebuilt once, as v16, when `Tx` gains an `Ethereum` arm. |
 
-## Call sites
+## What a caller does
 
-### An ERC-20 call
+### A contract treats a charm as an ERC-20
 
 ```solidity
 ICharms.App memory app = ICharms.App({tag: 0x74, identity: ID, vk: VK});
@@ -38,9 +40,9 @@ token.transferFrom(msg.sender, address(this), amount);
 token.transfer(msg.sender, amount);
 ```
 
-`tokenAddress` is a pure function of the `App` and the `Charms` address. `transfer` spends the sender's UTXOs of that app. It creates one output for the recipient and one change output. The change output keeps every other `t` or `n` charm from the inputs. A custom-tag bundle counts in `balanceOf`. `transfer` skips it. Spending that bundle is `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
+`tokenAddress` is a pure function of the `App` and the `Charms` address. `transfer` spends the sender's UTXOs of that app, creates one output to the recipient and one change output, and preserves every other `t` or `n` charm on the change output. Custom-tag bundles are part of `balanceOf` but are not selected by `transfer`; spending them is a `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
 
-### Wrap, beam, and unwrap
+### A wallet locks USDC, beams it, and unlocks it
 
 ```solidity
 usdc.approve(address(charms), 1_000_000);
@@ -49,9 +51,9 @@ bytes32 txId = charms.wrap(address(usdc), 1_000_000, alice, salt);
 charms.unwrap(address(usdc), 400_000, alice);
 ```
 
-ETH uses `charms.wrap{value: amount * 10^scale}(address(0), amount, alice, salt)`. The charm amount counts vault units. ETH uses `scale = 10`, so one unit is 10 gwei. A token with `decimals <= 8` uses `scale = 0` and keeps its own smallest unit. See [Vault](#vault).
+`wrap` of ETH is `charms.wrap{value: amount * 10^scale}(address(0), amount, alice, salt)`. The charm amount is an integer count of the vault's unit, not wei. ETH uses `scale = 10` (1 unit = 10 gwei). A token with `decimals <= 8` uses `scale = 0` and keeps its own smallest unit. See [Vault](#vault).
 
-### Spell YAML
+### A spell file is still a spell file
 
 ```yaml
 version: 16
@@ -67,33 +69,33 @@ app_public_inputs:
   "t/<identity>/<vk>": null
 ```
 
-`coins[i].amount` is 0. `coins[i].dest` is the raw 20-byte owner. `charms util dest --chain ethereum --addr 0x…` prints those 20 bytes. ETH as a charm is the vault token.
+`coins[i].amount` is always 0. `coins[i].dest` is the raw 20-byte owner. `charms util dest --chain ethereum --addr 0x…` prints those 20 bytes. ETH held as a charm is the vault token, not `NativeOutput.amount`.
 
-Beaming uses `beamed_outs` and `tx_ins_beamed_source_utxos`.
+Beaming uses the fields that already exist.
 
 ```bash
-# Placeholder on Ethereum. Empty proof. The id is known before the transaction is sent.
+# Placeholder on Ethereum. No proof. The id is known before the transaction is sent.
 charms spell prove --chain ethereum --spell placeholder.yaml --caller 0xAlice --salt 0x… > ph.json
 cast send "$CHARMS" "$(jq -r .call.data ph.json)"
 
-# Bitcoin sets beamed_outs to sha256(UtxoId::to_bytes() of that id).
-# After Bitcoin finality, the Ethereum claim carries a proof.
+# Bitcoin beams to sha256(UtxoId::to_bytes() of that id), as it does today.
+# After Bitcoin finality, claim on Ethereum. A claim is not a local simple transfer, so it has a proof.
 charms spell prove --chain ethereum --spell claim.yaml \
   --beamed-from '{0: ["<btc-txid>:<vout>"]}' \
   --prev-txs "$(jq -c .tx ph.json)" --prev-txs btc-with-block-proof.json > claim.json
 ```
 
-A beam-out whose token sums still balance, with the beamed output included in the sum, is a native spell. Its proof is empty. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`. The Bitcoin or Cardano claim is an ordinary spell.
+The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`, and the Bitcoin or Cardano claim is an ordinary spell.
 
 ## Contracts
 
-Deploy three contracts. Keep every other rule inside `Charms`.
+Three deployed pieces. Everything else is internal to `Charms`.
 
-- `Charms` is immutable and has no proxy. It stores UTXOs, supply, balances, the vault, anchors, and the version registry. It deploys token clones.
-- `CharmToken` is one EIP-1167 clone per `t` app. It stores allowances, EIP-2612 nonces, and metadata. Balances stay in `Charms`.
-- `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls `verifyProof` on that contract.
+- `Charms` is immutable. No proxy. It owns UTXOs, supply, balances, the vault, anchors, and the version registry. It deploys token clones.
+- `CharmToken` is an EIP-1167 clone, one per `t` app. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances.
+- `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
-`CharmToken.transfer` and `transferFrom` call `Charms.tokenTransfer`. `tokenTransfer` builds a simple-transfer spell and runs the same `_apply` path as `transact`. It is an internal call. An external `transact` from the token would set `msg.sender` to the token.
+`CharmToken.transfer` and `transferFrom` are the ERC-20 surface Ivan asked for. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`.
 
 ```solidity
 interface ICharms {
@@ -163,44 +165,44 @@ interface ICharms {
 }
 ```
 
-`ICharmToken` is IERC-20, IERC-20 metadata, and EIP-2612. It adds `charms()`, `app()`, and `emitTransfer(from, to, amount)`. Only `Charms` calls `emitTransfer`. The token stores allowances. It decrements the allowance, then calls `tokenTransfer`. It leaves an infinite allowance unchanged.
+`ICharmToken` is IERC-20, IERC-20 metadata, and EIP-2612. It adds `charms()`, `app()`, and `emitTransfer(from, to, amount)`. Only `Charms` may call `emitTransfer`. Allowances live only here. The token decrements the allowance, then calls `tokenTransfer`. Infinite allowances are not decremented.
 
-CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. `_apply` deploys the clone the first time that app gets a non-zero Ethereum-resident supply. The caller of that transact pays for the deploy.
+CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. The clone is deployed the first time that app gets a non-zero Ethereum-resident supply, and the caller of that transact pays for it.
 
 ## State
 
-`_apply` is the only writer. Store supply, per-owner balance, and a per-owner UTXO index. Also store one record per UTXO, because a spell names UTXOs by id and a multi-charm UTXO appears under more than one app. Empty UTXOs have no app, so they need `emptyUtxos`.
+`_apply` is the only writer. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
 
 | Store | Key | Value | Role |
 |---|---|---|---|
 | `supply` | `appKey` | `uint256` | Ethereum-resident supply. Beamed outputs are excluded. This is `totalSupply`. |
 | `balance` | `owner`, `appKey` | `uint256` | Sum of this token on the owner's unspent, non-beamed UTXOs. This is `balanceOf`. |
 | `utxos` | `owner`, `appKey` | deque of `utxoKey` | Selection index. A multi-charm UTXO is listed under every `t` app it carries. |
-| `emptyUtxos` | `owner` | list of `utxoKey` | Placeholders. |
-| `head` | `utxoKey` | owner, kind, token amount or body hash, deque slot | The UTXO. A spend starts here. |
-| `body` | `utxoKey` | charms CBOR, pins | Set for a bundle. Plain and empty UTXOs leave it unset. |
-| `usedAnchors` | `anchor` | `bool` | A zero-input id is single-use. |
-| `beamSourceAt` | `ethTxId` | block number, or 0 | Written when the spell has `beamed_outs`. The canister reads this. |
+| `emptyUtxos` | `owner` | list of `utxoKey` | Placeholders. No app to index them by. |
+| `head` | `utxoKey` | owner, kind, token amount or body hash, deque slot | The UTXO. Spend starts here. |
+| `body` | `utxoKey` | charms CBOR, pins | Present when the UTXO is not a single unversioned `t` charm and is not empty. |
+| `usedAnchors` | `anchor` | `bool` | Zero-input ids are single-use. |
+| `beamSourceAt` | `ethTxId` | block number, or 0 | Written only when the spell has `beamed_outs`. The canister reads this. |
 | `vaults` | token address | `appKey`, `scale`, `locked` | Underlying custody. `address(0)` is ETH. |
 | `versions` | protocol version | verifier, `programVKey`, `activeAt`, `retired` | Append-only. See [Protocol version](#protocol-version). |
 
-`utxoKey = keccak256(abi.encodePacked(ethTxId, uint32 index))` is the storage key. The `UtxoId` is the 36-byte form in [Identity](#identity).
+`utxoKey = keccak256(abi.encodePacked(ethTxId, uint32 index))` is internal. It is not the `UtxoId`.
 
 Kind is one function of the output's charms:
 
 | Charms on the output | Kind | Stored |
 |---|---|---|
-| none | Empty | `head`, plus `emptyUtxos[owner]` |
+| none | Empty | `head` only, plus `emptyUtxos[owner]` |
 | one charm, tag `t`, no pin | Plain | amount in `head`. The deque slot names the app. |
 | anything else | Bundle | `body` holds the charm map and pins. Listed in `utxos` for each `t` app it contains. |
 
-A beamed output occupies an index, so `tx_outs_len` and `beamed_out_to_hash` see it. It has no `head` entry, no balance, and no supply.
+A beamed output is not a UTXO. It still occupies an index, so `tx_outs_len` and `beamed_out_to_hash` see it. It is absent from `head`, from `balance`, and from `supply`.
 
-The deque puts change at the front. Change is an output whose owner also owned an input of this transact. Every other receipt goes at the back. `tokenTransfer` pops from the front. When the selected inputs already cover the amount and another front UTXO exists, it spends that extra UTXO too. An address that only receives transfers then keeps a stable UTXO count. It skips the extra input when the `u64` sum would overflow.
+The deque puts change (an output whose owner also owned an input of this transact) at the front and every other receipt at the back. `tokenTransfer` pops from the front. When the selected inputs already cover the amount and another front UTXO exists, it spends that extra UTXO too, so a passive holder's UTXO count does not grow without bound. It skips the extra input when adding it would overflow a `u64` sum.
 
 ## Identity
 
-One `transact`, `wrap`, `unwrap`, or `tokenTransfer` is one Charms transaction. One Ethereum transaction may contain several of them, because a smart account can batch calls. Use `ethTxId` below. The EVM does not expose the hash of the transaction that is executing.
+One `transact`, `wrap`, `unwrap`, or `tokenTransfer` is one Charms transaction. An Ethereum transaction may contain several, because a smart account can batch calls. The Ethereum transaction hash is not an id: the EVM cannot read it, and an internal call does not have one of its own.
 
 `ethTxId = keccak256(preimage)` with this concatenation:
 
@@ -212,56 +214,56 @@ One `transact`, `wrap`, `unwrap`, or `tokenTransfer` is one Charms transaction. 
 | 73 | 32 | `anchor` |
 | 105 | n | committed spell CBOR |
 
-When `ins` is empty, `anchor` is `keccak256(abi.encode(msg.sender, salt))`. Otherwise `anchor` is `bytes32(0)` and `salt` is 0. The caller picks `salt`. A counter would move if another call landed first, and a placeholder id already published in `beamed_outs` could not be created.
+`anchor` is `keccak256(abi.encode(msg.sender, salt))` when `ins` is empty, and `bytes32(0)` otherwise. The salt is chosen by the caller. It is not a nonce. A nonce that an unrelated call can bump would make a placeholder id that was already published impossible to create, and any charm already beamed at that id would be stuck.
 
-Byte order follows `cardano_tx::tx_id`:
+Charms byte order, which Cardano already follows in `cardano_tx::tx_id`:
 
 | Value | Bytes |
 |---|---|
 | `TxId.0` | `reverse(ethTxId)` |
-| `UtxoId::to_bytes()` | `TxId.0 \|\| index` as `u32` little-endian. 36 bytes. |
-| Display and `FromStr` | `hex(ethTxId):index`. `Display` reverses `TxId.0`. |
-| Beam hash | `SHA256(to_bytes() \|\| optional nonce as u64 little-endian)`. `beamed_outs[i]` is that hash. `BeamSource` stays `(UtxoId, Option<u64>)`. |
+| `UtxoId::to_bytes()` | `TxId.0 \|\| index` as `u32` little-endian. 36 bytes. Unchanged. |
+| Display / `FromStr` | `hex(ethTxId):index`, because `Display` reverses `TxId.0` again. |
+| Beam hash | `SHA256(to_bytes() \|\| optional nonce as u64 little-endian)`. Unchanged. `beamed_outs[i]` is that hash. `BeamSource` is unchanged. |
 
-`txIdOf` returns the id before the Ethereum transaction is signed. Placeholder creation, EIP-712 `Spend` signatures, and the source chain's `beamed_outs` all use that id.
+The id is known before the Ethereum transaction is signed. `txIdOf` computes it. Placeholder creation, EIP-712 spend signatures, and the source chain's `beamed_outs` all use that id.
 
-`_apply` makes each id single-use. A zero-input transact consumes its anchor. Every other transact consumes its inputs. A second claim of the same placeholder reverts.
+Uniqueness is an invariant of `_apply`, not a property of keccak. A zero-input transact consumes its anchor. Every other transact consumes its inputs. A placeholder id cannot be created twice, so a beam cannot be claimed twice.
 
 ## The committed spell
 
-The id hashes `util::write(&NormalizedSpell)` after the same fill as Bitcoin's `spell_with_committed_ins_and_coins`:
+The bytes inside the id are `util::write(&NormalizedSpell)` after the same fill Bitcoin does in `spell_with_committed_ins_and_coins`:
 
-- `tx.ins` is the input `UtxoId`s, in order. It is `Some`. It is an empty vector only for a zero-input transact.
-- `tx.coins[i]` is `NativeOutput { amount: 0, dest: owner_i, content: None }`. A beamed output has 20 zero bytes in `dest`.
-- Omit `refs`, `beamed_outs`, `scrolls`, and `versioned_apps` when they are empty. Encode absence. An empty container is a different spell.
-- Omit `mock` when it is false.
+- `tx.ins` is the input `UtxoId`s, in order. `Some`, and empty only for a zero-input transact.
+- `tx.coins[i] = NativeOutput { amount: 0, dest: owner_i, content: None }`. A beamed output has `dest` of 20 zero bytes.
+- `refs`, `beamed_outs`, `scrolls`, `versioned_apps` are omitted when empty (`None` / empty map), never encoded as an empty container.
+- `mock` is omitted when false.
 
-`SpellCodec` encodes those bytes from the typed `Spell`. The caller-supplied bytes it copies are `Data` blobs: NFT data, custom-app data, and app public inputs. On the proved path each blob is one definite-length CBOR item, depth at most 16, with no trailing bytes. `CborWellFormed` checks that by skipping, and it extracts no values. A blob that swallows the next field would make the proof attest one spell while the contract accounts another. On the native path, bundle data is copied from the input `body` stored when that UTXO was created.
+`SpellCodec` in Solidity encodes those bytes from the typed `Spell`. It does not parse CBOR. The only bytes it copies from the caller are `Data` blobs (NFT data, custom-app data, app public inputs). On the proved path each blob must be exactly one definite-length CBOR item, depth at most 16, with no trailing bytes. A skip-only `CborWellFormed` check enforces that. Without it a blob can swallow the next field, the proof attests one spell, and the contract accounts another. The native path does not accept fresh blobs: bundle data is copied from the input `body` the contract stored when that UTXO was created.
 
-Calldata arrives in CBOR key order. The contract checks that order:
+Calldata order is the CBOR order. The contract checks it and does not sort:
 
 - `apps` by `(tag, identity, vk)`, which is `App`'s `Ord`
 - charms in an output by app index
 - `beamedOuts` and `scrolls` by index
 - `versionedApps` by `vk`
 
-`SpellCodec` matches ciborium's non-human-readable serde:
+The CBOR shapes `SpellCodec` has to match, from ciborium's non-human-readable serde:
 
 | Rust value | CBOR |
 |---|---|
 | `NormalizedSpell` | map, text keys in struct order: `version`, `tx`, `app_public_inputs`, then `versioned_apps` and `mock` only when present |
 | `NormalizedTransaction` | map: `ins`, optional `refs`, `outs`, optional `beamed_outs`, `coins`, optional `scrolls` |
 | `UtxoId` | byte string of 36 bytes |
-| `[u8; 32]` and `B32` | array of 32 uints. The header is `0x98 0x20`, then each byte as a uint. A byte string is a different value and fails verification. |
-| `App` | array of 3: UTF-8 text of the tag, identity, vk |
-| `NativeOutput.dest` | array of uints. This serde writes `Vec<u8>` as a sequence. 20 bytes means 20 uints. |
+| `[u8; 32]` and `B32` | array of 32 uints, not a byte string. `0x98 0x20`, then each byte as a uint |
+| `App` | array of 3: text of the tag (UTF-8), identity, vk |
+| `NativeOutput.dest` | array of uints. `Vec<u8>` is a sequence in this serde, not a byte string. 20 bytes means 20 uints |
 | token `Data` | the CBOR uint of the `u64`, shortest form |
 | `Data::empty()` | null, `0xf6` |
 | public values | array of 2: the spell vk as an array of 32 uints, then the spell map |
 
-Public values are `0x82 ‖ encode([u8; 32] of programVKey) ‖ spellCbor`. That is `to_serialized_pv` for v15 and later. The same byte string is the id preimage and the proof input. Golden vectors from `charms_data::util::write` are the test that both encoders match.
+Public values are `0x82 ‖ encode([u8; 32] of programVKey) ‖ spellCbor`, which is `to_serialized_pv` for v15 and later. One byte string is both the id preimage and the proof input. Golden vectors generated by `charms_data::util::write` are the test that the two encoders are the same function.
 
-A spell has at most 64 inputs, 64 outputs, and 64 apps. Public values are at most 96 KiB.
+Limits, so a spell cannot be a gas bomb: at most 64 inputs, 64 outputs, 64 apps, and 96 KiB of public values.
 
 ## transact
 
@@ -284,64 +286,64 @@ _apply(spell, anchor, proof, signatures, vaultDelta):
     emit ERC-20 Transfer events from the per-holder deltas
 ```
 
-`native` is the guest's simple-transfer path, `is_correct` with no app binaries, plus the checks this contract can see:
+`native` is the guest's simple-transfer path (`is_correct` with no app binaries), plus what this contract can see:
 
-1. Every app is tag `t` or tag `n`. Every public input is null. The spell has no refs, no scrolls, and no beam-in. A beam-in spends an input whose stored charms are empty, or whose output was itself beamed, and creates outputs that gain charms. The contract has no separate beam-source list, so that increase fails the native sum check.
-2. For each `t` app, the checked `u64` sum of inputs equals the sum of outputs. Beamed outputs count.
-3. For each `n` app, the multiset of data bytes is the same on inputs and outputs.
-4. Pins stay as they are. `versionedApps` equals the pins on the inputs.
-5. `vaultDelta` is 0, except when `wrap` or `unwrap` called `_apply`. Then the vault app's output sum differs from its input sum by that delta. Every other app's sum stays equal.
-6. Zero inputs are a placeholder, with every output empty, or a `wrap`.
+1. Every app is tag `t` or `n`. Every public input is null. No refs. No scrolls. No beam-in. A beam-in is an input whose stored charms are empty (or itself beamed) while the outputs gain charms; the contract has no `tx_ins_beamed_source_utxos` of its own, so it cannot justify that increase.
+2. For each `t` app, the `u64` sum of inputs equals the sum of outputs. Beamed outputs count. Sums use checked arithmetic.
+3. For each `n` app, the multiset of data bytes is unchanged.
+4. Pins do not change. `versionedApps` equals the pins on the inputs and nothing else.
+5. `vaultDelta` is 0, except when `_apply` was entered from `wrap` or `unwrap`. Then the vault app's output sum may differ from its input sum by exactly that delta, and no other app's sum may change.
+6. Zero inputs are allowed only for a placeholder (every output empty) or for `wrap`.
 
-A spell that passes these rules carries an empty proof. Any other spell carries a proof. The errors are `ProofNotRequired` and `ProofRequired`.
+A spell the native rules accept must carry an empty proof (`ProofNotRequired`). Any other spell must carry a proof (`ProofRequired`). There are not two ways to apply one spell.
 
-On both paths the contract checks:
+What the contract checks itself, on both paths:
 
-- Each input exists, matches the stored charms and pins, and is unspent. Spending it is what makes a second submission revert.
-- The caller may spend the inputs, by the rules below.
-- On the proved path, each ref is live and stays live.
-- The encoded spell is the spell whose outputs the contract writes.
-- Supply, balance, and vault collateral move by the amounts the contract computed from `head` and `body`.
+- The inputs exist, match the stored charms and pins, and are unspent. Spending them is the replay lock.
+- The caller is allowed to spend them. See below.
+- Refs, if the proof path allows them, are live and stay live.
+- The encoded spell is the spell whose outputs it is about to write.
+- Supply, balance, and vault collateral move by the amounts it computed, not by amounts read out of a public input.
 
-The proof establishes:
+What only the proof establishes:
 
-- Each app wasm returned true, including versioned-app signatures and version changes.
+- App wasm returned true, including versioned-app signatures and version changes.
 - A beam-in's source transaction is `proven_final`, and `beamed_outs` on that source hashes to this placeholder's `UtxoId` with the declared nonce.
-- Version continuity when the app version changes. A native spell keeps the pins it loaded.
+- Version continuity for a version change. The native path refuses version changes outright.
 
-The contract authorizes the spend. The owner is the address in `coins[i].dest` from when the UTXO was created. One of these holds:
+The proof does not establish spend authorization. On Bitcoin the owner signs the transaction. Here the owner is the Ethereum address in `coins[i].dest`, and authorization is:
 
-- `msg.sender` is the owner.
-- The owner signed EIP-712 `Spend(bytes32 txId)`, verified as ECDSA or as ERC-1271 through `staticcall`.
-- `msg.sender` is the CREATE2 token for this app, the spell is native, every input belongs to `from`, other `t` or `n` charms are copied onto `from`'s change output, and the spell leaves custom-tag charms on their current UTXOs.
+- `msg.sender` equals the owner, or
+- the owner signed EIP-712 `Spend(bytes32 txId)` (ECDSA or ERC-1271 via `staticcall`), or
+- `msg.sender` is the CREATE2 token for this app, the spell is native, every input is a UTXO of `from`, other `t`/`n` charms on those inputs are copied onto `from`'s change output, and no custom-tag charm is touched.
 
-`txId` covers every input, output, owner, and beam hash.
+`txId` commits to every input, output, owner, and beam hash. That is the Ethereum analogue of `SIGHASH_ALL`.
 
-A proved spell spends at least one input. The proof commits to the spell bytes and those inputs. It does not commit to `anchor`, so a zero-input proved spell could be resubmitted under a new salt. `hosting_chain_is_bitcoin` reads the creator of `ins[0]`.
+A proved spell must spend at least one input. The proof does not commit to the anchor, so a zero-input proved spell could be replayed under a fresh salt. Bitcoin and Cardano transactions have an input. `hosting_chain_is_bitcoin` looks at the creator of `ins[0]`; an empty input list would make that undefined.
 
-`tokenTransfer` builds the native spell. Inputs come off the front of `utxos[from][app]`. Outputs are `{app: amount}` to `to` and, when change remains, `{app: change, plus every other t or n charm from the inputs}` back to `from`. `_apply` then checks that the result is native.
+`tokenTransfer` builds the native spell itself. The user does not pass one. Inputs come off the front of `utxos[from][app]`. Outputs are `{app: amount}` to `to` and, if there is a remainder, `{app: change, plus every other t/n charm from the inputs}` back to `from`. The contract then runs `_apply` and checks the result is native. A bug in the token cannot move a charm the rules would refuse.
 
-The call reverts, or the transaction is mined once. Submitting the same spell again reverts with `InputSpent` or `AnchorUsed`. `wrap` pulls the underlying token in the same call. `unwrap` sends it in the same call. A revert undoes both. Proving the same spell again off-chain yields the same id, because the proof bytes are outside the preimage.
+Idempotency is the EVM's. The call reverts or it is mined once. Submitting it again reverts with `InputSpent` or `AnchorUsed`. `wrap`'s token pull and `unwrap`'s token push are inside the same call. A revert undoes both. Re-proving a spell off-chain yields the same id, because the proof bytes are not in the preimage.
 
-One lock covers `transact`, `wrap`, `unwrap`, and `tokenTransfer`. ERC-1271 runs as a `staticcall` during the checks. `unwrap` sends the underlying asset after supply and `locked` have moved. `receive()` reverts.
+Reentrancy: one lock around `transact`, `wrap`, `unwrap`, and `tokenTransfer`. ERC-1271 is a `staticcall` during checks. `unwrap` sends the underlying last, after supply and `locked` have moved. `receive()` reverts, so stray ETH cannot land in the contract.
 
 ## Balances and bundles
 
-`balanceOf(owner)` for a charm token is the total of that token on the owner's unspent, non-beamed UTXOs, including UTXOs that carry other charms. `totalSupply` is that sum over all owners. `_apply` writes both from the same `u64` values it writes into `head` and `body`. The UTXO records are the source. An invariant test recomputes the sum from `utxos[owner]`.
+`balanceOf(owner)` for a charm token is the total of that token on the owner's unspent, non-beamed UTXOs, including UTXOs that also carry other charms. `totalSupply` is the same sum over all owners. Both are caches written in `_apply` from the same `u64` values written into `head` and `body`. The UTXO records are the source. A view that recomputes the sum from `utxos[owner]` exists for the invariant tests.
 
-`transfer` of the full `balanceOf` can take more than one call. A UTXO that carries a custom-tag charm, any tag other than `t` or `n`, stays put during a native spell. `is_simple_transfer` is false for that tag even when the data bytes are copied. Those units remain inside `balanceOf`. `transfer` skips those UTXOs. If the requested amount is larger than the sum `transfer` can select, and the shortfall sits on custom-tag bundles, it reverts with `RequiresProvedSpell`. Otherwise it reverts with `InsufficientBalance`. The owner spends or splits that bundle with `transact` and a proof.
+`transfer(balanceOf)` is not always possible in one call. A UTXO that carries a custom-tag charm (anything other than `t` or `n`) cannot move in a native spell, because `is_simple_transfer` is false for those tags even when the data is copied unchanged. Those units stay inside `balanceOf`. `transfer` skips those UTXOs. If the requested amount is larger than the sum of the UTXOs it is allowed to select, it reverts with `RequiresProvedSpell` when the shortfall sits on custom-tag bundles, and with `InsufficientBalance` otherwise. The owner spends the bundle with `transact` and a proof, or splits the token off the bundle that way first.
 
-A UTXO that mixes several `t` charms, or `t` with `n`, is selectable. The change output returns the other charms to the same owner. That is a simple transfer. The NFT moves to the recipient only when the transferred token is the UTXO's only charm.
+UTXOs that mix several `t` charms, or `t` with `n`, are selectable. The change output carries the other charms back to the same owner, which is a simple transfer. NFTs are not dropped and are not sent to the recipient unless the whole UTXO's charms are exactly the transferred token.
 
-The contract spends each input UTXO whole. The remainder is a new output.
+Partial spends do not exist. The input UTXO is spent whole. The remainder is a new output. That is the Charms rule, and it is the ERC-20 implementation.
 
-`ensure_no_zero_amounts` rejects a charm amount of 0. `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. Ethereum spells have no dust minimum. Omit a change output whose amount is 0. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
+Zero is not a charm amount (`ensure_no_zero_amounts`). `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. There is no Bitcoin dust limit. Change of zero is omitted. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
 
-For each `t` app that `_apply` touches, net the balance change per owner and emit `Transfer` through the token. A facade transfer emits one `Transfer(from, to, amount)`. A beam-in or a wrap emits `Transfer(0, to, amount)`. A beam-out, a burn, or an unwrap emits `Transfer(from, 0, amount)`. Supply on Ethereum changes on those mint and burn events.
+For each `t` app touched by `_apply`, net the plain balance change per owner and emit `Transfer` events through the token. A facade transfer emits one `Transfer(from, to, amount)`. A beam-in or a wrap emits `Transfer(0, to, amount)`. A beam-out, a burn, or an unwrap emits `Transfer(from, 0, amount)`. Supply on Ethereum changes only in those mint and burn cases.
 
 ## Vault
 
-Locking an ERC-20 or ETH mints a tag-`t` charm. Burning that charm unlocks the underlying asset. The rules live in `Charms`, which holds the tokens.
+Locking an ERC-20 or ETH mints a tag-`t` charm. Burning that charm unlocks the underlying. The policy lives in `Charms`, because the contract is the thing that holds the tokens. An app wasm cannot see an ERC-20 transfer, and a wasm that allowed a mint would allow it on Bitcoin too.
 
 ```
 VAULT_VK     = SHA-256("charms/ethereum/vault/v1")
@@ -349,46 +351,46 @@ identity     = SHA-256("charms/ethereum/vault/v1" ‖ chainId_be_u256 ‖ Charms
 app          = t / identity / VAULT_VK
 ```
 
-`token_20` is 20 zero bytes for ETH. `scale` is 0 when the token has no `decimals()` or when `decimals <= 8`. Otherwise `scale` is `decimals - 8`. ETH is treated as 18 decimals, so `scale` is 10 and one charm unit is 10^10 wei. Charm amounts are `u64`, because `sum_token_amount` adds `u64`. Eight decimal digits keeps one output inside that cap. An 18-decimal token's sub-unit dust stays unwrapped.
+`token_20` is 20 zero bytes for ETH. `scale = 0` when the token has no `decimals()` or `decimals <= 8`. Otherwise `scale = decimals - 8`. ETH is treated as 18 decimals, so `scale = 10` and one charm unit is 10^10 wei. Charm amounts are `u64` because `sum_token_amount` is `u64`. Eight decimal digits keeps a single output under that cap for any supply this protocol can represent; sub-unit dust of an 18-decimal token cannot be wrapped and is not rounded.
 
-`VAULT_VK` is the hash of that 24-byte string. The string is neither wasm nor a BIP-340 key. On Bitcoin and Cardano the vault charm transfers and beams. A mint or burn there has no binary that can return true.
+`VAULT_VK` is the hash of a 24-byte string. That string is not wasm and not a BIP-340 key. No guest can run a contract for it or turn it into a versioned app. On Bitcoin and Cardano the vault charm is transfer-only and beam-only. Minting or burning it there is not a simple transfer and there is no binary that can authorize it.
 
-`wrap` reads the balance the contract received. For an ERC-20 that is `balanceAfter - balanceBefore`. For ETH it is `msg.value`. The received amount equals `amount * 10^scale`. A fee-on-transfer token reverts. A rebasing token is out of scope. `wrap` then applies a zero-input spell whose only output is `{vaultApp: amount}` owned by `owner`, passes that positive `vaultDelta`, and adds the underlying amount to `locked`.
+`wrap` measures the balance the contract actually received (`balanceAfter - balanceBefore`, or `msg.value` for ETH) and requires it to equal `amount * 10^scale`. Fee-on-transfer tokens revert. Rebasing tokens are unsupported. It then applies a zero-input spell whose only output is `{vaultApp: amount}` to `owner`, with that `vaultDelta`, and adds the underlying amount to `locked`.
 
-`unwrap` selects the caller's vault-app UTXOs the same way `tokenTransfer` does. It applies a spell whose outputs are the optional change, with a negative `vaultDelta`, subtracts from `locked`, and then sends the underlying asset. If the recipient reverts, the burn reverts with it.
+`unwrap` selects the caller's UTXOs of the vault app the same way `tokenTransfer` does, applies a spell whose outputs are the optional change, with a negative `vaultDelta`, subtracts from `locked`, and only then sends the underlying. A recipient that reverts undoes the burn.
 
-Every `_apply` that touches the vault app keeps these true:
+Invariants, checked on every apply that touches the vault app:
 
-- `locked` equals `10^scale` times the net units wrapped and not yet unwrapped, on every chain.
-- The underlying token's `balanceOf(Charms)` is at least `locked`. For ETH, the contract's balance is at least `locked`.
-- `supply[vaultApp] * 10^scale <= locked`. A beam-in can mint only as many vault units as the collateral still held here.
+- `locked` equals `10^scale` times (wrapped minus unwrapped). That counts charm units on every chain, not only Ethereum.
+- `underlying.balanceOf(Charms) >= locked` (for ETH, the contract's balance).
+- `supply[vaultApp] * 10^scale <= locked`. A beam-in cannot mint more of the vault charm on Ethereum than the collateral that is still here. A forged Bitcoin finality proof can steal collateral, but only up to the vault units currently living outside Ethereum.
 
-External `transact` passes `vaultDelta = 0`. A proved spell includes the vault app when the guest accepts it as a simple transfer, which covers a beam and an ordinary move. The v16 guest rejects a simple-transfer spell unless every public input is null. Solidity moves the underlying asset from `vaultDelta`.
+`wrap` and `unwrap` are not a back door on `transact`. External `transact` always passes `vaultDelta = 0`. A proved spell may carry the vault app only when the guest sees a simple transfer, which is the beam and the ordinary move. The v16 guest additionally rejects a simple-transfer spell whose public inputs are not all null, so a beam claim cannot smuggle an unlock instruction in `app_public_inputs`. Solidity never reads `app_public_inputs` to decide a transfer of the underlying.
 
 ## Supply
 
-`supply[app]` is the amount of that charm resident on Ethereum.
+`supply[app]` is the amount of that charm on Ethereum right now. It is not the global amount.
 
 | Event | `supply` on Ethereum | Underlying `locked` |
 |---|---|---|
 | `wrap` | +amount of the vault app | +amount × 10^scale |
-| `unwrap` | −amount of the vault app | −amount × 10^scale, then the tokens are sent |
-| beam-out | −amount, and the beamed output is excluded from supply | unchanged |
+| `unwrap` | −amount of the vault app | −amount × 10^scale, then sent |
+| beam-out | −amount. The beamed output is not resident | unchanged |
 | beam-in | +amount. The placeholder input was empty | unchanged, then the vault cap |
-| proved mint or burn of a non-vault app | ±amount | unchanged |
+| app mint or burn of a non-vault app, proved | ±amount | none |
 | transfer, or moving units between bundles | unchanged | unchanged |
 
-`wrap` and beam-in are different transitions. `unwrap` and beam-out are different transitions. A beam-in of the vault charm leaves `locked` unchanged. `unwrap` is the transition that sends the underlying asset out.
+A beam-in of an ordinary charm mints the ERC-20 representation and does not touch any vault. A beam-out burns the representation and leaves the underlying where it is. Locking and unlocking are the only operations that move the underlying. Those two pairs must not be implemented as the same branch: a beam-in of USDC-the-charm is not a wrap of USDC, and a beam-out is not an unwrap.
 
 ## Beaming and finality
 
-**Into Ethereum.** Create the placeholder first. It is a native spell with zero inputs, one empty output, and a salt anchor. Its `UtxoId` is known before submission. The Bitcoin or Cardano source spell sets `beamed_outs[i]` to the beam hash of that id. The claim spends the placeholder, lists the source in `tx_ins_beamed_source_utxos`, and carries a v16 proof. The guest checks that the source is `proven_final`, that the placeholder exists and is empty or itself beamed, and that the hash matches, including the optional nonce. The contract applies the supply increase from that proof. For a vault app it also applies the cap.
+**Into Ethereum.** The placeholder is created first, native, zero inputs, one empty output, salt-anchored. Its `UtxoId` is known before submission. The source spell on Bitcoin or Cardano sets `beamed_outs[i]` to the beam hash of that id. The claim spends the placeholder, lists the source in `tx_ins_beamed_source_utxos`, and carries a v16 proof. The guest runs the existing checks: the source is `proven_final`, the placeholder exists and is empty or itself beamed, and the hash matches, including the optional nonce. Solidity sees a supply increase authorized by a proof, and for a vault app it also applies the cap. No Bitcoin header parser and no Cardano signature check live in the contract.
 
-Spending the placeholder as an ordinary input before the claim consumes the id. The source chain has already beamed to that hash, so the charms can no longer be claimed. The CLI warns on a native spend of an empty UTXO.
+Spending a placeholder as an ordinary input before the claim consumes the id. The source chain has already beamed to that hash. The charms are not claimable anymore. The CLI warns on a native spend of an empty UTXO.
 
-**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. When token sums still balance, the spell is native. Another app can still make the same spell require a proof. A beamed output has no owner and creates no UTXO. `beamSourceAt[ethTxId]` stores `block.number`. After the execution block reaches the `finalized` tag, about two epochs later, `scrolls_ethereum` attests the id. The destination spell's prev tx is `EthereumTx::WithFinalityProof`. The guest checks that signature in `proven_final`, then runs the same beam checks it runs for Bitcoin and Cardano.
+**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. Token sums still balance, so the spell is native unless some other app makes it non-simple. Beamed outputs have no owner and create no UTXO. `beamSourceAt[ethTxId] = block.number`. After the execution block is beacon-finalized (the `finalized` tag, about two epochs), `scrolls_ethereum` attests it. The destination spell's prev tx is `EthereumTx::WithFinalityProof`. The guest checks that signature in `proven_final` and then runs the same beam checks it runs for Bitcoin and Cardano.
 
-The canister is a new member of `scrolls/`. Deploy it, then blackhole it, as with the other Scrolls canisters.
+The canister is a new member of `scrolls/`, deployed and then blackholed, like its siblings.
 
 ```candid
 service : {
@@ -397,25 +399,25 @@ service : {
 }
 ```
 
-`certify_final` calls `Charms.beamSourceAt(ethTxId)` through the ICP EVM RPC canister at block tag `finalized`. At least three providers must return the same answer. When the stored block number is non-zero, the canister signs with `sign_with_schnorr` (Ed25519) under the derivation path `["scrolls", "ethereum", "finality"]`.
+`certify_final` calls `Charms.beamSourceAt(ethTxId)` through the ICP EVM RPC canister at block tag `finalized`, requiring the same answer from at least three providers. If the stored block number is non-zero, it signs with `sign_with_schnorr` (Ed25519) under the derivation path `["scrolls", "ethereum", "finality"]`.
 
-The message is `SHA-256("charms/ethereum/finality/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ ethTxId)`. The signature is 64 bytes. The spell bytes stay in the `EthereumTx` record. `ethTxId` is the hash of those bytes. The signature means the canonical contract accepted that id after finality.
+The message is `SHA-256("charms/ethereum/finality/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ ethTxId)`. The signature is 64 bytes. The guest does not receive the spell from the canister. It already has the spell bytes in the `EthereumTx` record, and `ethTxId` is the hash of those bytes. The signature says the canonical contract accepted that id after finality.
 
-`EthereumTx::proven_final` is true when `chain_id` is 1, `charms` equals the deployed mainnet address, and the signature verifies under `ETHEREUM_FINALITY_VKEY`. A testnet guest build uses its own constants. A mainnet proof uses the mainnet constants.
+`EthereumTx::proven_final` is true only when `chain_id` is 1, `charms` equals the deployed mainnet address, and the signature verifies under `ETHEREUM_FINALITY_VKEY`. A testnet guest build uses different constants and is not a mainnet proof.
 
-Inbound finality stays in the guest, which already implements `proven_final`. Outbound finality uses the Scrolls signature so a beacon consensus change does not rebuild the spell-checker. `proven_final` trusts `ETHEREUM_FINALITY_VKEY` and the three-provider check inside `certify_final`.
+This split is deliberate. Inbound finality stays in the guest, which already knows how to check it. Outbound finality follows Cardano, because a beacon light client inside the spell-checker would have to be rebuilt on sync-committee and generalized-index changes. The trust added is the same class as Cardano's `FINALITY_VKEY`: the canister's key, plus the EVM RPC providers it requires to agree.
 
 ## Proofs
 
-On the proved path, `Charms` calls `ISP1Verifier.verifyProof(programVKey, publicValues, proof)`.
+Verification runs inside `Charms`, on the proved path only, via `ISP1Verifier.verifyProof(programVKey, publicValues, proof)`.
 
-- `programVKey` is the registry key for `spell.version`. For v16 that is the proof-wrapper verifying key. `charms spell vk` prints those 32 bytes. The same bytes are the first public value.
+- `programVKey` is the registry's key for `spell.version`. For v16 that is the proof-wrapper verifying key, the same 32 bytes `charms spell vk` prints and the same bytes committed as the first public value.
 - `publicValues` are the bytes from [The committed spell](#the-committed-spell).
-- `proof` is the `Proof` byte string the prover returns. Pass those bytes to the verifier. The layout is the one `verify_gnark_v6` accepts. A 4-byte SHA-256 prefix of the Groth16 verifying key, then exit code, vk root, and proof nonce as 32-byte words, then the gnark proof. v15 checks that prefix against `groth16_vk`, requires exit code 0, and requires vk root `SP1_V6_2_VK_ROOT` (`002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352`).
+- `proof` is the `Proof` byte string the prover already returns. The contract does not re-layout it. The verifier is the one `verify_gnark_v6` corresponds to: 4-byte SHA-256 prefix of the Groth16 verifying key, then exit code, vk root, and proof nonce as 32-byte words, then the gnark proof. v15 checks that prefix against `groth16_vk`, requires exit code 0, and requires vk root `SP1_V6_2_VK_ROOT` (`002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352`).
 
-Phase 0 runs this against a real v15 mainnet proof on a fork, using the stock verifier. If that verifier accepts the proof, v16 uses the same verifier contract. If it rejects the proof, the registry stores the verifier address for that version.
+Phase 0 proves this against a real v15 mainnet proof on a fork, using the stock verifier. If that verifier accepts Charms proofs unchanged, v16 uses the same verifier contract. If it does not, the verifier address is a registry field, not a fork of `verify_gnark_v6` written in Solidity.
 
-When the guest later reads an Ethereum prev tx, `extract_and_verify_spell` decodes the committed spell. It checks the id hash. For a beam source it checks the finality signature. Acceptance by the pinned `Charms` address is the earlier check. The guest does not verify that Groth16 proof again.
+The guest, when it later sees an Ethereum prev tx, does not verify the Groth16 proof again. Acceptance by the pinned `Charms` address is the check, authenticated by the id hash and, for a beam source, by the finality signature. Cardano already trusts on-ledger minting that the guest does not re-derive from a script. Re-verifying every ancestor proof inside the guest would be a second implementation of the same statement.
 
 ## Rust, prover, CLI
 
@@ -428,7 +430,7 @@ pub enum Tx {
 }
 ```
 
-`TryFrom<&str>` for raw hex tries an Ethereum envelope first, then Bitcoin, then Cardano. The envelope is CBOR of `EthereumTx` prefixed with the four bytes `CHET` (`0x43 0x48 0x45 0x54`). If the Ethereum parse fails, return the error. Bitcoin's empty virtual spell is for a transaction that has no `OP_RETURN`, and an Ethereum envelope must not take that path. JSON prev txs use the existing externally tagged form, `{"ethereum": ...}`.
+`TryFrom<&str>` for raw hex tries an Ethereum envelope first, and only then Bitcoin and Cardano. The envelope is CBOR of `EthereumTx` prefixed with the four bytes `CHET` (`0x43 0x48 0x45 0x54`). A failed Ethereum parse must not fall through into the empty virtual spell Bitcoin builds for a transaction that simply has no OP_RETURN. JSON prev txs use the existing externally tagged form, `{"ethereum": ...}`.
 
 ```rust
 pub enum EthereumTx {
@@ -448,112 +450,112 @@ pub struct EthTransact {
 `EnchantedTx` for `EthereumTx`:
 
 - `tx_id` reverses `eth_tx_id()` into `TxId`.
-- `extract_and_verify_spell` decodes `spell`, requires `ins` to be `Some` and `coins.len() == outs.len()`, and requires `mock` to match the caller. It stops there.
-- `virtual_spell` is that decode. An Ethereum record with no spell is an error.
+- `extract_and_verify_spell` decodes `spell`, requires `ins` to be `Some` and `coins.len() == outs.len()`, and requires `mock` to match. It does not run the Groth16 verifier.
+- `virtual_spell` is that decode. An Ethereum record with no spell is an error, never an empty spell.
 - `proven_final` is the Ed25519 check above. `Simple` is not final.
 - `all_coin_outs` returns the committed `coins`.
 - `spell_ins` returns the committed `ins`.
 
-Add one guard in `is_correct`, next to `beaming_txs_have_finality_proofs`. Every `Tx::Ethereum` prev tx is `proven_final`, or the spell being proved is itself hosted on Ethereum and this prev tx created one of its inputs or refs. Hosted on Ethereum means the creator of `ins[0]` is `Tx::Ethereum`. In the same rebuild, a spell with no app binaries has null public inputs for every app. The simple-transfer branch otherwise ignores those inputs.
+One new guard in `is_correct`, beside `beaming_txs_have_finality_proofs`. Every `Tx::Ethereum` prev tx must be `proven_final`, or the spell being proved must itself be hosted on Ethereum (the creator of `ins[0]` is `Tx::Ethereum`) and this prev tx must have created one of its inputs or refs. The guest also rejects a no-binary spell whose public inputs are not all null. That last check is a one-line change in the same rebuild; it closes a hole where the simple-transfer branch ignores public inputs.
 
-For an Ethereum host, `hosting_chain_is_bitcoin` is false. Tag `s` is an ordinary non-token app, as on Cardano. A scroll output stores the owner address in `dest`.
+`hosting_chain_is_bitcoin` is false for an Ethereum host. Tag `s` is an ordinary non-token app here, as it is on Cardano. Scroll outputs are not given Bitcoin scriptPubKeys.
 
-`ProveRequest` keeps its current fields. `chain = "ethereum"` sets their meaning:
+`ProveRequest` does not gain fields. `chain = "ethereum"` changes the meaning of the ones that exist:
 
 | Field | Ethereum |
 |---|---|
 | `spell` | Committed form, including `ins` and `coins`. |
 | `prev_txs` | An `EthereumTx` for every input and ref creator, plus beam sources with their finality witnesses. |
-| `tx_ins_beamed_source_utxos`, binaries, signatures, private inputs | Same as Bitcoin and Cardano. |
-| `change_address` | Empty. Charm change is an output of the spell. |
-| `fee_rate` | Ignored. `spell prove --chain ethereum` accepts 0. The existing `fee_rate >= 1` check stays on Bitcoin. The wallet prices gas. |
+| `tx_ins_beamed_source_utxos`, binaries, signatures, private inputs | Unchanged. |
+| `change_address` | Empty. Charm change is an output. There is no fee output. |
+| `fee_rate` | Ignored. The wallet prices gas. |
 | `collateral_utxo` | Absent. |
 
-The response is `vec![Tx::Ethereum(Simple(...))]`. The proof field is filled when the spell requires a proof. The CLI chooses the native path. If every app is `t` or `n`, sums and NFT sets match, public inputs are null, `--beamed-from` is absent, and pins are unchanged, the CLI builds the record locally and leaves `proof` empty. Otherwise it calls `POST /spells/prove`.
+The response is `vec![Tx::Ethereum(Simple(...))]` with the proof filled in when the spell is not native. The CLI, not the server, decides the native path: if the spell is `t`/`n` only, sums and NFT sets match, public inputs are null, there is no `--beamed-from`, and pins are unchanged, it builds the record locally and leaves `proof` empty. Otherwise it calls `POST /spells/prove` as it does today.
 
-Quote the prover's cycle fee in wei to `fee_addresses[ethereum][network]`. Pay it as a separate transfer when the operator wants it. `transact` does not read that fee. Bitcoin leaves the same fee outside the spell.
+The prover's cycle fee is quoted and is not enforced inside `transact`. Bitcoin does not commit that fee in the spell either. The quote is denominated in wei at `fee_addresses[ethereum][network]` and paid as a separate transfer when the operator wants it.
 
 CLI:
 
 | Command | Behavior |
 |---|---|
-| `spell prove --chain ethereum` | Prints JSON `{tx, tx_id, utxo_ids, call: {to, data, value}}`. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required on Bitcoin and Cardano. |
-| `spell check --chain ethereum` | Runs `is_correct` once the guest accepts Ethereum prev txs. Before that rebuild, it runs the native predicate and rejects a spell that needs a proof. |
+| `spell prove --chain ethereum` | Prints JSON `{tx, tx_id, utxo_ids, call: {to, data, value}}`. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
+| `spell check --chain ethereum` | Runs `is_correct` once the guest knows Ethereum prev txs. Before that, it runs the native predicate and refuses a spell that would need a proof. |
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transacted` log. |
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transacted`. `--finality` calls the canister. |
-| `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55. Stores the lowercase bytes. |
+| `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55, stores the lowercase bytes. |
 | `util eth-token <APP>` | CREATE2 token address. |
 | `util eth-vault --token <addr\|eth> --decimals <d>` | Prints the vault `App`. |
 
-`app_contract` sees `coin_outs[i].amount == 0` and a 20-byte `dest`. An app that moves ETH moves the vault charm. Leave `charms-sdk` and the app runner as they are. In the v16 bump, `charms-lib`'s `extractAndVerifySpell` decodes the Ethereum envelope. A decoded spell is authenticated by its bytes. Acceptance is `utxo()` or `beamSourceAt` on the contract.
+App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and a 20-byte `dest`. An app that wants to move ETH moves the vault charm. `charms-sdk` and the app runner do not change. `charms-lib`'s `extractAndVerifySpell` learns the Ethereum envelope in the v16 bump, and the binding documents that a decoded spell is content-authenticated: acceptance is `utxo()` or `beamSourceAt` on the contract.
 
 ## Protocol version
 
 | Phase | Spell version | Guest | Keys |
 |---|---|---|---|
-| Ethereum-local | Records are version 15. The registry entry has no verifier. The contract rejects proofs and `beamed_outs`. | The current guest. `Tx` has no Ethereum arm. Other chains do not read these records. | v15 verifying keys stay. |
-| Beaming and proved spells | Version 16. `CURRENT_VERSION = 16`. | Rebuild. `SpellProverInput.prev_txs` deserializes `Tx`. A new arm is a new spell-checker ELF, a new `SPELL_CHECKER_VK` in `charms-proof-wrapper`, and a new wrapper verifying key. | Publish `spell_vk` for v16 from `charms spell vk` on the reproducible build. Register that `programVKey`. |
+| Ethereum-local | Records are version 15. The registry entry has no verifier. Proofs and `beamed_outs` are rejected. | No rebuild. `Tx` has no Ethereum arm, and nothing outside Ethereum reads these records. | v15 verifying keys stay. |
+| Beaming and proved spells | Version 16. `CURRENT_VERSION = 16`. | Rebuild. `SpellProverInput.prev_txs` deserializes `Tx`. A new arm is a new spell-checker ELF, a new `SPELL_CHECKER_VK` in `charms-proof-wrapper`, and a new wrapper verifying key. | Publish `spell_vk` for v16 from `charms spell vk` on the reproducible build. Register that exact `programVKey`. |
 
-v15's `groth16_vk.bin` aliases v14's, because that bump left the wrapper binary in place. v16 rebuilds the wrapper. If the new `groth16_vk.bin` matches v15 byte for byte, alias it and keep the stock verifier. If the bytes differ, publish them. The proof's 4-byte prefix follows those bytes. The wrapper verifying key changes in either case, because the wrapper hardcodes the spell-checker key. `to_serialized_pv` stays on the v15 arm, CBOR of `([u8; 32], NormalizedSpell)`. Bitcoin and Cardano transaction layouts stay as they are.
+The Groth16 circuit key is not assumed to change and is not assumed to stay. v15's `groth16_vk.bin` aliases v14's because that bump did not rebuild the wrapper. v16 rebuilds the wrapper. If the new `groth16_vk.bin` is byte-identical, alias it and keep the stock verifier. If it is not, publish the new bytes; the proof's 4-byte prefix follows them. Either way the value that changes for certain is the wrapper's `programVKey`, because the wrapper hardcodes the spell-checker key. `to_serialized_pv` stays on the v15 arm (`([u8; 32], NormalizedSpell)`). Bitcoin and Cardano transaction layouts do not change.
 
-The version registry is append-only. A proposed entry becomes active after 14 days. The entry sets the verifier address and `programVKey` for a new version. `_apply` stays in the immutable bytecode. Retiring a version is one-way and takes effect immediately, so a bad key can be turned off. Name the admin multisig at deploy time. Token addresses stay put across a version bump because CREATE2 uses the same `Charms` address. A new `Charms` deployment is a new contract. It changes every token address and the `ETHEREUM_CHARMS` constant in the next guest.
+The version registry is append-only and is the one piece of governance in an otherwise immutable contract. A proposed entry becomes active after 14 days. It can set the verifier address and `programVKey` for a new version. It cannot change `_apply`. Retiring a version is one-way and immediate, so a bad key can be switched off. The admin identity is a multisig named at deploy time. Token addresses survive a version bump because they are CREATE2 from the same `Charms` address. Replacing `Charms` itself would change every token address and the `ETHEREUM_CHARMS` constant inside the next guest; that is a new deployment, not an upgrade.
 
-Also bump Cardano's protocol-version NFT, `scrolls_bitcoin` delegation, `scrolls_cardano`, and `charms-lib`'s `SPELL_VK`. `CHARMS_PROVE_API_URL` becomes `https://v16.charms.dev/spells/prove`.
+The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoin` delegation, `scrolls_cardano`, and `charms-lib`'s `SPELL_VK`. `CHARMS_PROVE_API_URL` becomes `https://v16.charms.dev/spells/prove`.
 
 ## Edge cases
 
-- **ETH and WETH.** ETH is the vault at `address(0)`. WETH is a separate vault. Each vault has its own supply.
-- **Allowances.** Charm allowances live on `CharmToken`. `approve` on the underlying token is for `wrap`, and the spender is `Charms`. `tokenTransfer` checks that `msg.sender` is the token at the CREATE2 address it recomputes for that `App`.
-- **Several charms on one UTXO.** One `head` record, one list entry per `t` app, and one balance contribution per `t` app. A facade spend copies the other `t` or `n` charms onto the change output. A custom-tag bundle uses `transact`.
-- **Empty UTXOs.** These are the beam targets. Index them in `emptyUtxos` and `head`. Creating one leaves supply unchanged.
-- **u64.** One output amount, and the sum of one app's inputs in a spell, fit in `u64`. The guest adds them as `u64`. Stored balances are `uint256`, so many UTXOs can sum past `u64`. The facade then uses more than one call, each under the cap.
-- **Fee-on-transfer, rebasing, and blocklists.** A fee-on-transfer token reverts in `wrap`. A rebasing token is out of scope. A token that blocklists `Charms` freezes that vault. `decimals()` is read once, when the vault is created.
-- **Mixed pins.** After a versioned app changes version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select disagree on the pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` requires.
-- **Reorgs.** A native transfer follows the Ethereum reorg, as any other contract write does. A beam waits for `finalized`.
-- **History.** `Transacted` carries the spell CBOR. `wrap`, `unwrap`, and the facade build that CBOR inside the contract, and the log is the copy a later proof reads. A later proof that spends a bundle needs the log. A native spend of a plain UTXO reads the amount from `head`. Indexers archive the logs. Under EIP-4444 that archive is an operator's copy of the logs.
+- **ETH versus a wrapped ERC-20.** ETH is the vault at `address(0)`. WETH is a different vault. They do not share supply.
+- **Allowances.** Charm allowances live on `CharmToken`. The underlying token's `approve` is only for `wrap`, and it names `Charms`, not the facade. `tokenTransfer` checks `msg.sender` is the token whose CREATE2 address it just recomputed.
+- **Several charms on one UTXO.** One `head` record, one list entry per `t` app, one balance contribution per `t` app. Spending via the facade preserves the other `t`/`n` charms on the change output. Spending a custom-tag bundle requires `transact`.
+- **Empty UTXOs.** Allowed, required as beam targets, indexed only in `emptyUtxos` and `head`. They do not affect supply.
+- **u64.** A single output amount and the sum of a spell's inputs of one app must fit in `u64`, because the guest adds them as `u64`. Balances in storage are `uint256` so many UTXOs can sum past `u64`; the facade then needs more than one call, each under the cap.
+- **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. `decimals()` is read once, at vault creation.
+- **Mixed pins.** After a versioned app bumps its version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select do not share a pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` already requires.
+- **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits for `finalized`.
+- **History.** `Transacted` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
 
 ## Build order
 
-**Phase 0. Codec and verifier.** Add `SpellCodec` and `CborWellFormed`. Generate golden vectors with `util::write` over generated spells. On a fork, pass a real v15 Bitcoin proof to the deployed SP1 verifier with public values the codec built. Phase 0 is done when the vectors match and that proof verifies. The protocol version stays 15.
+**Phase 0. Codec and verifier, no protocol change.** `SpellCodec` and `CborWellFormed`, golden vectors from `util::write` over generated spells, and a fork test that feeds a real v15 Bitcoin proof to the deployed SP1 verifier with public values the codec built. This is the gate for the id preimage and the proof statement. Done when the vectors match and that proof verifies.
 
-**Phase 1. Ethereum-local, on v15.** Build `Charms` and `CharmToken`. That is native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and a registry whose only entry is native v15. Add host-side Rust for the record type and `tx_id`, in a module the spell-checker binary does not link. Add CLI support for native spells, `util dest`, `util eth-token`, and `util eth-vault`. Add invariant tests for supply, balance, and `locked`. Audit, then deploy with CREATE2 so `ETHEREUM_CHARMS` is fixed.
+**Phase 1. Ethereum-local, still v15.** `Charms` and `CharmToken`: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and a registry whose only entry is native v15. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables. Audit, then a deterministic deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
 
-**Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build. The guest hardcodes `ETHEREUM_FINALITY_VKEY`. Add `Tx::Ethereum` and the `is_correct` guards. Rebuild the spell-checker and the wrapper. Publish `programVKey`. Add the prover's Ethereum arm. Bump the other chains as in [Protocol version](#protocol-version). Propose the v16 registry entry and wait 14 days. On testnets, with a dev guest, run Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
+**Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build, because the guest hardcodes `ETHEREUM_FINALITY_VKEY`. Add `Tx::Ethereum` and the `is_correct` guards. Rebuild the spell-checker and the wrapper. Publish `programVKey`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. Propose the v16 registry entry and wait 14 days. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
 
-**Phase 3.** Read CHIP-0420 metadata onto the facade once, from the reference NFT `n/<identity>/<vk>`, when that NFT is live on Ethereum. Add a TypeScript helper for EIP-712 and calldata. Add an ERC-721 facade for tag `n`. An L2 uses its own `chain_id` and its own guest constants.
+**Phase 3. Can wait.** CHIP-0420 metadata on the facade, read once from the reference NFT `n/<identity>/<vk>` if that NFT is live on Ethereum. A TypeScript helper for EIP-712 and calldata. An ERC-721 facade for tag `n`. Any L2 deployment, which is a different `chain_id` and a different guest constant, not a flag on this contract.
 
-## Rejected shapes
+## Alternatives
 
-| Shape | Constraint that rejected it |
+| Shape | Why it lost |
 |---|---|
-| Ethereum transaction hash as `TxId` | The EVM does not expose that hash during execution. One Ethereum transaction can contain several Charms transactions. |
-| A contract nonce as `TxId` | The id would depend on earlier transactions in the block, so a published placeholder could miss. |
-| Verify proofs in the guest, and have a canister attest them on Ethereum | `Charms` calls the Groth16 verifier. The canister would be an extra signer. |
-| A Solidity port of `verify_gnark_v6` | Phase 0 uses the stock SP1 verifier. A second implementation can disagree on the same bytes. |
-| A new public-value encoding for Ethereum | `to_serialized_pv` stays the v15 encoding, so one spell verifies on every chain. |
-| Parse caller CBOR in the contract | `SpellCodec` encodes from typed calldata. A parsed blob can swallow the next field. |
-| Vault policy as app wasm | The wasm cannot observe the ERC-20 transfer. A wasm that allows a mint allows it on Bitcoin. A beam-in that the guest treats as a simple transfer would skip that wasm. |
-| A Groth16 proof on every ERC-20 `transfer` | The contract checks a simple transfer in `_apply`. |
-| `balanceOf` over single-token UTXOs only, with bundles attributed to `address(Charms)` | `balanceOf` is the total on that address's UTXOs. Custom-tag bundles stay in the balance and out of `transfer`'s selection. |
-| A beacon light client in the guest | A beacon consensus change would rebuild the spell-checker. Outbound finality uses the Scrolls signature, as Cardano does. |
-| Bitcoin or Cardano header checks in Solidity | `proven_final` inside the v16 proof is that check. |
-| A new `Charms` deployment for each protocol version | CREATE2 token addresses and the vault identity depend on the contract address. |
-| An upgradeable proxy | The registry sets the next `programVKey`. `_apply` stays in the deployed bytecode. |
-| Wei in `NativeOutput.amount` | A `u64` overflows near 18 ETH. The vault charm is the ETH balance that beams. |
-| A Groth16 proof stored beside each Ethereum spell, rechecked for every ancestor | The id hashes the committed spell. The contract already checked that spell. The ancestor proof is outside the id. |
+| Ethereum transaction hash as `TxId` | The EVM cannot read the hash of the executing transaction. One Ethereum transaction can contain several Charms transactions. |
+| A contract nonce as `TxId` | The id is not known until mined, it changes across a reorg, and an unrelated call burns a placeholder that a source chain has already beamed to. |
+| Verify proofs only inside the guest, and let a canister attest them on Ethereum | Ethereum can verify the Groth16 proof. A canister on this path would be a trusted party Cardano needs only because Plutus cannot do this cheaply. |
+| A Solidity port of `verify_gnark_v6` | A second verifier. The stock SP1 verifier is the one the phase 0 fork test has to accept. |
+| A new public-value encoding for Ethereum | Two commitment formats. The same spell would verify differently per chain. `to_serialized_pv` stays as it is. |
+| Parse untrusted CBOR in the contract | The contract encodes from typed calldata. Parsing is a larger, leakier surface, and the proof already pins the bytes. |
+| Vault policy as an app wasm | Every wrap needs a prover. The wasm cannot see the ERC-20 transfer. A wasm that permits a mint permits it on Bitcoin. A beam-in that the guest treats as a simple transfer would skip that wasm and still look like an unlock if Solidity obeyed the public input. |
+| Prove every ERC-20 transfer | Matches Bitcoin, and makes `transfer` cost a Groth16 verification plus a prover round trip. The contract can check a simple transfer itself. That is the point of doing this on Ethereum. |
+| `balanceOf` counts only single-token UTXOs, and attributes bundles to `address(Charms)` | `balanceOf` would not be the total on that address's UTXOs. The requirement is the total. Custom-tag bundles stay in the balance and out of automatic selection instead. |
+| Beacon light client inside the guest | Finality would be trustless, and every beacon consensus change would be a guest rebuild. Cardano already chose a Scrolls signature for the same reason. |
+| Bitcoin and Cardano light clients in Solidity | A second copy of `proven_final`. The proof is already that check. |
+| A new `Charms` deployment per protocol version | CREATE2 token addresses and the vault identity are functions of the contract address. A redeploy splits liquidity and changes `ETHEREUM_CHARMS` in the guest. |
+| An upgradeable proxy | Governance would cover every rule, not only which verifying key is accepted. |
+| Wei on `NativeOutput.amount` | `u64` overflows near 18 ETH, native coins are not beamable, and ETH would have two representations. The vault charm is the one representation. |
+| Store the Groth16 proof beside the spell and require the guest to verify it for every Ethereum ancestor | The contract has already verified it, or the spell was native and the contract checked the sums. The ancestor proof is not part of the id. Carrying it as a sidecar means an id that does not commit to the statement the next chain trusts. |
 
 ## Risks
 
-A forged beam can unwrap real collateral. A private Bitcoin fork that passes `FINALITY_TARGET_BITS`, or a stolen `scrolls_ethereum` or Cardano finality key, can beam vault units onto Ethereum and unwrap them. The cap `supply * 10^scale <= locked` limits the loss to vault units currently outside Ethereum. v16 leaves `FINALITY_TARGET_BITS` at its current value. Raising it is a guest constant in that same rebuild, and it slows every Bitcoin beam.
+The vault makes a forged beam worth real tokens. A private Bitcoin fork deep enough to pass `FINALITY_TARGET_BITS`, or a stolen `scrolls_ethereum` or Cardano finality key, can beam vault units onto Ethereum and unwrap them. The cap `supply * 10^scale <= locked` limits the loss to vault units that are currently outside Ethereum. This design does not raise `FINALITY_TARGET_BITS`. Raising it would be a guest constant in the same v16 rebuild, and it would slow every Bitcoin beam, not only vault beams.
 
-If `SpellCodec` disagrees with `util::write`, proofs fail and ids disagree. That is a liveness failure. If the encoding is not injective, the proof and the accounting can describe different spells. That is a safety failure. Phase 0 covers both, including a blob that tries to swallow the next amount.
+A `SpellCodec` that diverges from `util::write` is a liveness failure: proofs do not verify and ids do not match. A codec that is not injective is a safety failure. The phase 0 vectors, including a blob that tries to swallow the next amount, are the mitigation.
 
-If the EVM RPC providers disagree, or the canister is out of cycles, `certify_final` fails and the beam waits. Call it again after the inputs are spent. The call does not move the UTXO back.
+Outbound beams stall if the EVM RPC providers disagree or the canister is out of cycles. The attestation can be retried. The UTXO is already spent; the funds are not returned and not lost.
 
-A registry entry can make the proved path accept a different `programVKey` after 14 days. Native rules and vault rules stay in the contract. During those 14 days, holders can unwrap or beam out. The registered `programVKey` equals the `charms spell vk` output of the reproducible build.
+A malicious registry entry can make the proved path accept anything, after 14 days. The native path and the vault rules are not behind the registry. Holders can unwrap or beam out during the delay. The registered `programVKey` has to equal the reproducible `charms spell vk` output.
 
-## Open choices
+## What is not decided here
 
-Name the registry admin addresses at deploy time.
+The registry admin's addresses are chosen at deploy time. The design does not name them.
 
-Leave `FINALITY_TARGET_BITS` at its current value, and rely on the vault cap. Raise the Bitcoin work target before the v16 guest is built only if that cap is not enough.
+Whether v16 should raise Bitcoin's finality work target is a separate security parameter. The default is to leave `FINALITY_TARGET_BITS` alone and rely on the vault cap. Confirm that before the v16 guest is built if the cap is not enough.
