@@ -1,5 +1,5 @@
 ---
-CHIP: 421
+CHIP: "0020"
 Title: Charms on Ethereum
 Status: Draft
 Authors:
@@ -7,7 +7,7 @@ Authors:
 Created: 2026-10-04
 ---
 
-# CHIP-421. Charms on Ethereum
+# CHIP-0020. Charms on Ethereum
 
 Ethereum becomes a third host for the existing spell, UTXO, and beaming protocol. It does not get a second asset protocol.
 
