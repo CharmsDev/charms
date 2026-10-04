@@ -35,7 +35,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 ### A contract treats a charm as an ERC-20
 
 ```solidity
-ICharms.App memory app = ICharms.App({tag: 0x74, identity: ID, vk: VK});
+ICharmsTypes.App memory app = ICharmsTypes.App({tag: 0x74, identity: ID, vk: VK});
 IERC20 token = IERC20(charms.tokenAddress(app)); // CREATE2, known before deploy
 token.transferFrom(msg.sender, address(this), amount);
 token.transfer(msg.sender, amount);
@@ -100,80 +100,184 @@ Deploy a proxy, an implementation, and a timelock. Token clones and the external
 
 `CharmToken.transfer` and `transferFrom` are the ERC-20 surface Ivan asked for. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`.
 
+`Charms` implements `ICharms` and `IUpgradeable`. `ICharms` extends `ICharmsLedger`, so the implementation exposes the ledger methods too. `CharmToken` implements `ICharmToken` and `ICharmTokenHooks`. The structs live once, on `ICharmsTypes`, and the other interfaces use them.
+
 ```solidity
-interface ICharms {
-    /// Unicode scalar. 't' = 0x74, 'n' = 0x6e, 's' = 0x73.
+/// @notice Shared structs. No functions. The other interfaces use these so `App` is defined once.
+/// @dev Wallets, the token clone, and the CLI all pass `App` through. 't' = 0x74, 'n' = 0x6e, 's' = 0x73.
+interface ICharmsTypes {
+    /// @notice Unicode scalar tag plus the 32-byte identity and vk. Same triple as `charms_data::App`.
     struct App { uint32 tag; bytes32 identity; bytes32 vk; }
 
+    /// @notice One `NormalizedSpell.versioned_apps` entry.
     struct Pin { bytes32 vk; uint32 version; bytes32 wasmHash; }
 
-    /// tag 't': amount > 0 and data empty. The contract writes the CBOR uint.
-    /// any other tag: amount == 0 and data is exactly one CBOR item.
+    /// @notice One charm on an input or output. `app` indexes `Spell.apps`.
+    /// @dev Tag `t`: `amount > 0` and `data` empty. The contract writes the CBOR uint.
+    ///      Any other tag: `amount == 0` and `data` is exactly one CBOR item.
     struct Charm { uint32 app; uint64 amount; bytes data; }
 
-    /// ethTxId in keccak byte order, plus the output index.
+    /// @notice An Ethereum UTXO. `txId` is `ethTxId` in keccak byte order.
     struct UtxoRef { bytes32 txId; uint32 index; }
 
+    /// @notice A spent UTXO plus the opening of what the contract stored for it.
     struct Input { UtxoRef utxo; Charm[] charms; Pin[] pins; }
 
-    /// owner == address(0) iff this output's index is in beamedOuts.
+    /// @notice A created output. `owner == address(0)` iff its index is in `beamedOuts`.
     struct Output { address owner; Charm[] charms; }
 
     struct BeamedOut { uint32 index; bytes32 destHash; }
 
-    /// Typed mirror of NormalizedSpell. The contract fills tx.ins and tx.coins.
+    /// @notice Typed mirror of `NormalizedSpell`. The contract fills `tx.ins` and `tx.coins`.
     struct Spell {
         uint32 version;
-        App[] apps;            // app_public_inputs keys, strictly increasing
-        bytes[] publicInputs; // one CBOR data item each; hex"f6" is null
-        Pin[] versionedApps;   // strictly increasing by vk
+        App[] apps;             // app_public_inputs keys, strictly increasing
+        bytes[] publicInputs;  // one CBOR data item each; hex"f6" is null
+        Pin[] versionedApps;    // strictly increasing by vk
         Input[] ins;
         UtxoRef[] refs;
         Output[] outs;
         BeamedOut[] beamedOuts;
         uint32[] scrolls;
     }
+}
 
+/// @notice Ledger calls from a charm ERC-20 clone. The clone stores this address (the proxy) and nothing wider.
+/// @dev `CharmToken.transfer` and `transferFrom` are the only callers of `tokenTransfer`.
+///      `balanceOf` and `totalSupply` on the clone read the two views. DeFi calls the clone, not this interface.
+interface ICharmsLedger {
+    /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and creating change.
+    /// @dev Only the CREATE2 clone for `app` may call this. The clone has already checked `msg.sender` and the allowance.
+    function tokenTransfer(ICharmsTypes.App calldata app, address from, address to, uint256 amount) external;
+
+    /// @notice Ethereum-resident supply of one charm. The clone's `totalSupply` returns this.
+    function totalSupply(bytes32 appKey) external view returns (uint256);
+
+    /// @notice Sum of this charm on `owner`'s unspent, non-beamed UTXOs. The clone's `balanceOf` returns this.
+    function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
+}
+
+/// @notice Spell, vault, and registry API. Wallets, the CLI, and contracts that build spells call this on the proxy.
+/// @dev Extends the ledger so one implementation serves both. Token clones should be typed as `ICharmsLedger`, not this.
+interface ICharms is ICharmsLedger {
+    /// @notice A Charms transaction was applied. Indexers and `tx fetch` read `txId` and `spell` from this log.
+    /// @dev `spell` is the committed CBOR. `anchor` is zero when the spell spent inputs.
     event Transacted(bytes32 indexed txId, bytes32 anchor, bytes spell);
 
-    /// proof is empty iff the spell is a simple transfer the contract can check.
-    /// salt is used iff ins is empty. Otherwise salt must be 0.
-    /// signatures: one per input owner other than msg.sender, in order of first
-    /// appearance, over EIP-712 Spend(bytes32 txId). ECDSA or ERC-1271 staticcall.
+    /// @notice Spend `spell.ins` and create `spell.outs`. Returns the new `ethTxId`.
+    /// @dev Wallets and the CLI call this for any spell that is not an ERC-20 `transfer` or a vault lock or unlock.
+    ///      `proof` is empty when the contract can check the spell itself, and required otherwise.
+    ///      `salt` is used when `ins` is empty (a placeholder). Otherwise `salt` is 0.
+    ///      `signatures` has one entry per input owner other than `msg.sender`, in order of first appearance,
+    ///      over EIP-712 `Spend(bytes32 txId)`. ECDSA or ERC-1271 `staticcall`.
     function transact(
-        Spell calldata spell,
+        ICharmsTypes.Spell calldata spell,
         bytes32 salt,
         bytes calldata proof,
         bytes[] calldata signatures
     ) external returns (bytes32 txId);
 
-    /// Lock `amount * 10**scale` of token (address(0) is ETH) and mint the vault charm.
+    /// @notice Lock the underlying ERC-20, or ETH when `token` is `address(0)`, and mint that vault charm to `owner`.
+    /// @dev The holder calls this after `approve` on the underlying token. `amount` is in vault units. `salt` names this zero-input creation.
     function wrap(address token, uint64 amount, address owner, bytes32 salt)
         external payable returns (bytes32 txId);
 
-    /// Burn `amount` of msg.sender's vault charm and send the underlying to `to`.
+    /// @notice Burn `amount` of `msg.sender`'s vault charm and send the underlying asset to `to`.
+    /// @dev The holder calls this. The underlying token is the one recorded for that vault.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
-    /// Only the CREATE2 token for `app` may call this.
-    function tokenTransfer(App calldata app, address from, address to, uint256 amount) external;
+    /// @notice CREATE2 address of the ERC-20 clone for `app`. Wallets use this to find the token. Valid before the clone is deployed.
+    function tokenAddress(ICharmsTypes.App calldata app) external view returns (address);
 
-    function txIdOf(Spell calldata spell, address caller, bytes32 salt) external view returns (bytes32);
-    function tokenAddress(App calldata app) external view returns (address);
-    function totalSupply(bytes32 appKey) external view returns (uint256);
-    function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
+    /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a spell. `transfer` does not.
     function utxosOf(bytes32 appKey, address owner, uint256 cursor, uint256 limit)
-        external view returns (UtxoRef[] memory page, uint256 nextCursor);
-    function vaultOf(address token) external view returns (App memory app, uint8 scale, uint256 locked);
+        external view returns (ICharmsTypes.UtxoRef[] memory page, uint256 nextCursor);
+
+    /// @notice Vault `App`, decimal `scale`, and locked underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
+    function vaultOf(address token) external view returns (ICharmsTypes.App memory app, uint8 scale, uint256 locked);
+
+    /// @notice Block number of a beam-out, or 0 if that id did not beam. `scrolls_ethereum` reads this at the `finalized` tag.
     function beamSourceAt(bytes32 txId) external view returns (uint256 blockNumber);
 
-    /// UUPS. Only the timelock, and only by a call that arrived through the proxy.
+    /// @notice Schedule a new spell `programVKey`. The timelock calls this. The entry becomes active after 14 days.
+    function proposeVersion(uint32 version, address verifier, bytes32 programVKey) external;
+
+    /// @notice Turn off a spell version immediately. The guardian calls this. It cannot be undone.
+    function retireVersion(uint32 version) external;
+
+    /// @notice Set the timelock, the guardian, and the native v15 registry entry. The proxy constructor calls this once.
+    function initialize(address timelock, address guardian) external;
+}
+
+/// @notice UUPS upgrade API (EIP-1822). The timelock is the only caller. Spell clients and token clones do not use this.
+/// @dev `Charms` implements this beside `ICharms`. The proxy itself has no upgrade function. It only `delegatecall`s.
+interface IUpgradeable {
+    /// @notice Replace the implementation stored in the proxy's ERC-1967 slot, then `delegatecall` `data` on the new one.
+    /// @dev The timelock calls this on the proxy after the 14-day delay. `msg.sender` must be the timelock and `address(this)` must be the proxy.
     function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
-    /// ERC-1967 implementation slot. The next implementation must return the same value.
+
+    /// @notice The ERC-1967 implementation slot. The timelock's upgrade check requires the new implementation to return the same value.
     function proxiableUUID() external view returns (bytes32);
 }
-```
 
-`ICharmToken` is IERC-20, IERC-20 metadata, and EIP-2612. It adds `charms()`, `app()`, and `emitTransfer(from, to, amount)`. Only `Charms` may call `emitTransfer`. Allowances live only here. The token decrements the allowance, then calls `tokenTransfer`. Infinite allowances are not decremented.
+/// @notice What `Charms` calls on a charm ERC-20 clone. The clone implements this. Holders do not.
+interface ICharmTokenHooks {
+    /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only caller.
+    /// @dev `_apply` nets each holder's balance change and calls this so wallets see the event on the token, not on the proxy.
+    function emitTransfer(address from, address to, uint256 amount) external;
+}
+
+/// @notice User-facing charm token. Wallets, routers, and DeFi call this. It is an EIP-1167 clone, one per `t` app.
+/// @dev Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live here.
+///      An infinite allowance is not decremented. The clone also implements `ICharmTokenHooks`.
+interface ICharmToken {
+    /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes `Transfer` by calling `emitTransfer`. Holders cause `Approval` by calling `approve` or `permit`.
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+    event Approval(address indexed owner, address indexed spender, uint256 amount);
+
+    /// @notice The Charms proxy this token reads and calls.
+    function charms() external view returns (ICharmsLedger);
+
+    /// @notice The `App` baked into this clone's immutable args.
+    function app() external view returns (ICharmsTypes.App memory);
+
+    /// @notice Ethereum-resident supply. Forwards to `ICharmsLedger.totalSupply`. Wallets and routers read this.
+    function totalSupply() external view returns (uint256);
+
+    /// @notice This charm's total on `owner`'s UTXOs. Forwards to `ICharmsLedger.balanceOf`. Wallets and routers read this.
+    function balanceOf(address owner) external view returns (uint256);
+
+    /// @notice Spend the caller's UTXOs and create one output for `to`. Calls `tokenTransfer`.
+    function transfer(address to, uint256 amount) external returns (bool);
+
+    /// @notice Remaining amount `spender` may move from `owner`. Stored on the clone. Routers read this.
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    /// @notice Let `spender` move up to `amount` of the caller's balance. The caller is the holder.
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    /// @notice `spender` moves `amount` from `from` to `to`. The clone decrements the allowance, then calls `tokenTransfer`.
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+    /// @notice Display name. Vault clones take it from the underlying token. Other clones use the CHIP-0420 defaults until metadata is published.
+    function name() external view returns (string memory);
+
+    /// @notice Ticker. Same source as `name`.
+    function symbol() external view returns (string memory);
+
+    /// @notice Decimal places for display. Vault clones use `min(underlying decimals, 8)`. Other clones use 0 until CHIP-0420 metadata is set.
+    function decimals() external view returns (uint8);
+
+    /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then calls `transferFrom`.
+    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+
+    /// @notice Next EIP-2612 nonce for `owner`. The signing wallet reads this.
+    function nonces(address owner) external view returns (uint256);
+
+    /// @notice EIP-712 domain separator for `permit`. The signing wallet reads this.
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+}
+```
 
 CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. The clone is deployed the first time that app gets a non-zero Ethereum-resident supply, and the caller of that transact pays for it. The CREATE2 deployer in that formula is the proxy, so an upgrade does not move token addresses.
 
@@ -243,7 +347,7 @@ Charms byte order, which Cardano already follows in `cardano_tx::tx_id`:
 | Display / `FromStr` | `hex(ethTxId):index`, because `Display` reverses `TxId.0` again. |
 | Beam hash | `SHA256(to_bytes() \|\| optional nonce as u64 little-endian)`. Unchanged. `beamed_outs[i]` is that hash. `BeamSource` is unchanged. |
 
-The id is known before the Ethereum transaction is signed. `txIdOf` computes it. Placeholder creation, EIP-712 spend signatures, and the source chain's `beamed_outs` all use that id.
+`Transacted.txId` is the id once the creating transaction is mined. The source chain puts the beam hash of that id into `beamed_outs`. Signers of a multi-party spell hash this same preimage locally and sign EIP-712 `Spend(txId)`. `transact` recomputes the id and checks those signatures against it.
 
 Uniqueness is an invariant of `_apply`, not a property of keccak. A zero-input transact consumes its anchor. Every other transact consumes its inputs. A placeholder id cannot be created twice, so a beam cannot be claimed twice.
 
