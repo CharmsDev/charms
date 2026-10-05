@@ -23,7 +23,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | UTXO id | Content-addressed. Not the Ethereum transaction hash and not a counter. `TxId.0` is the reverse of that id, matching `UtxoId::to_bytes` and Cardano's `tx_id`. |
 | Simple transfer | The contract checks it. The proof is empty. A proof on a spell the contract can check itself is rejected. |
 | Anything else | Groth16 is verified on Ethereum, against the same public values Bitcoin and Cardano already use: CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled. |
-| ERC-20 facade | CREATE2 clone per `t` app. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. |
+| ERC-20 facade | One `CharmToken` per `t` app. It is a minimal-proxy clone of a shared implementation, deployed with CREATE2. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. |
 | ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
 | Finality out of Ethereum | A new `scrolls_ethereum` canister signs the Charms tx id after the execution block is beacon-finalized. Same pattern as Cardano's `FINALITY_VKEY`. |
@@ -90,21 +90,20 @@ The other direction marks `beamed_outs` on an Ethereum spell whose token sums st
 
 ## Contracts
 
-Deploy a proxy, an implementation, and a timelock. Token clones and the external Groth16 verifier sit beside them. Everything else is internal to the implementation.
+Deploy a proxy and an implementation. CharmToken contracts and the external Groth16 verifier sit beside them. Everything else is internal to the implementation.
 
 - `CharmsProxy` is the address wallets, tokens, and the guest call `Charms`. Its `fallback` and `receive` always `delegatecall` the implementation in the ERC-1967 slot. It has no other functions and no admin branch. That is the UUPS shape from EIP-1822: every call is delegated, and the upgrade function is not on this bytecode, so a transfer does not pay for an admin check the way a transparent proxy does.
-- `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, anchors, and the version registry, in the proxy's storage. It deploys token clones. It also exposes `upgradeToAndCall`.
-- `CharmsTimelock` is the only address allowed to upgrade. Its delay is 14 days. The proposer is a multisig named at deploy time. A guardian may cancel a scheduled upgrade and may retire a spell version. The guardian cannot schedule an upgrade.
-- `CharmToken` is an EIP-1167 clone, one per `t` app. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances.
+- `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, and anchors, in the proxy's storage. It deploys each `CharmToken`. It also exposes `upgradeToAndCall`. The admin is a single address set at initialization. That address is the only account that can upgrade. There is no timelock and no second role.
+- `CharmToken` is the ERC-20 for one `t` app. It is a clone: a minimal proxy (EIP-1167 with immutable arguments) that `delegatecall`s one shared `CharmToken` implementation. The per-token bytecode is that proxy, not a separately compiled contract. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances.
 - `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
 `CharmToken.transfer` and `transferFrom` are the ERC-20 surface Ivan asked for. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`.
 
-`Charms` implements `ICharms` and `IUpgradeable`. `ICharms` extends `ICharmsLedger`, so the implementation exposes the ledger methods too. `CharmToken` implements `ICharmToken` and `ICharmTokenHooks`. The structs live once, on `ICharmsTypes`, and the other interfaces use them.
+`Charms` implements `ICharms`, `ICharmsLedger`, and `IUpgradeable` as three interfaces. `ICharms` does not extend `ICharmsLedger`. Wallets and the CLI call `ICharms`. The token calls `ICharmsLedger`. The admin calls `IUpgradeable`. A caller of one does not need the methods of the others. `CharmToken` implements `ICharmToken` and `ICharmTokenHooks`. The structs live once, on `ICharmsTypes`, and the other interfaces use them.
 
 ```solidity
 /// @notice Shared structs. No functions. The other interfaces use these so `App` is defined once.
-/// @dev Wallets, the token clone, and the CLI all pass `App` through. 't' = 0x74, 'n' = 0x6e, 's' = 0x73.
+/// @dev Wallets, CharmToken, and the CLI all pass `App` through. 't' = 0x74, 'n' = 0x6e, 's' = 0x73.
 interface ICharmsTypes {
     /// @notice Unicode scalar tag plus the 32-byte identity and vk. Same triple as `charms_data::App`.
     struct App { uint32 tag; bytes32 identity; bytes32 vk; }
@@ -142,24 +141,24 @@ interface ICharmsTypes {
     }
 }
 
-/// @notice Ledger calls from a charm ERC-20 clone. The clone stores this address (the proxy) and nothing wider.
+/// @notice Ledger calls from a `CharmToken`. The token stores this address (the Charms proxy) and nothing wider.
 /// @dev `CharmToken.transfer` and `transferFrom` are the only callers of `tokenTransfer`.
-///      `balanceOf` and `totalSupply` on the clone read the two views. DeFi calls the clone, not this interface.
+///      `balanceOf` and `totalSupply` on the token read the two views. DeFi calls the token, not this interface.
 interface ICharmsLedger {
     /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and creating change.
-    /// @dev Only the CREATE2 clone for `app` may call this. The clone has already checked `msg.sender` and the allowance.
+    /// @dev Only the CREATE2 `CharmToken` for `app` may call this. The token has already checked `msg.sender` and the allowance.
     function tokenTransfer(ICharmsTypes.App calldata app, address from, address to, uint256 amount) external;
 
-    /// @notice Ethereum-resident supply of one charm. The clone's `totalSupply` returns this.
+    /// @notice Ethereum-resident supply of one charm. The token's `totalSupply` returns this.
     function totalSupply(bytes32 appKey) external view returns (uint256);
 
-    /// @notice Sum of this charm on `owner`'s unspent, non-beamed UTXOs. The clone's `balanceOf` returns this.
+    /// @notice Sum of this charm on `owner`'s unspent, non-beamed UTXOs. The token's `balanceOf` returns this.
     function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
 }
 
-/// @notice Spell, vault, and registry API. Wallets, the CLI, and contracts that build spells call this on the proxy.
-/// @dev Extends the ledger so one implementation serves both. Token clones should be typed as `ICharmsLedger`, not this.
-interface ICharms is ICharmsLedger {
+/// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on the proxy.
+/// @dev Does not include `ICharmsLedger`. Those callers use the ERC-20 for balances and do not call `tokenTransfer`.
+interface ICharms {
     /// @notice A Charms transaction was applied. Indexers and `tx fetch` read `txId` and `spell` from this log.
     /// @dev `spell` is the committed CBOR. `anchor` is zero when the spell spent inputs.
     event Transacted(bytes32 indexed txId, bytes32 anchor, bytes spell);
@@ -186,7 +185,7 @@ interface ICharms is ICharmsLedger {
     /// @dev The holder calls this. The underlying token is the one recorded for that vault.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
-    /// @notice CREATE2 address of the ERC-20 clone for `app`. Wallets use this to find the token. Valid before the clone is deployed.
+    /// @notice CREATE2 address of the `CharmToken` for `app`. Wallets use this to find the token. Valid before that token is deployed.
     function tokenAddress(ICharmsTypes.App calldata app) external view returns (address);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a spell. `transfer` does not.
@@ -198,38 +197,32 @@ interface ICharms is ICharmsLedger {
 
     /// @notice Block number of a beam-out, or 0 if that id did not beam. `scrolls_ethereum` reads this at the `finalized` tag.
     function beamSourceAt(bytes32 txId) external view returns (uint256 blockNumber);
-
-    /// @notice Schedule a new spell `programVKey`. The timelock calls this. The entry becomes active after 14 days.
-    function proposeVersion(uint32 version, address verifier, bytes32 programVKey) external;
-
-    /// @notice Turn off a spell version immediately. The guardian calls this. It cannot be undone.
-    function retireVersion(uint32 version) external;
-
-    /// @notice Set the timelock, the guardian, and the native v15 registry entry. The proxy constructor calls this once.
-    function initialize(address timelock, address guardian) external;
 }
 
-/// @notice UUPS upgrade API (EIP-1822). The timelock is the only caller. Spell clients and token clones do not use this.
-/// @dev `Charms` implements this beside `ICharms`. The proxy itself has no upgrade function. It only `delegatecall`s.
+/// @notice UUPS upgrade API (EIP-1822). The admin is the only caller. Spell clients and CharmToken contracts do not use this.
+/// @dev `Charms` implements this beside `ICharms` and `ICharmsLedger`. The proxy itself has no upgrade function. It only `delegatecall`s.
 interface IUpgradeable {
-    /// @notice Replace the implementation stored in the proxy's ERC-1967 slot, then `delegatecall` `data` on the new one.
-    /// @dev The timelock calls this on the proxy after the 14-day delay. `msg.sender` must be the timelock and `address(this)` must be the proxy.
+    /// @notice Point the proxy at `newImplementation`.
+    /// @dev The admin calls this on the proxy. `msg.sender` must be the admin and `address(this)` must be the proxy.
+    ///      `data` is calldata the admin chooses. After the ERC-1967 slot is written, a non-empty `data` is `delegatecall`ed on the new implementation, so the selector inside `data` is whatever method the admin encoded.
+    ///      This design always passes empty `data` (`""`). No second method runs. Accepted spell versions and `programVKey`s are compiled into the new implementation, so the upgrade has nothing further to call.
     function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
 
-    /// @notice The ERC-1967 implementation slot. The timelock's upgrade check requires the new implementation to return the same value.
+    /// @notice The ERC-1967 implementation slot. The new implementation must return the same value or the upgrade reverts.
     function proxiableUUID() external view returns (bytes32);
 }
 
-/// @notice What `Charms` calls on a charm ERC-20 clone. The clone implements this. Holders do not.
+/// @notice What `Charms` calls on a `CharmToken`. The token implements this. Holders do not.
 interface ICharmTokenHooks {
     /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only caller.
     /// @dev `_apply` nets each holder's balance change and calls this so wallets see the event on the token, not on the proxy.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
-/// @notice User-facing charm token. Wallets, routers, and DeFi call this. It is an EIP-1167 clone, one per `t` app.
-/// @dev Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live here.
-///      An infinite allowance is not decremented. The clone also implements `ICharmTokenHooks`.
+/// @notice User-facing charm token. Wallets, routers, and DeFi call this. One per `t` app.
+/// @dev The deployed bytecode is an EIP-1167 minimal proxy with the `App` as immutable args. It `delegatecall`s a shared implementation.
+///      Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live here.
+///      An infinite allowance is not decremented. The token also implements `ICharmTokenHooks`.
 interface ICharmToken {
     /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes `Transfer` by calling `emitTransfer`. Holders cause `Approval` by calling `approve` or `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
@@ -238,7 +231,7 @@ interface ICharmToken {
     /// @notice The Charms proxy this token reads and calls.
     function charms() external view returns (ICharmsLedger);
 
-    /// @notice The `App` baked into this clone's immutable args.
+    /// @notice The `App` in this token's immutable args.
     function app() external view returns (ICharmsTypes.App memory);
 
     /// @notice Ethereum-resident supply. Forwards to `ICharmsLedger.totalSupply`. Wallets and routers read this.
@@ -250,22 +243,22 @@ interface ICharmToken {
     /// @notice Spend the caller's UTXOs and create one output for `to`. Calls `tokenTransfer`.
     function transfer(address to, uint256 amount) external returns (bool);
 
-    /// @notice Remaining amount `spender` may move from `owner`. Stored on the clone. Routers read this.
+    /// @notice Remaining amount `spender` may move from `owner`. Stored on this token. Routers read this.
     function allowance(address owner, address spender) external view returns (uint256);
 
     /// @notice Let `spender` move up to `amount` of the caller's balance. The caller is the holder.
     function approve(address spender, uint256 amount) external returns (bool);
 
-    /// @notice `spender` moves `amount` from `from` to `to`. The clone decrements the allowance, then calls `tokenTransfer`.
+    /// @notice `spender` moves `amount` from `from` to `to`. This token decrements the allowance, then calls `tokenTransfer`.
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 
-    /// @notice Display name. Vault clones take it from the underlying token. Other clones use the CHIP-0420 defaults until metadata is published.
+    /// @notice Display name. A vault token takes it from the underlying token. Any other token uses the CHIP-0420 defaults until metadata is published.
     function name() external view returns (string memory);
 
     /// @notice Ticker. Same source as `name`.
     function symbol() external view returns (string memory);
 
-    /// @notice Decimal places for display. Vault clones use `min(underlying decimals, 8)`. Other clones use 0 until CHIP-0420 metadata is set.
+    /// @notice Decimal places for display. A vault token uses `min(underlying decimals, 8)`. Any other token uses 0 until CHIP-0420 metadata is set.
     function decimals() external view returns (uint8);
 
     /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then calls `transferFrom`.
@@ -279,19 +272,17 @@ interface ICharmToken {
 }
 ```
 
-CREATE2 salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The clone's immutable args are the packed `App`. `tokenAddress(app)` is valid before the clone exists. The clone is deployed the first time that app gets a non-zero Ethereum-resident supply, and the caller of that transact pays for it. The CREATE2 deployer in that formula is the proxy, so an upgrade does not move token addresses.
+`Charms` deploys a `CharmToken` with CREATE2 the first time that app's Ethereum-resident supply becomes non-zero. The caller of that `transact` pays for it. The salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The deployed bytecode is the EIP-1167 proxy, and the packed `App` is appended as immutable args. `tokenAddress(app)` is that CREATE2 address and is valid before the deploy. The CREATE2 deployer is the Charms proxy, so an upgrade does not move token addresses.
 
 ### Upgrade
 
-Deploy the implementation first. Its constructor calls `_disableInitializers()`, so nobody can initialize the implementation contract itself and then `selfdestruct` it out from under the proxy. Deploy the timelock second. Deploy the proxy third, with CREATE2 salt `keccak256("charms-proxy-v1")` and a constructor that writes the implementation into the ERC-1967 slot and `delegatecall`s `initialize(timelock, guardian)`. That proxy address is `ETHEREUM_CHARMS`. It is the `address(Charms)` mixed into `ethTxId`, the vault identity, and `tokenAddress`. Replacing the implementation does not change those ids.
+Deploy the implementation first. Its constructor calls `_disableInitializers()`, so nobody can initialize the implementation contract itself and then `selfdestruct` it out from under the proxy. Deploy the proxy second, with CREATE2 salt `keccak256("charms-proxy-v1")`. The proxy constructor writes the implementation into the ERC-1967 slot and `delegatecall`s `initialize(admin)`. That call is not part of `ICharms`. It runs once and stores the admin. The proxy address is `ETHEREUM_CHARMS`. It is the `address(Charms)` mixed into `ethTxId`, the vault identity, and `tokenAddress`. Replacing the implementation does not change those ids.
 
-`upgradeToAndCall` runs only when `msg.sender` is the timelock and `address(this)` is the proxy. The new implementation must return the same `proxiableUUID` (the ERC-1967 implementation slot). The timelock schedules the call and waits 14 days. Anyone may execute it after that. The guardian may cancel it during the wait. A fix that preserves `SpellCodec` output and the `ethTxId` preimage does not need a guest rebuild. A fix that changes those bytes is a protocol bump, with a new `programVKey`, not a silent patch.
-
-The version registry stays for a new `programVKey` when the bytecode does not have to change. `proposeVersion` uses the same timelock and the same 14-day wait. `retireVersion` stays immediate and one-way, and the guardian may call it. An upgrade and a registry entry are different operations: one replaces code, the other appends a key.
+The admin calls `upgradeToAndCall(newImplementation, "")` on the proxy. `msg.sender` must be the admin, and `address(this)` must be the proxy. The new implementation must return the same `proxiableUUID` (the ERC-1967 implementation slot). Empty `data` means the upgrade writes the slot and returns. It does not `delegatecall` a method on the new implementation. A new spell version is carried by that new code: the implementation accepts the spell versions it was built for, and it contains their `programVKey`s. A mutable version registry is not needed. A fix that preserves `SpellCodec` output and the `ethTxId` preimage does not need a guest rebuild. A fix that changes those bytes is a protocol bump, with a new `programVKey` compiled into the implementation.
 
 ## State
 
-`_apply` is the only writer of UTXO, supply, balance, and vault state. `proposeVersion` and `retireVersion` write the registry. `upgradeToAndCall` writes the ERC-1967 implementation slot. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
+`_apply` is the only writer of UTXO, supply, balance, and vault state. `upgradeToAndCall` writes the ERC-1967 implementation slot. `initialize` writes the admin once. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
 
 | Store | Key | Value | Role |
 |---|---|---|---|
@@ -304,7 +295,7 @@ The version registry stays for a new `programVKey` when the bytecode does not ha
 | `usedAnchors` | `anchor` | `bool` | Zero-input ids are single-use. |
 | `beamSourceAt` | `ethTxId` | block number, or 0 | Written only when the spell has `beamed_outs`. The canister reads this. |
 | `vaults` | token address | `appKey`, `scale`, `locked` | Underlying custody. `address(0)` is ETH. |
-| `versions` | protocol version | verifier, `programVKey`, `activeAt`, `retired` | Append-only. See [Protocol version](#protocol-version). |
+| `admin` | one address | `address` | Set once by `initialize`. The only account that may call `upgradeToAndCall`. |
 
 `utxoKey = keccak256(abi.encodePacked(ethTxId, uint32 index))` is internal. It is not the `UtxoId`.
 
@@ -391,7 +382,7 @@ Limits, so a spell cannot be a gas bomb: at most 64 inputs, 64 outputs, 64 apps,
 
 ```
 _apply(spell, anchor, proof, signatures, vaultDelta):
-    require the version registry entry is active and not retired
+    require this implementation accepts spell.version
     require canonical shape, counts, and owner == 0 iff beamed
     if ins is empty: require the anchor is unused, and the spell is a placeholder or a wrap
     for each ref: require it is live
@@ -401,7 +392,7 @@ _apply(spell, anchor, proof, signatures, vaultDelta):
     require every input owner is msg.sender or signed Spend(txId)
     if native(spell, openings, vaultDelta): require proof is empty
     else: require ins is non-empty, blobs are well-formed, and the verifier accepts
-    if beamedOuts is non-empty: require this version has a verifier
+    if beamedOuts is non-empty: require this implementation verifies proofs
     write outputs, delete inputs, update supply, balance, deques, vault, pins
     if ins is empty: mark the anchor used
     emit Transacted(txId, anchor, cbor)
@@ -533,11 +524,11 @@ This split is deliberate. Inbound finality stays in the guest, which already kno
 
 Verification runs inside `Charms`, on the proved path only, via `ISP1Verifier.verifyProof(programVKey, publicValues, proof)`.
 
-- `programVKey` is the registry's key for `spell.version`. For v16 that is the proof-wrapper verifying key, the same 32 bytes `charms spell vk` prints and the same bytes committed as the first public value.
+- `programVKey` is the proof-wrapper verifying key compiled into this implementation for `spell.version`. For the v16 implementation that is the 32 bytes `charms spell vk` prints, and the same bytes committed as the first public value.
 - `publicValues` are the bytes from [The committed spell](#the-committed-spell).
 - `proof` is the `Proof` byte string the prover already returns. The contract does not re-layout it. The verifier is the one `verify_gnark_v6` corresponds to: 4-byte SHA-256 prefix of the Groth16 verifying key, then exit code, vk root, and proof nonce as 32-byte words, then the gnark proof. v15 checks that prefix against `groth16_vk`, requires exit code 0, and requires vk root `SP1_V6_2_VK_ROOT` (`002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352`).
 
-Phase 0 proves this against a real v15 mainnet proof on a fork, using the stock verifier. If that verifier accepts Charms proofs unchanged, v16 uses the same verifier contract. If it does not, the verifier address is a registry field, not a fork of `verify_gnark_v6` written in Solidity.
+Phase 0 proves this against a real v15 mainnet proof on a fork, using the stock verifier. If that verifier accepts Charms proofs unchanged, the v16 implementation calls the same verifier contract. If it does not, the v16 implementation names the verifier address in its code. It does not carry a Solidity port of `verify_gnark_v6`.
 
 The guest, when it later sees an Ethereum prev tx, does not verify the Groth16 proof again. Acceptance by the pinned `Charms` address is the check, authenticated by the id hash and, for a beam source, by the finality signature. Cardano already trusts on-ledger minting that the guest does not re-derive from a script. Re-verifying every ancestor proof inside the guest would be a second implementation of the same statement.
 
@@ -615,12 +606,12 @@ App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and 
 
 | Phase | Spell version | Guest | Keys |
 |---|---|---|---|
-| Ethereum-local | Records are version 15. The registry entry has no verifier. Proofs and `beamed_outs` are rejected. | No rebuild. `Tx` has no Ethereum arm, and nothing outside Ethereum reads these records. | v15 verifying keys stay. |
-| Beaming and proved spells | Version 16. `CURRENT_VERSION = 16`. | Rebuild. `SpellProverInput.prev_txs` deserializes `Tx`. A new arm is a new spell-checker ELF, a new `SPELL_CHECKER_VK` in `charms-proof-wrapper`, and a new wrapper verifying key. | Publish `spell_vk` for v16 from `charms spell vk` on the reproducible build. Register that exact `programVKey`. |
+| Ethereum-local | Records are version 15. The phase-1 implementation accepts that version and rejects proofs and `beamed_outs`. | No rebuild. `Tx` has no Ethereum arm, and nothing outside Ethereum reads these records. | v15 verifying keys stay. |
+| Beaming and proved spells | Version 16. `CURRENT_VERSION = 16`. | Rebuild. `SpellProverInput.prev_txs` deserializes `Tx`. A new arm is a new spell-checker ELF, a new `SPELL_CHECKER_VK` in `charms-proof-wrapper`, and a new wrapper verifying key. | Publish `spell_vk` for v16 from `charms spell vk` on the reproducible build. Compile that `programVKey` into the new implementation. The admin upgrades the proxy to it. |
 
 The Groth16 circuit key is not assumed to change and is not assumed to stay. v15's `groth16_vk.bin` aliases v14's because that bump did not rebuild the wrapper. v16 rebuilds the wrapper. If the new `groth16_vk.bin` is byte-identical, alias it and keep the stock verifier. If it is not, publish the new bytes; the proof's 4-byte prefix follows them. Either way the value that changes for certain is the wrapper's `programVKey`, because the wrapper hardcodes the spell-checker key. `to_serialized_pv` stays on the v15 arm (`([u8; 32], NormalizedSpell)`). Bitcoin and Cardano transaction layouts do not change.
 
-The version registry is append-only. A proposed entry becomes active after 14 days. It sets the verifier address and `programVKey` for a new version. Retiring a version is one-way and immediate, so a bad key can be switched off. Logic changes go through `upgradeToAndCall` on the same 14-day timelock, not through the registry. The proposer multisig is named at deploy time. Token addresses and `ETHEREUM_CHARMS` stay on the proxy across both kinds of change. A new proxy would change every token address and the guest constant. That is a new deployment, not an upgrade.
+Which spell versions an implementation accepts, and the `programVKey` for each, are part of that implementation's code. A protocol bump is a new implementation plus `upgradeToAndCall(newImplementation, "")` from the admin. Token addresses and `ETHEREUM_CHARMS` stay on the proxy. A new proxy would change every token address and the guest constant. That is a new deployment, not an upgrade.
 
 The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoin` delegation, `scrolls_cardano`, and `charms-lib`'s `SPELL_VK`. `CHARMS_PROVE_API_URL` becomes `https://v16.charms.dev/spells/prove`.
 
@@ -640,9 +631,9 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 
 **Phase 0. Codec and verifier, no protocol change.** `SpellCodec` and `CborWellFormed`, golden vectors from `util::write` over generated spells, and a fork test that feeds a real v15 Bitcoin proof to the deployed SP1 verifier with public values the codec built. This is the gate for the id preimage and the proof statement. Done when the vectors match and that proof verifies.
 
-**Phase 1. Ethereum-local, still v15.** `CharmsProxy`, `Charms`, `CharmsTimelock`, and `CharmToken`: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, UUPS upgrade, and a registry whose only entry is native v15. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables, plus a test that an upgrade keeps token addresses and existing `UtxoId`s. Audit, then the CREATE2 proxy deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
+**Phase 1. Ethereum-local, still v15.** `CharmsProxy`, `Charms`, the shared `CharmToken` implementation, and the per-app clones: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and UUPS upgrade under the admin. The phase-1 implementation accepts spell version 15 and rejects proofs and `beamed_outs`. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables, plus a test that an upgrade keeps token addresses and existing `UtxoId`s. Audit, then the CREATE2 proxy deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
 
-**Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build, because the guest hardcodes `ETHEREUM_FINALITY_VKEY`. Add `Tx::Ethereum` and the `is_correct` guards. Rebuild the spell-checker and the wrapper. Publish `programVKey`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. Propose the v16 registry entry and wait 14 days. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
+**Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build, because the guest hardcodes `ETHEREUM_FINALITY_VKEY`. Add `Tx::Ethereum` and the `is_correct` guards. Rebuild the spell-checker and the wrapper. Publish `programVKey` and compile it into a new `Charms` implementation. The admin calls `upgradeToAndCall` with empty `data`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
 
 **Phase 3. Can wait.** CHIP-0420 metadata on the facade, read once from the reference NFT `n/<identity>/<vk>` if that NFT is live on Ethereum. A TypeScript helper for EIP-712 and calldata. An ERC-721 facade for tag `n`. Any L2 deployment, which is a different `chain_id` and a different guest constant, not a flag on this contract.
 
@@ -675,10 +666,10 @@ A `SpellCodec` that diverges from `util::write` is a liveness failure: proofs do
 
 Outbound beams stall if the EVM RPC providers disagree or the canister is out of cycles. The attestation can be retried. The UTXO is already spent; the funds are not returned and not lost.
 
-A malicious registry entry can make the proved path accept anything, after 14 days. An upgrade scheduled on the same timelock can change the native path and the vault as well. Holders can unwrap or beam out during the delay. The registered `programVKey` has to equal the reproducible `charms spell vk` output. Watch the ERC-1967 implementation slot. An upgrade that changes `SpellCodec` or the `ethTxId` preimage without a protocol bump desynchronizes new spells from the guest.
+The admin can call `upgradeToAndCall` immediately. That call can change the native path, the vault, and which proofs the contract accepts. There is no delay. The `programVKey` in the new implementation has to equal the reproducible `charms spell vk` output for that spell version. Watch the ERC-1967 implementation slot. An upgrade that changes `SpellCodec` or the `ethTxId` preimage without a protocol bump desynchronizes new spells from the guest.
 
 ## What is not decided here
 
-The timelock proposer's addresses, and the guardian's, are chosen at deploy time. The design does not name them.
+The admin address is chosen at deploy time. The design does not name it.
 
 Whether v16 should raise Bitcoin's finality work target is a separate security parameter. The default is to leave `FINALITY_TARGET_BITS` alone and rely on the vault cap. Confirm that before the v16 guest is built if the cap is not enough.
