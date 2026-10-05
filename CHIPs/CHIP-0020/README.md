@@ -159,7 +159,7 @@ interface ICharmsLedger {
 interface ICharms {
     /// @notice A Charms transaction was applied. Indexers and `tx fetch` read `txId` and `spell` from this log.
     /// @dev `spell` is the committed CBOR. `anchor` is zero when the spell spent inputs.
-    event Transacted(bytes32 indexed txId, bytes32 anchor, bytes spell);
+    event Transaction(bytes32 indexed txId, bytes32 anchor, bytes spell);
 
     /// @notice Spend `spell.ins` and create `spell.outs`. Returns the new `ethTxId`.
     /// @dev Wallets and the CLI call this for any spell that is not an ERC-20 `transfer` or a vault lock or unlock.
@@ -336,7 +336,7 @@ Charms byte order, which Cardano already follows in `cardano_tx::tx_id`:
 | Display / `FromStr` | `hex(ethTxId):index`, because `Display` reverses `TxId.0` again. |
 | Beam hash | `SHA256(to_bytes() \|\| optional nonce as u64 little-endian)`. Unchanged. `beamed_outs[i]` is that hash. `BeamSource` is unchanged. |
 
-`Transacted.txId` is the id once the creating transaction is mined. The source chain puts the beam hash of that id into `beamed_outs`. Signers of a multi-party spell hash this same preimage locally and sign EIP-712 `Spend(txId)`. `transact` recomputes the id and checks those signatures against it.
+`Transaction.txId` is the id once the creating transaction is mined. The source chain puts the beam hash of that id into `beamed_outs`. Signers of a multi-party spell hash this same preimage locally and sign EIP-712 `Spend(txId)`. `transact` recomputes the id and checks those signatures against it.
 
 Uniqueness is an invariant of `_apply`, not a property of keccak. A zero-input transact consumes its anchor. Every other transact consumes its inputs. A placeholder id cannot be created twice, so a beam cannot be claimed twice.
 
@@ -393,7 +393,7 @@ _apply(spell, anchor, proof, signatures, vaultDelta):
     if beamedOuts is non-empty: require this implementation verifies proofs
     write outputs, delete inputs, update supply, balance, deques, vault, pins
     if ins is empty: mark the anchor used
-    emit Transacted(txId, anchor, cbor)
+    emit Transaction(txId, anchor, cbor)
     emit ERC-20 Transfer events from the per-holder deltas
 ```
 
@@ -592,8 +592,8 @@ CLI:
 |---|---|
 | `spell prove --chain ethereum` | Prints JSON `{tx, tx_id, utxo_ids, call: {to, data, value}}`. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
 | `spell check --chain ethereum` | Runs `is_correct` once the guest knows Ethereum prev txs. Before that, it runs the native predicate and refuses a spell that would need a proof. |
-| `tx show-spell --chain ethereum` | Decodes an envelope or a `Transacted` log. |
-| `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transacted`. `--finality` calls the canister. |
+| `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
+| `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |
 | `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55, stores the lowercase bytes. |
 | `util eth-token <APP>` | CREATE2 token address. |
 | `util eth-vault --token <addr\|eth> --decimals <d>` | Prints the vault `App`. |
@@ -623,7 +623,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 - **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. `decimals()` is read once, at vault creation.
 - **Mixed pins.** After a versioned app bumps its version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select do not share a pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` already requires.
 - **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits for `finalized`.
-- **History.** `Transacted` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
+- **History.** `Transaction` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
 
 ## Build order
 
