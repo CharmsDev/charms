@@ -2,8 +2,6 @@
 CHIP: "0020"
 Title: Charms on Ethereum
 Status: Draft
-Authors:
-  - Ivan Mikushin (@imikushin)
 Created: 2026-10-04
 ---
 
@@ -97,7 +95,7 @@ Deploy a proxy and an implementation. CharmToken contracts and the external Grot
 - `CharmToken` is the ERC-20 for one `t` app. It is a clone: a minimal proxy (EIP-1167 with immutable arguments) that `delegatecall`s one shared `CharmToken` implementation. The per-token bytecode is that proxy, not a separately compiled contract. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances.
 - `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
-`CharmToken.transfer` and `transferFrom` are the ERC-20 surface Ivan asked for. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`.
+`CharmToken.transfer` and `transferFrom` are the ERC-20 entry points. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`.
 
 `Charms` implements `ICharms`, `ICharmsLedger`, and `IUpgradeable` as three interfaces. `ICharms` does not extend `ICharmsLedger`. Wallets and the CLI call `ICharms`. The token calls `ICharmsLedger`. The admin calls `IUpgradeable`. A caller of one does not need the methods of the others. `CharmToken` implements `ICharmToken` and `ICharmTokenHooks`. The structs live once, on `ICharmsTypes`, and the other interfaces use them.
 
@@ -282,7 +280,7 @@ The admin calls `upgradeToAndCall(newImplementation, "")` on the proxy. `msg.sen
 
 ## State
 
-`_apply` is the only writer of UTXO, supply, balance, and vault state. `upgradeToAndCall` writes the ERC-1967 implementation slot. `initialize` writes the admin once. The maps Ivan named are the supply, the per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
+`_apply` is the only writer of UTXO, supply, balance, and vault state. `upgradeToAndCall` writes the ERC-1967 implementation slot. `initialize` writes the admin once. The charm-token maps are supply, per-owner balance, and the per-owner UTXO index. Spend-by-id needs one more record, because a spell names UTXOs and a multi-charm UTXO sits in more than one per-app list. Empty UTXOs have no app, so they cannot live in `address → app → UTXOs`.
 
 | Store | Key | Value | Role |
 |---|---|---|---|
@@ -672,4 +670,4 @@ The admin can call `upgradeToAndCall` immediately. That call can change the nati
 
 The admin address is chosen at deploy time. The design does not name it.
 
-Whether v16 should raise Bitcoin's finality work target is a separate security parameter. The default is to leave `FINALITY_TARGET_BITS` alone and rely on the vault cap. Confirm that before the v16 guest is built if the cap is not enough.
+v16 keeps `FINALITY_TARGET_BITS` at its current value. The vault cap is the bound on a forged beam.
