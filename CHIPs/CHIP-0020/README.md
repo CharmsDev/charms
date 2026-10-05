@@ -432,7 +432,7 @@ The proof does not establish spend authorization. On Bitcoin the owner signs the
 
 A proved spell must spend at least one input. The proof does not commit to the anchor, so a zero-input proved spell could be replayed under a fresh salt. Bitcoin and Cardano transactions have an input. `hosting_chain_is_bitcoin` looks at the creator of `ins[0]`; an empty input list would make that undefined.
 
-`tokenTransfer` builds the native spell itself. The user does not pass one. Inputs come off the front of `utxos[from][app]`. Outputs are `{app: amount}` to `to` and, if there is a remainder, `{app: change, plus every other t/n charm from the inputs}` back to `from`. The contract then runs `_apply` and checks the result is native. A bug in the token cannot move a charm the rules would refuse.
+`tokenTransfer` builds the native spell. Inputs come off the front of `utxos[from][app]`. Outputs are `{app: amount}` to `to` and, if there is a remainder, `{app: change, plus every other t/n charm from the inputs}` back to `from`. The contract then runs `_apply` and checks the result is native. A bug in the token cannot move a charm the rules would refuse.
 
 Idempotency is the EVM's. The call reverts or it is mined once. Submitting it again reverts with `InputSpent` or `AnchorUsed`. `wrap`'s token pull and `unwrap`'s token push are inside the same call. A revert undoes both. Re-proving a spell off-chain yields the same id, because the proof bytes are not in the preimage.
 
