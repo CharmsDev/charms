@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {DoubleEndedQueue} from "@openzeppelin/contracts/utils/structs/DoubleEndedQueue.sol";
-
 import {ICharmsErrors, ICharmsTypes} from "./interfaces/ICharms.sol";
 import {CharmTokenClone} from "./libraries/CharmTokenClone.sol";
+import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice The v1 storage layout of the Charms proxy, and the types and keys that `Charms` and
 /// `CharmsApply` share. Both run in the proxy's storage: `Charms` behind the proxy and
@@ -61,9 +60,8 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
     // v1 storage layout. Append only; never reorder, insert, or retype.
     mapping(bytes32 appKey => uint256) internal supply;
     mapping(address owner => mapping(bytes32 appKey => uint256)) internal balance;
-    mapping(address owner => mapping(bytes32 appKey => DoubleEndedQueue.Bytes32Deque)) internal
-        utxos;
-    mapping(address owner => DoubleEndedQueue.Bytes32Deque) internal emptyUtxos;
+    mapping(address owner => mapping(bytes32 appKey => UtxoList.List)) internal utxos;
+    mapping(address owner => UtxoList.List) internal emptyUtxos;
     mapping(bytes32 utxoKey => Head) internal head;
     mapping(bytes32 utxoKey => bytes) internal body;
     mapping(bytes32 anchor => bool) internal usedAnchors;

@@ -4,7 +4,6 @@ pragma solidity 0.8.37;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {SignatureChecker} from "@openzeppelin/contracts/utils/cryptography/SignatureChecker.sol";
-import {DoubleEndedQueue} from "@openzeppelin/contracts/utils/structs/DoubleEndedQueue.sol";
 
 import {CharmsStorage} from "./CharmsStorage.sol";
 import {ICharmTokenHooks} from "./interfaces/ICharms.sol";
@@ -14,13 +13,14 @@ import {appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
 import {SpellCodec} from "./libraries/SpellCodec.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
+import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice `_apply` of CHIP-0020: the only writer of UTXO, supply, balance, and vault state.
 /// `Charms` `delegatecall`s `applySpell`, so this code runs in the proxy's storage.
 /// @dev Which spell version this build accepts, its `programVKey`, and its verifier are fixed in
 /// the bytecode. A zero verifier is the phase-1 build: it rejects proofs and `beamedOuts`.
 contract CharmsApply is CharmsStorage {
-    using DoubleEndedQueue for DoubleEndedQueue.Bytes32Deque;
+    using UtxoList for UtxoList.List;
 
     uint256 internal constant MAX_PUBLIC_VALUES = 96 * 1024;
     bytes32 internal constant SPEND_TYPEHASH = keccak256("Spend(bytes32 txId)");
@@ -138,7 +138,8 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev Deletes each input as it is checked, so a repeated input reads as spent.
+    /// @dev Deletes each input as it is checked, so a repeated input reads as spent, and unlinks it
+    /// from every list that holds it.
     function _spendInputs(Spell memory s, bytes32[] memory keys)
         private
         returns (address[] memory owners)
@@ -151,6 +152,7 @@ contract CharmsApply is CharmsStorage {
             if (h.owner == address(0)) revert InputSpent();
             if (h.kind == Kind.Empty) {
                 if (input.charms.length != 0 || input.pins.length != 0) revert OpeningMismatch();
+                emptyUtxos[h.owner].remove(key);
             } else if (h.kind == Kind.Plain) {
                 if (input.charms.length != 1 || input.pins.length != 0) revert OpeningMismatch();
                 Charm memory c = input.charms[0];
@@ -167,6 +169,7 @@ contract CharmsApply is CharmsStorage {
                 if (s.apps[c.app].tag != TAG_T) continue;
                 balance[h.owner][keys[c.app]] -= c.amount;
                 supply[keys[c.app]] -= c.amount;
+                utxos[h.owner][keys[c.app]].remove(key);
             }
         }
     }

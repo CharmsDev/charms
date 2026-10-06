@@ -8,7 +8,6 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
-import {DoubleEndedQueue} from "@openzeppelin/contracts/utils/structs/DoubleEndedQueue.sol";
 
 import {CharmToken} from "./CharmToken.sol";
 import {CharmsApply} from "./CharmsApply.sol";
@@ -17,6 +16,7 @@ import {ICharmTokenHooks, ICharms, ICharmsLedger, IUpgradeable} from "./interfac
 import {CharmTokenClone, appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
+import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice The Charms implementation behind `CharmsProxy` (CHIP-0020): the consensus for Ethereum
 /// Charms transactions. It owns UTXOs, supply, balances, the vault, and anchors in the proxy's
@@ -33,7 +33,6 @@ contract Charms is
     UUPSUpgradeable,
     ReentrancyGuardTransient
 {
-    using DoubleEndedQueue for DoubleEndedQueue.Bytes32Deque;
     using SafeERC20 for IERC20;
 
     uint8 internal constant ETH_SCALE = 10;
@@ -43,7 +42,6 @@ contract Charms is
     uint32 public immutable SPELL_VERSION;
 
     struct Pick {
-        bytes32 key;
         Head head;
         UtxoBody.Held[] held;
         Pin[] pins;
@@ -227,21 +225,23 @@ contract Charms is
         view
         returns (UtxoRef[] memory page, uint256 nextCursor)
     {
-        DoubleEndedQueue.Bytes32Deque storage list =
-            key == 0 ? emptyUtxos[owner] : utxos[owner][key];
-        uint256 len = list.length();
-        if (cursor >= len) return (page, 0);
-        uint256 end = limit < len - cursor ? cursor + limit : len;
-        page = new UtxoRef[](end - cursor);
+        UtxoList.List storage list = key == 0 ? emptyUtxos[owner] : utxos[owner][key];
+        bytes32 start = cursor == 0 ? list.first : bytes32(cursor);
+        if (head[start].owner != owner) return (page, 0);
         uint256 n;
-        for (uint256 i = cursor; i < end; ++i) {
-            Head storage h = head[list.at(i)];
-            if (h.owner == owner) page[n++] = UtxoRef(h.txId, h.index);
+        bytes32 k = start;
+        while (k != 0 && n < limit) {
+            k = list.links[k].next;
+            ++n;
         }
-        assembly ("memory-safe") {
-            mstore(page, n)
+        page = new UtxoRef[](n);
+        k = start;
+        for (uint256 i; i < n; ++i) {
+            Head storage h = head[k];
+            page[i] = UtxoRef(h.txId, h.index);
+            k = list.links[k].next;
         }
-        nextCursor = end < len ? end : 0;
+        nextCursor = uint256(k);
     }
 
     function utxo(UtxoRef calldata u)
@@ -286,7 +286,7 @@ contract Charms is
     /// @dev The native spell behind `transfer` and `unwrap`: inputs from the front of
     /// `utxos[from][app]`, one output of `amount` to `to` (none when `to` is zero, which burns),
     /// and one change output to `from` carrying the remainder and every other charm.
-    function _transferSpell(Transfer memory request) private returns (Spell memory s) {
+    function _transferSpell(Transfer memory request) private view returns (Spell memory s) {
         (App memory app, bytes32 key, address from, address to, uint64 amount) =
             (request.app, request.key, request.from, request.to, request.amount);
         if (amount == 0) revert ZeroAmount();
@@ -372,32 +372,22 @@ contract Charms is
     /// taken too when it fits, so a passive holder's UTXO count stays bounded.
     function _select(App memory app, bytes32 key, address from, uint64 amount)
         private
+        view
         returns (Pick[] memory picks)
     {
-        DoubleEndedQueue.Bytes32Deque storage list = utxos[from][key];
+        UtxoList.List storage list = utxos[from][key];
         picks = new Pick[](MAX_ITEMS);
         uint256 n;
         uint256 sum;
         uint256 blocked;
         bytes32 pinHash;
-        bool popping = true;
-        uint256 i;
-        while (n < MAX_ITEMS && (popping ? !list.empty() : i < list.length())) {
-            bytes32 k = popping ? list.front() : list.at(i);
-            Head memory h = head[k];
-            if (h.owner != from) {
-                if (popping) list.popFront();
-                else ++i;
-                continue;
-            }
+        for (bytes32 k = list.first; k != 0 && n < MAX_ITEMS; k = list.links[k].next) {
             bool covered = sum >= amount;
-            Pick memory p = _load(k, h, app);
+            Pick memory p = _load(k, app);
             uint256 units = _amountOf(p.held, app);
             if (_hasCustomTag(p.held)) {
                 if (covered) break;
                 blocked += units;
-                popping = false;
-                ++i;
                 continue;
             }
             bytes32 ph = _pinHash(p.pins, app.vk);
@@ -407,15 +397,11 @@ contract Charms is
             }
             if (!_fits(picks, n, p)) {
                 if (covered) break;
-                popping = false;
-                ++i;
                 continue;
             }
             pinHash = ph;
             picks[n++] = p;
             sum += units;
-            if (popping) list.popFront();
-            else ++i;
             if (covered) break;
         }
         if (sum < amount) {
@@ -427,12 +413,8 @@ contract Charms is
         }
     }
 
-    function _load(bytes32 key, Head memory h, App memory app)
-        private
-        view
-        returns (Pick memory p)
-    {
-        p.key = key;
+    function _load(bytes32 key, App memory app) private view returns (Pick memory p) {
+        Head memory h = head[key];
         p.head = h;
         if (h.kind == Kind.Plain) {
             p.held = new UtxoBody.Held[](1);
