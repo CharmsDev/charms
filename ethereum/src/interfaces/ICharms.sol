@@ -178,7 +178,8 @@ interface ICharms is ICharmsErrors {
     /// @dev The holder calls this. The underlying token is the one recorded for that vault.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
-    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. Pure. Does not deploy.
+    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. It depends only on `app`
+    /// and this contract's address. Does not deploy.
     /// Reverts when `app.tag` is not `t`.
     /// @dev Wallets compute this off-chain the same way. The address is known before
     /// `ensureToken`.
