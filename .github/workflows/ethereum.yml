@@ -2,10 +2,24 @@ name: Ethereum contracts
 
 on:
   pull_request:
-    paths: ['ethereum/**', '.github/workflows/ethereum.yml']
+    paths:
+      - 'ethereum/**'
+      - 'charms-data/**'
+      - 'charms-client/**'
+      - 'charms-lib/**'
+      - 'charms-app-runner/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ethereum.yml'
   push:
     branches: ['main']
-    paths: ['ethereum/**', '.github/workflows/ethereum.yml']
+    paths:
+      - 'ethereum/**'
+      - 'charms-data/**'
+      - 'charms-client/**'
+      - 'charms-lib/**'
+      - 'charms-app-runner/**'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ethereum.yml'
 
 jobs:
   forge:
@@ -34,3 +48,17 @@ jobs:
 
       - name: Test
         run: forge test
+
+  vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1.9.0
+        with:
+          cache-workspaces: ethereum/vectors
+
+      - name: Check the golden vectors against charms-data and charms-client
+        run: >-
+          cargo run --locked --manifest-path ethereum/vectors/Cargo.toml --
+          --check ethereum/test/vectors/spells.json
