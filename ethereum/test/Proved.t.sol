@@ -134,13 +134,17 @@ contract ProvedTest is CharmsTestBase {
 
         bytes32 txId = _transact(alice, s);
 
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(UtxoRef(txId, 0));
-        assertEq(kind, 0);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(txId, 0));
+        (uint8 kind,, uint64 amount) = _storedHead(txId, 0);
         assertEq(owner, address(0), "the beamed output has no record");
+        assertEq(body.length, 0);
+        assertEq(kind, 0);
         assertEq(amount, 0);
-        (kind, owner, amount,) = charms.utxo(UtxoRef(txId, 1));
-        assertEq(kind, 1);
+        (owner, body) = charms.utxo(UtxoRef(txId, 1));
+        (kind,, amount) = _storedHead(txId, 1);
         assertEq(owner, alice);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 600);
     }
 

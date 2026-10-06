@@ -179,7 +179,22 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         return uint256(vm.load(address(charms), bytes32(uint256(vault) + 2)));
     }
 
+    /// @dev `head` is slot 4 of the frozen layout. `utxo` does not return kind or the Plain
+    /// amount; both stay in the first word of `Head` (`address`, `Kind`, `index`, `uint64`).
+    function _storedHead(bytes32 txId, uint32 index)
+        internal
+        view
+        returns (uint8 kind, address owner, uint64 amount)
+    {
+        bytes32 key = keccak256(abi.encodePacked(txId, index));
+        uint256 word = uint256(vm.load(address(charms), keccak256(abi.encode(key, uint256(4)))));
+        owner = address(uint160(word));
+        kind = uint8(word >> 160);
+        amount = uint64(word >> 176);
+    }
+
     function _kind(bytes32 txId, uint32 index) internal view returns (uint8 kind, address owner) {
-        (kind, owner,,) = charms.utxo(UtxoRef(txId, index));
+        (kind,,) = _storedHead(txId, index);
+        (owner,) = charms.utxo(UtxoRef(txId, index));
     }
 }

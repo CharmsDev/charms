@@ -491,11 +491,12 @@ contract TransactTest is CharmsTestBase {
 
     function test_pinnedTransferThatKeepsThePinIsNative() public {
         bytes32 pinned = _mintPinned(alice, 100);
-        (,,, bytes memory before) = charms.utxo(UtxoRef(pinned, 0));
+        (, bytes memory before) = charms.utxo(UtxoRef(pinned, 0));
 
         bytes32 txId = _transact(alice, _pinnedSpend(pinned, v1));
 
-        (uint8 kind, address owner,, bytes memory body) = charms.utxo(UtxoRef(txId, 0));
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(txId, 0));
+        (uint8 kind,,) = _storedHead(txId, 0);
         assertEq(kind, 2);
         assertEq(owner, bob);
         assertEq(body, before, "the new output stores the same charm and pin");
@@ -607,29 +608,30 @@ contract TransactTest is CharmsTestBase {
     function test_utxoOfAPlaceholderIsAnOwnedEmptyRecord() public {
         bytes32 placeholder = _placeholder(alice);
 
-        (uint8 kind, address owner, uint64 amount, bytes memory body) =
-            charms.utxo(UtxoRef(placeholder, 0));
-        assertEq(kind, 0);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(placeholder, 0));
+        (uint8 kind,, uint64 amount) = _storedHead(placeholder, 0);
         assertEq(owner, alice);
-        assertEq(amount, 0);
         assertEq(body.length, 0);
+        assertEq(kind, 0);
+        assertEq(amount, 0);
     }
 
-    function test_utxoOfASingleUnpinnedTokenIsPlainWithItsAmount() public {
+    function test_utxoOfASingleUnpinnedTokenReturnsOwnerAndEmptyBody() public {
         bytes32 minted = _coinFor(alice, 100);
 
-        (uint8 kind, address owner, uint64 amount, bytes memory body) =
-            charms.utxo(UtxoRef(minted, 0));
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(minted, 0));
+        (uint8 kind,, uint64 amount) = _storedHead(minted, 0);
         assertEq(owner, alice);
-        assertEq(amount, 100);
         assertEq(body.length, 0);
+        assertEq(kind, 1, "Plain stays in head");
+        assertEq(amount, 100, "the Plain amount stays in head");
     }
 
     function test_utxoOfAnNftBundleCarriesABody() public {
         bytes32 held = _bundle();
 
-        (uint8 kind, address owner,, bytes memory body) = charms.utxo(UtxoRef(held, 0));
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(held, 0));
+        (uint8 kind,,) = _storedHead(held, 0);
         assertEq(kind, 2);
         assertEq(owner, alice);
         assertTrue(_contains(body, ART), "the body holds the NFT data");
@@ -638,18 +640,16 @@ contract TransactTest is CharmsTestBase {
     function test_utxoOfAPinnedTokenIsABundleThatHoldsThePin() public {
         bytes32 pinned = _mintPinned(alice, 100);
 
-        (uint8 kind, address owner,, bytes memory body) = charms.utxo(UtxoRef(pinned, 0));
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(pinned, 0));
+        (uint8 kind,,) = _storedHead(pinned, 0);
         assertEq(kind, 2);
         assertEq(owner, alice);
         assertTrue(_contains(body, abi.encodePacked(v1.wasmHash)), "the body holds the pin");
     }
 
     function test_utxoOfAnUnknownIdIsEmptyWithNoOwner() public view {
-        (uint8 kind, address owner, uint64 amount, bytes memory body) =
-            charms.utxo(UtxoRef(keccak256("unknown"), 0));
-        assertEq(kind, 0);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(keccak256("unknown"), 0));
         assertEq(owner, address(0));
-        assertEq(amount, 0);
         assertEq(body.length, 0);
     }
 
@@ -657,11 +657,8 @@ contract TransactTest is CharmsTestBase {
         bytes32 held = _bundle();
         _transact(alice, _bundleTransfer(held));
 
-        (uint8 kind, address owner, uint64 amount, bytes memory body) =
-            charms.utxo(UtxoRef(held, 0));
-        assertEq(kind, 0);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(held, 0));
         assertEq(owner, address(0));
-        assertEq(amount, 0);
         assertEq(body.length, 0);
     }
 

@@ -436,7 +436,7 @@ contract Handler is CharmsTestBase {
         Holding memory rest;
         for (uint256 i; i < candidates.length; ++i) {
             Utxo storage u = ghosts[candidates[i]];
-            (, address owner,,) = charms.utxo(u.ref);
+            (address owner,) = charms.utxo(u.ref);
             if (owner != address(0)) continue;
             Holding memory held = u.held;
             for (uint256 k; k < TOKENS; ++k) {
