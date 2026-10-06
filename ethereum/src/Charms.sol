@@ -77,6 +77,7 @@ contract Charms is
     /// `CharmToken` implementation as the proxy's first contract, so its address is
     /// `CREATE(proxy, nonce 1)` on every chain.
     function initialize(address admin_) external initializer {
+        if (admin_ == address(0)) revert ZeroAdmin();
         admin = admin_;
         assert(address(new CharmToken()) == _charmTokenImplementation());
     }

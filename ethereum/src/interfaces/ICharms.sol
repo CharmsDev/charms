@@ -141,6 +141,7 @@ interface ICharmsErrors {
     error MetadataUnspecified();
     error EthRejected();
     error NotAdmin();
+    error ZeroAdmin();
 }
 
 /// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on

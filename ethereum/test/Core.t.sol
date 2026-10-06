@@ -2,7 +2,11 @@
 pragma solidity 0.8.37;
 
 import {CharmToken} from "../src/CharmToken.sol";
+import {Charms} from "../src/Charms.sol";
+import {CharmsApply} from "../src/CharmsApply.sol";
+import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmToken, ICharmsErrors} from "../src/interfaces/ICharms.sol";
+import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 import {HoldingWallet1271, ICharmsUtxo} from "./utils/Mocks.sol";
 
@@ -159,5 +163,11 @@ contract CoreTest is CharmsTestBase {
         vm.prank(alice);
         vm.expectRevert(ICharmsErrors.RefNotLive.selector);
         charms.transact(s, bytes32(0), PROOF, new bytes[](0));
+    }
+
+    function test_aZeroAdminCannotInitializeTheProxy() public {
+        Charms impl = new Charms(new CharmsApply(15, bytes32(0), ISP1Verifier(address(0))));
+        vm.expectRevert(ICharmsErrors.ZeroAdmin.selector);
+        new CharmsProxy(address(impl), abi.encodeCall(Charms.initialize, (address(0))));
     }
 }
