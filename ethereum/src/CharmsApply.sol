@@ -55,9 +55,10 @@ contract CharmsApply is CharmsStorage {
             if (usedAnchors[c.anchor]) revert AnchorUsed();
             if (c.move.delta <= 0 && !_isPlaceholder(s)) revert NotPlaceholderOrWrap();
         }
-        address[] memory owners = _spendInputs(s, keys);
+        (address[] memory owners, bytes32[] memory inputKeys) = _openInputs(s, keys);
         for (uint256 i; i < s.refs.length; ++i) {
-            if (head[_utxoKey(s.refs[i].txId, s.refs[i].index)].owner == address(0)) {
+            bytes32 ref = _utxoKey(s.refs[i].txId, s.refs[i].index);
+            if (head[ref].owner == address(0) || _containsKey(inputKeys, inputKeys.length, ref)) {
                 revert RefNotLive();
             }
         }
@@ -79,6 +80,7 @@ contract CharmsApply is CharmsStorage {
             VERIFIER.verifyProof(PROGRAM_VKEY, SpellCodec.publicValues(PROGRAM_VKEY, cbor), c.proof);
         }
 
+        _spendInputs(s, keys, inputKeys, owners);
         _createOutputs(s, keys, txId, owners);
         if (s.ins.length == 0) usedAnchors[c.anchor] = true;
         if (c.move.delta != 0) _moveVault(c.move);
@@ -138,21 +140,22 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev Deletes each input as it is checked, so a repeated input reads as spent, and unlinks it
-    /// from every list that holds it.
-    function _spendInputs(Spell memory s, bytes32[] memory keys)
+    /// @dev Checks that every input is live, appears once, and opens to what was stored. Writes
+    /// nothing, so a signature check reads the state the signer saw.
+    function _openInputs(Spell memory s, bytes32[] memory keys)
         private
-        returns (address[] memory owners)
+        view
+        returns (address[] memory owners, bytes32[] memory inputKeys)
     {
         owners = new address[](s.ins.length);
+        inputKeys = new bytes32[](s.ins.length);
         for (uint256 i; i < s.ins.length; ++i) {
             Input memory input = s.ins[i];
             bytes32 key = _utxoKey(input.utxo.txId, input.utxo.index);
             Head memory h = head[key];
-            if (h.owner == address(0)) revert InputSpent();
+            if (h.owner == address(0) || _containsKey(inputKeys, i, key)) revert InputSpent();
             if (h.kind == Kind.Empty) {
                 if (input.charms.length != 0 || input.pins.length != 0) revert OpeningMismatch();
-                emptyUtxos[h.owner].remove(key);
             } else if (h.kind == Kind.Plain) {
                 if (input.charms.length != 1 || input.pins.length != 0) revert OpeningMismatch();
                 Charm memory c = input.charms[0];
@@ -160,16 +163,33 @@ contract CharmsApply is CharmsStorage {
             } else {
                 bytes memory opening = UtxoBody.encode(s.apps, input.charms, input.pins);
                 if (keccak256(opening) != h.link) revert OpeningMismatch();
-                delete body[key];
             }
             owners[i] = h.owner;
+            inputKeys[i] = key;
+        }
+    }
+
+    /// @dev Deletes each opened input and unlinks it from every list that holds it.
+    function _spendInputs(
+        Spell memory s,
+        bytes32[] memory keys,
+        bytes32[] memory inputKeys,
+        address[] memory owners
+    ) private {
+        for (uint256 i; i < inputKeys.length; ++i) {
+            bytes32 key = inputKeys[i];
+            address owner = owners[i];
+            Kind kind = head[key].kind;
+            if (kind == Kind.Empty) emptyUtxos[owner].remove(key);
+            else if (kind == Kind.Bundle) delete body[key];
             delete head[key];
-            for (uint256 j; j < input.charms.length; ++j) {
-                Charm memory c = input.charms[j];
+            Charm[] memory charms = s.ins[i].charms;
+            for (uint256 j; j < charms.length; ++j) {
+                Charm memory c = charms[j];
                 if (s.apps[c.app].tag != TAG_T) continue;
-                balance[h.owner][keys[c.app]] -= c.amount;
+                balance[owner][keys[c.app]] -= c.amount;
                 supply[keys[c.app]] -= c.amount;
-                utxos[h.owner][keys[c.app]].remove(key);
+                utxos[owner][keys[c.app]].remove(key);
             }
         }
     }
@@ -496,6 +516,13 @@ contract CharmsApply is CharmsStorage {
 
     /// @dev Whether `x` is among the first `n` entries of `a`.
     function _contains(address[] memory a, uint256 n, address x) private pure returns (bool) {
+        for (uint256 i; i < n; ++i) {
+            if (a[i] == x) return true;
+        }
+        return false;
+    }
+
+    function _containsKey(bytes32[] memory a, uint256 n, bytes32 x) private pure returns (bool) {
         for (uint256 i; i < n; ++i) {
             if (a[i] == x) return true;
         }
