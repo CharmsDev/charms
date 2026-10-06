@@ -170,6 +170,8 @@ contract Charms is
             (bool ok,) = to.call{value: underlying}("");
             if (!ok) revert EthTransferFailed();
         } else {
+            // A fee taken out of `underlying` leaves `to` short of `before + underlying`.
+            // That does not revert: `locked` already moved with the amount leaving this contract.
             IERC20(token).safeTransfer(to, underlying);
         }
     }
