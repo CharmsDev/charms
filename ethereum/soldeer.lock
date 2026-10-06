@@ -1,0 +1,21 @@
+version = 2
+
+[[dependencies]]
+name = "@openzeppelin-contracts"
+version = "5.7.0"
+url = "https://soldeer-revisions.s3.amazonaws.com/@openzeppelin-contracts/5_7_0_29-07-2026_19:34:46_contracts.zip"
+checksum = "fe08a24bc34334b2976c6ad69a0d74bdfa63de8a5c8528579060f25a11fb5cd5"
+integrity = "3e13bc4d96bdef6e35f6b1e0dc0e455843a958edc597750dff20ca50295b767d"
+
+[[dependencies]]
+name = "forge-std"
+version = "1.17.0"
+url = "https://soldeer-revisions.s3.amazonaws.com/forge-std/1_17_0_01-10-2026_10:59:49_forge-std-1.17.zip"
+checksum = "a77ad38d5fbef0ec10d1f4d191698e5fbaa2bffbee5d1aced91a39da5e9b908c"
+integrity = "fa706c8a7caf3426c90f75e6aafa3224b0a6c899b490800cf6944e4ec42f9344"
+
+[[dependencies]]
+name = "sp1-contracts"
+version = "6.1.0"
+git = "https://github.com/succinctlabs/sp1-contracts.git"
+rev = "2ac5ecbbe473421a963d67e55f182e9a36576f7c"
