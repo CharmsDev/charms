@@ -388,6 +388,18 @@ contract TransactTest is CharmsTestBase {
         _expectRejected(s, ICharmsErrors.LimitExceeded.selector);
     }
 
+    function test_65536RefsOrPinsExceedTheLimit() public {
+        vm.pauseGasMetering();
+        Spell memory s = _spell(new App[](0), 0, 1);
+        s.outs[0].owner = alice;
+        s.refs = new UtxoRef[](65_536);
+        _expectRejected(s, ICharmsErrors.LimitExceeded.selector);
+
+        s.refs = new UtxoRef[](0);
+        s.versionedApps = new Pin[](65_536);
+        _expectRejected(s, ICharmsErrors.LimitExceeded.selector);
+    }
+
     function test_publicValuesOver96KiBExceedTheLimit() public {
         bytes32 minted = _coinFor(alice, 100);
         Spell memory s = _spendTo(minted, 0, 100, bob);
