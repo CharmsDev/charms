@@ -3,6 +3,8 @@ pragma solidity ^0.8.28;
 
 /// @notice Checks that a caller blob is exactly one definite-length, well-formed CBOR item
 /// nested at most 16 deep, with no trailing bytes. Skips items and builds nothing.
+/// Depth counts every item on a path, the outermost item and the innermost scalar included,
+/// so 15 nested arrays around a scalar pass and 16 do not.
 /// @dev Without this a blob could end early and swallow the next field of the spell, so the proof
 /// would attest one spell while the contract accounts for another.
 library CborWellFormed {
