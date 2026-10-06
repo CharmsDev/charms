@@ -4,7 +4,6 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["dependencies"]
-solc_version = "0.8.37"
 evm_version = "prague"
 optimizer = true
 optimizer_runs = 200
@@ -12,7 +11,10 @@ via_ir = true
 # ETHEREUM_CHARMS is a CREATE2 address over this bytecode, so keep it free of path-dependent metadata.
 bytecode_hash = "none"
 cbor_metadata = false
-fs_permissions = [{ access = "read", path = "./test/vectors" }]
+fs_permissions = [
+    { access = "read", path = "./test/vectors" },
+    { access = "read", path = "./out" },
+]
 
 [profile.default.fuzz]
 runs = 256
@@ -38,3 +40,4 @@ remappings_regenerate = false
 [dependencies]
 "@openzeppelin-contracts" = "5.7.0"
 forge-std = "1.17.0"
+sp1-contracts = { version = "6.1.0", git = "https://github.com/succinctlabs/sp1-contracts.git", tag = "v6.1.0" }

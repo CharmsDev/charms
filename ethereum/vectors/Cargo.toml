@@ -11,6 +11,8 @@ publish = false
 [dependencies]
 charms-client = { path = "../../charms-client" }
 charms-data = { path = "../../charms-data" }
+charms-lib = { path = "../../charms-lib" }
+sp1-verifier = { version = "6.8.1", default-features = false }
 ciborium = "0.2.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

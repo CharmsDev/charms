@@ -14,6 +14,26 @@ mod json {
         pub spells: Vec<SpellVector>,
         pub vaults: Vec<VaultVector>,
         pub tokens: Vec<TokenVector>,
+        pub sp1: Sp1,
+    }
+
+    /// What a v15 Charms proof commits to: the SHA-256 of the Groth16 verifying key (the
+    /// proof's first 4 bytes) and the SP1 recursion VK root.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Sp1 {
+        pub groth16_vk_hash: String,
+        pub vk_root: String,
+    }
+
+    /// One real proof, ready for `ISP1Verifier.verifyProof`.
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ProofVector {
+        pub version: u32,
+        pub program_v_key: String,
+        pub public_values: String,
+        pub proof: String,
     }
 
     #[derive(Serialize)]
@@ -1655,6 +1675,10 @@ fn render() -> String {
         spells,
         vaults: vault_rows,
         tokens: token_rows,
+        sp1: json::Sp1 {
+            groth16_vk_hash: hex32(&sha256(&[charms_client::tx::groth16_vk(15, false).unwrap()])),
+            vk_root: hex32(&sp1_verifier::VK_ROOT_BYTES),
+        },
     };
     let mut json = serde_json::to_string_pretty(&doc).unwrap();
     json.push('\n');
@@ -1666,7 +1690,7 @@ fn render() -> String {
 
 fn assert_json_contract(json: &str) {
     let root: serde_json::Value = serde_json::from_str(json).unwrap();
-    assert_keys(&root, &["vaultVk", "spells", "vaults", "tokens"], "root");
+    assert_keys(&root, &["vaultVk", "spells", "vaults", "tokens", "sp1"], "root");
     assert_hex(root["vaultVk"].as_str().unwrap(), Some(32), "vaultVk");
     let spells = root["spells"].as_array().unwrap();
     let vault_rows = root["vaults"].as_array().unwrap();
@@ -1883,15 +1907,50 @@ fn generate() -> String {
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let json = generate();
     match args.as_slice() {
-        [path] => write_file(path, &json),
-        [flag, path] if flag == "--check" => check_file(path, &json),
+        [path] => write_file(path, &generate()),
+        [flag, path] if flag == "--check" => check_file(path, &generate()),
+        [flag, tx, path] if flag == "--proof" => write_file(path, &proof_vector(tx)),
         _ => {
-            eprintln!("usage: charms-ethereum-vectors <out.json> | --check <path>");
+            eprintln!(
+                "usage: charms-ethereum-vectors <out.json> | --check <path> \
+                 | --proof <bitcoin-tx-hex-file> <out.json>"
+            );
             process::exit(2);
         }
     }
+}
+
+/// Extracts the spell and Groth16 proof of a Bitcoin transaction, verifies them the way
+/// `charms-lib` does for the current protocol version, and writes what the stock SP1 verifier
+/// needs to verify the same proof.
+fn proof_vector(tx_path: &str) -> String {
+    use charms_client::tx::{EnchantedTx, Tx};
+
+    let hex = fs::read_to_string(tx_path).unwrap_or_else(|err| panic!("read {tx_path}: {err}"));
+    let tx = Tx::try_from(hex.trim()).expect("a Bitcoin or Cardano transaction");
+    let Tx::Bitcoin(bitcoin_tx) = &tx else {
+        panic!("expected a Bitcoin transaction");
+    };
+    let spell = tx
+        .extract_and_verify_spell(&charms_lib::SPELL_VK, false)
+        .expect("a v15 spell whose proof verifies");
+    let (_, proof) =
+        charms_client::bitcoin_tx::parse_spell_and_proof_from_op_return(bitcoin_tx.inner())
+            .expect("spell in OP_RETURN");
+    let vector = json::ProofVector {
+        version: spell.version,
+        program_v_key: hex32(&charms_lib::SPELL_VK),
+        public_values: hex_bytes(&to_serialized_pv(
+            spell.version,
+            &charms_lib::SPELL_VK,
+            &spell,
+        )),
+        proof: hex_bytes(&proof),
+    };
+    let mut json = serde_json::to_string_pretty(&vector).unwrap();
+    json.push('\n');
+    json
 }
 
 fn write_file(path: &str, json: &str) {

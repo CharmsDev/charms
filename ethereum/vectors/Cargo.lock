@@ -640,12 +640,22 @@ version = "0.0.0"
 dependencies = [
  "charms-client",
  "charms-data",
+ "charms-lib",
  "ciborium",
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sha3",
+ "sp1-verifier",
+]
+
+[[package]]
+name = "charms-lib"
+version = "15.1.0"
+dependencies = [
+ "charms-client",
+ "hex-literal",
 ]
 
 [[package]]
