@@ -4,9 +4,7 @@ pragma solidity 0.8.37;
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
-import {
-    ICharmsLedger, ICharmsTypes, ICharmToken, ICharmTokenHooks
-} from "./interfaces/ICharms.sol";
+import {ICharmToken, ICharmTokenHooks, ICharmsLedger, ICharmsTypes} from "./interfaces/ICharms.sol";
 import {appKey} from "./libraries/CharmTokenClone.sol";
 
 /// @notice The shared implementation behind every tag-`t` `CharmToken` clone. Each clone appends

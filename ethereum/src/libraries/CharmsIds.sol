@@ -11,9 +11,8 @@ library CharmsIds {
         pure
         returns (bytes32)
     {
-        return keccak256(
-            abi.encodePacked("charms/ethereum/tx/v1", chainId, charms, anchor, spellCbor)
-        );
+        return
+            keccak256(abi.encodePacked("charms/ethereum/tx/v1", chainId, charms, anchor, spellCbor));
     }
 
     /// @notice `SHA-256("charms/ethereum/vault/v1" ‖ chainid as uint256 ‖ Charms proxy ‖ token)`,

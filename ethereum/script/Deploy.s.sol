@@ -39,16 +39,14 @@ contract Deploy is Script {
             abi.encodePacked(type(Charms).creationCode, abi.encode(applier))
         );
         charms = Charms(
-            payable(
-                _create2(
+            payable(_create2(
                     deployer,
                     PROXY_SALT,
                     abi.encodePacked(
                         type(CharmsProxy).creationCode,
                         abi.encode(implementation, abi.encodeCall(Charms.initialize, (admin)))
                     )
-                )
-            )
+                ))
         );
         vm.stopBroadcast();
 

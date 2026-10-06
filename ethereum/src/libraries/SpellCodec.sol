@@ -372,8 +372,8 @@ library SpellCodec {
     /// @dev An upper bound on the encoded length. Array and map counts are at most 64, so every
     /// head fits in 3 bytes and every uint in 9.
     function _bound(ICharmsTypes.Spell memory s) private pure returns (uint256 n) {
-        n = 128 + (s.ins.length + s.refs.length) * 38 + s.beamedOuts.length * 71
-            + s.scrolls.length * 5 + s.versionedApps.length * 156;
+        n = 128 + (s.ins.length + s.refs.length) * 38 + s.beamedOuts.length * 71 + s.scrolls.length
+            * 5 + s.versionedApps.length * 156;
         for (uint256 i; i < s.outs.length; ++i) {
             ICharmsTypes.Charm[] memory charms = s.outs[i].charms;
             n += 58;

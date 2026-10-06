@@ -2,7 +2,7 @@
 pragma solidity 0.8.37;
 
 import {CharmToken} from "../src/CharmToken.sol";
-import {ICharmsErrors, ICharmToken} from "../src/interfaces/ICharms.sol";
+import {ICharmToken, ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
 contract CoreTest is CharmsTestBase {

@@ -13,7 +13,7 @@ import {DoubleEndedQueue} from "@openzeppelin/contracts/utils/structs/DoubleEnde
 import {CharmToken} from "./CharmToken.sol";
 import {CharmsApply} from "./CharmsApply.sol";
 import {CharmsStorage} from "./CharmsStorage.sol";
-import {ICharms, ICharmsLedger, ICharmTokenHooks, IUpgradeable} from "./interfaces/ICharms.sol";
+import {ICharmTokenHooks, ICharms, ICharmsLedger, IUpgradeable} from "./interfaces/ICharms.sol";
 import {CharmTokenClone, appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
@@ -427,7 +427,11 @@ contract Charms is
         }
     }
 
-    function _load(bytes32 key, Head memory h, App memory app) private view returns (Pick memory p) {
+    function _load(bytes32 key, Head memory h, App memory app)
+        private
+        view
+        returns (Pick memory p)
+    {
         p.key = key;
         p.head = h;
         if (h.kind == Kind.Plain) {
@@ -475,11 +479,7 @@ contract Charms is
         return false;
     }
 
-    function _amountOf(UtxoBody.Held[] memory held, App memory app)
-        private
-        pure
-        returns (uint256)
-    {
+    function _amountOf(UtxoBody.Held[] memory held, App memory app) private pure returns (uint256) {
         for (uint256 j; j < held.length; ++j) {
             if (_appEq(held[j].app, app)) return held[j].amount;
         }
@@ -538,8 +538,7 @@ contract Charms is
     }
 
     function _decimals(address token) private view returns (bool known, uint256 d) {
-        (bool ok, bytes memory ret) =
-            token.staticcall(abi.encodeCall(IERC20Metadata.decimals, ()));
+        (bool ok, bytes memory ret) = token.staticcall(abi.encodeCall(IERC20Metadata.decimals, ()));
         if (!ok || ret.length < 32) return (false, 0);
         d = abi.decode(ret, (uint256));
         if (d > type(uint8).max) revert InvalidDecimals();

@@ -41,11 +41,7 @@ contract CharmsApply is CharmsStorage {
     /// @dev Spells built by `wrap`, `unwrap`, and `tokenTransfer` carry no proof, so one that is
     /// not native reverts with `ProofRequired`.
     /// @dev Payable because `wrap` reaches it by `delegatecall`, which keeps `msg.value`.
-    function applySpell(Spell memory s, Context memory c)
-        external
-        payable
-        returns (bytes32 txId)
-    {
+    function applySpell(Spell memory s, Context memory c) external payable returns (bytes32 txId) {
         if (s.version != SPELL_VERSION) revert UnsupportedVersion(s.version);
         _checkShape(s);
         bool proofs = address(VERIFIER) != address(0);
@@ -80,9 +76,7 @@ contract CharmsApply is CharmsStorage {
             if (!proofs) revert ProofsUnsupported();
             if (s.ins.length == 0) revert ProvedSpellWithoutInputs();
             _checkBlobs(s);
-            VERIFIER.verifyProof(
-                PROGRAM_VKEY, SpellCodec.publicValues(PROGRAM_VKEY, cbor), c.proof
-            );
+            VERIFIER.verifyProof(PROGRAM_VKEY, SpellCodec.publicValues(PROGRAM_VKEY, cbor), c.proof);
         }
 
         _createOutputs(s, keys, txId, owners);
@@ -132,8 +126,7 @@ contract CharmsApply is CharmsStorage {
                 revert NotCanonical();
             }
             bool token = apps[c.app].tag == TAG_T;
-            if (token ? c.amount == 0 || c.data.length != 0 : c.amount != 0 || c.data.length == 0)
-            {
+            if (token ? c.amount == 0 || c.data.length != 0 : c.amount != 0 || c.data.length == 0) {
                 revert NotCanonical();
             }
         }
@@ -186,11 +179,7 @@ contract CharmsApply is CharmsStorage {
     ) private view {
         bytes32 domain = keccak256(
             abi.encode(
-                DOMAIN_TYPEHASH,
-                keccak256("Charms"),
-                keccak256("1"),
-                block.chainid,
-                address(this)
+                DOMAIN_TYPEHASH, keccak256("Charms"), keccak256("1"), block.chainid, address(this)
             )
         );
         bytes32 digest =
@@ -333,8 +322,7 @@ contract CharmsApply is CharmsStorage {
             Pin[] memory pins = _pinsOf(s, o.charms);
             Charm memory first = o.charms[0];
             if (o.charms.length == 1 && pins.length == 0 && s.apps[first.app].tag == TAG_T) {
-                head[key] =
-                    Head(o.owner, Kind.Plain, uint8(j), first.amount, txId, keys[first.app]);
+                head[key] = Head(o.owner, Kind.Plain, uint8(j), first.amount, txId, keys[first.app]);
             } else {
                 bytes memory record = UtxoBody.encode(s.apps, o.charms, pins);
                 head[key] = Head(o.owner, Kind.Bundle, uint8(j), 0, txId, keccak256(record));
@@ -401,8 +389,9 @@ contract CharmsApply is CharmsStorage {
                 continue;
             }
             uint256 locked = v.locked;
-            uint256 held =
-                token == address(0) ? address(this).balance : IERC20(token).balanceOf(address(this));
+            uint256 held = token == address(0)
+                ? address(this).balance
+                : IERC20(token).balanceOf(address(this));
             if (resident * 10 ** v.scale > locked || held < locked) {
                 revert VaultUndercollateralized();
             }

@@ -94,8 +94,9 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
 
     /// @dev `CREATE(proxy, nonce 1)`, which `initialize` checks.
     function _charmTokenImplementation() internal view returns (address) {
-        return address(
-            uint160(uint256(keccak256(abi.encodePacked(hex"d694", address(this), hex"01"))))
-        );
+        return
+            address(
+                uint160(uint256(keccak256(abi.encodePacked(hex"d694", address(this), hex"01"))))
+            );
     }
 }
