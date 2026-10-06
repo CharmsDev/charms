@@ -4,7 +4,14 @@ pragma solidity 0.8.37;
 import {ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmTokenClone} from "../src/libraries/CharmTokenClone.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
-import {BareToken, FeeToken, MockToken, MutableDecimalsToken, RejectEth} from "./utils/Mocks.sol";
+import {
+    BareToken,
+    FeeToken,
+    MockToken,
+    MutableDecimalsToken,
+    OutboundFeeToken,
+    RejectEth
+} from "./utils/Mocks.sol";
 
 contract VaultTest is CharmsTestBase {
     address internal alice;
@@ -111,6 +118,49 @@ contract VaultTest is CharmsTestBase {
         assertEq(token.balanceOf(address(charms)), 0);
         uint256 locked = _locked(address(token));
         assertEq(locked, 0);
+    }
+
+    function test_feeOnTransferUnwrapAcceptsTheShortfall() public {
+        OutboundFeeToken token = new OutboundFeeToken();
+        token.setExempt(address(charms));
+        address carol = makeAddr("carol");
+
+        token.mint(alice, 200);
+        token.mint(carol, 100);
+        token.mint(bob, 7);
+
+        vm.startPrank(alice);
+        token.approve(address(charms), 200);
+        charms.wrap(address(token), 200, alice, bytes32(uint256(1)));
+        vm.stopPrank();
+
+        vm.startPrank(carol);
+        token.approve(address(charms), 100);
+        charms.wrap(address(token), 100, carol, bytes32(uint256(1)));
+        vm.stopPrank();
+
+        (App memory app,) = charms.vaultOf(address(token));
+        uint256 before = token.balanceOf(bob);
+
+        vm.prank(alice);
+        charms.unwrap(address(token), 200, bob);
+
+        assertLt(token.balanceOf(bob), before + 200);
+        assertEq(token.balanceOf(bob), before + 198);
+        assertEq(token.balanceOf(address(0xfee)), 2);
+        assertEq(token.balanceOf(address(charms)), 100);
+        assertEq(_locked(address(token)), 100);
+        assertEq(_balance(app, alice), 0);
+        assertEq(_balance(app, carol), 100);
+
+        vm.prank(carol);
+        charms.unwrap(address(token), 100, carol);
+
+        assertEq(token.balanceOf(carol), 99);
+        assertEq(token.balanceOf(address(0xfee)), 3);
+        assertEq(token.balanceOf(address(charms)), 0);
+        assertEq(_locked(address(token)), 0);
+        assertEq(_balance(app, carol), 0);
     }
 
     function test_decimalsChangeRevertsWrapAndUnwrap() public {

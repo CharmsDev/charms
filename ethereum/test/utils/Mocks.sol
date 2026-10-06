@@ -48,6 +48,29 @@ contract FeeToken is MockToken {
     }
 }
 
+/// @dev Takes 1% out of every transfer except one into `exempt`. `wrap` exempts the vault, so the
+/// contract receives the full amount. `unwrap` sends onward, and the recipient receives 99%.
+contract OutboundFeeToken is MockToken {
+    address public exempt;
+
+    constructor() MockToken("OutFee", "OFEE", 6) {}
+
+    function setExempt(address who) external {
+        exempt = who;
+    }
+
+    function _update(address from, address to, uint256 amount) internal override {
+        if (from != address(0) && to != address(0) && to != exempt) {
+            uint256 fee = amount / 100;
+            if (fee != 0) {
+                super._update(from, address(0xfee), fee);
+                amount -= fee;
+            }
+        }
+        super._update(from, to, amount);
+    }
+}
+
 contract MutableDecimalsToken is MockToken {
     uint8 public dec;
 

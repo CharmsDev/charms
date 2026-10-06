@@ -181,6 +181,8 @@ interface ICharms is ICharmsErrors {
 
     /// @notice Burn `amount` of `msg.sender`'s vault charm and send the underlying asset to `to`.
     /// @dev The holder calls this. The underlying token is the one recorded for that vault.
+    /// The contract sends `amount * 10^scale` and does not require `to`'s balance to increase
+    /// by that amount. A fee taken out of the amount sent does not revert the unwrap.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
     /// @notice ERC-20 face of a tag-`t` `app`. Does not deploy.

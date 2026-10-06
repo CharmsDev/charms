@@ -216,7 +216,9 @@ interface ICharms {
     /// @notice Burn `amount` of `msg.sender`'s vault charm and send the underlying asset
     /// to `to`.
     /// @dev The holder calls this. The underlying token is the one recorded for that
-    /// vault.
+    /// vault. The contract sends `amount * 10^scale` and does not require `to`'s
+    /// balance to increase by that amount. A fee taken out of the amount sent does
+    /// not revert the unwrap.
     function unwrap(address token, uint64 amount, address to)
         external
         returns (bytes32 txId);
@@ -643,7 +645,7 @@ app          = t / identity / VAULT_VK
 
 `wrap` measures the balance the contract actually received (`balanceAfter - balanceBefore`, or `msg.value` for ETH) and requires it to equal `amount * 10^scale`. Fee-on-transfer tokens revert. Rebasing tokens are unsupported. It then applies a zero-input spell whose only output is `{vaultApp: amount}` to `owner`, with that `vaultDelta`, and adds the underlying amount to `locked`.
 
-`unwrap` selects the caller's UTXOs of the vault app the same way `tokenTransfer` does, applies a spell whose outputs are the optional change, with a negative `vaultDelta`, subtracts from `locked`, and only then sends the underlying. A recipient that reverts undoes the burn.
+`unwrap` selects the caller's UTXOs of the vault app the same way `tokenTransfer` does, applies a spell whose outputs are the optional change, with a negative `vaultDelta`, subtracts from `locked`, and only then sends `amount * 10^scale` of the underlying. It does not read the recipient's balance. A token that takes its fee out of the amount sent delivers less than that amount; the unwrap still completes, and the recipient accepts the shortfall. The contract's balance drops by the amount it sent, so `locked` still matches what the contract holds, and other holders are unaffected. A recipient that reverts undoes the burn.
 
 Invariants, checked on every apply that touches the vault app:
 
@@ -795,7 +797,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 - **Several charms on one UTXO.** One `head` record, one list entry per `t` app, one balance contribution per `t` app. Spending via the tag-`t` token preserves the other `t` or `n` charms on a sender-owned change output, including when this token's remainder is zero. An `n` charm, an `s` charm, a custom-tag charm, or an empty UTXO is spent with `transact`.
 - **Empty UTXOs.** Allowed, required as beam targets, indexed only in `emptyUtxos` and `head`. They do not affect supply.
 - **u64.** A single output amount and the sum of a spell's inputs of one app must fit in `u64`, because the guest adds them as `u64`. Balances in storage are `uint256` so many UTXOs can sum past `u64`; the facade then needs more than one call, each under the cap.
-- **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. The first `wrap` stores the canonical `scale`. A later `decimals()` that would change it reverts. The `App` stays the one identity above.
+- **Weird tokens.** Fee-on-transfer reverts on `wrap`. On `unwrap` it does not: the recipient accepts whatever the token delivers, even when that balance is smaller than it was plus the amount unwrapped. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. The first `wrap` stores the canonical `scale`. A later `decimals()` that would change it reverts. The `App` stays the one identity above.
 - **Mixed pins.** After a versioned app bumps its version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select do not share a pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` already requires.
 - **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits for `finalized`.
 - **History.** `Transaction` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
