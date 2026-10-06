@@ -190,9 +190,12 @@ interface ICharms is ICharmsErrors {
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a
     /// spell. `transfer` does not.
-    /// @dev `appKey == 0` pages `owner`'s empty UTXOs. `cursor` is a position from the front of
-    /// the list and `limit` bounds how many positions one call reads. Spent entries are skipped,
-    /// so a page can hold fewer than `limit` refs. `nextCursor` is 0 when the list is exhausted.
+    /// @dev `appKey == 0` pages `owner`'s empty UTXOs. Pass `cursor` 0 for the first page and
+    /// then the `nextCursor` the previous page returned, which is 0 when the list is exhausted.
+    /// A cursor is opaque, not a position: one that never came from this list reverts with
+    /// `InvalidCursor`. It stays valid after the UTXO it names is spent, so paging to the end
+    /// returns every UTXO that stays live meanwhile. `limit` bounds how many entries one call
+    /// reads, and spent entries are read but not returned, so a page can be shorter than `limit`.
     function utxosOf(bytes32 appKey, address owner, uint256 cursor, uint256 limit)
         external
         view

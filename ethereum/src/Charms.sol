@@ -34,6 +34,7 @@ contract Charms is
     ReentrancyGuardTransient
 {
     using SafeERC20 for IERC20;
+    using UtxoList for UtxoList.List;
 
     uint8 internal constant ETH_SCALE = 10;
     uint8 internal constant UNIT_DECIMALS = 8;
@@ -228,21 +229,21 @@ contract Charms is
     {
         UtxoList.List storage list = key == 0 ? emptyUtxos[owner] : utxos[owner][key];
         bytes32 start = cursor == 0 ? list.first : bytes32(cursor);
-        if (head[start].owner != owner) return (page, 0);
-        uint256 n;
+        if (cursor != 0 && !list.isEntry(start)) revert InvalidCursor();
+        uint256 live;
         bytes32 k = start;
-        while (k != 0 && n < limit) {
-            k = list.links[k].next;
-            ++n;
-        }
-        page = new UtxoRef[](n);
-        k = start;
-        for (uint256 i; i < n; ++i) {
-            Head storage h = head[k];
-            page[i] = UtxoRef(h.txId, h.index);
+        for (uint256 read; read < limit && k != 0; ++read) {
+            if (!list.isRemoved(k)) ++live;
             k = list.links[k].next;
         }
         nextCursor = uint256(k);
+        page = new UtxoRef[](live);
+        k = start;
+        for (uint256 n; n < live; k = list.links[k].next) {
+            if (list.isRemoved(k)) continue;
+            Head storage h = head[k];
+            page[n++] = UtxoRef(h.txId, h.index);
+        }
     }
 
     function utxo(UtxoRef calldata u)
