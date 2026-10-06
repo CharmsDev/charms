@@ -97,21 +97,21 @@ contract CoreTest is CharmsTestBase {
     function test_wrapAndUnwrapEth() public {
         _deployPhase1();
         vm.deal(alice, 1 ether);
-        (App memory vault, uint8 scale,) = charms.vaultOf(address(0));
+        (App memory vault, uint8 scale) = charms.vaultOf(address(0));
         assertEq(scale, 10);
         assertEq(vault.vk, VAULT_VK);
 
         vm.prank(alice);
         charms.wrap{value: 0.5 ether}(address(0), 0.5 ether / 1e10, alice, bytes32(0));
         assertEq(_balance(vault, alice), 5e7);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 0.5 ether);
 
         vm.prank(alice);
         charms.unwrap(address(0), 2e7, bob);
         assertEq(bob.balance, 0.2 ether);
         assertEq(_balance(vault, alice), 3e7);
-        (,, locked) = charms.vaultOf(address(0));
+        locked = _locked(address(0));
         assertEq(locked, 0.3 ether);
         assertEq(address(charms).balance, 0.3 ether);
     }

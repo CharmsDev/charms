@@ -244,14 +244,15 @@ interface ICharms {
         view
         returns (uint8 kind, address owner, uint64 amount, bytes memory body);
 
-    /// @notice The one vault `App` for `token`, its canonical `scale`, and locked
-    /// underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
+    /// @notice The one vault `App` for `token` and its canonical `scale`. Holders and
+    /// indexers use this before `wrap` or `unwrap`. The underlying balance is
+    /// `token.balanceOf(charms)`, or the ETH balance of `charms` for the ETH vault.
     /// @dev `app` does not depend on `scale`. ETH (`token == address(0)`) is always
     /// `scale` 10. An ERC-20's `scale` is derived from `decimals()` by the rule in Vault.
     function vaultOf(address token)
         external
         view
-        returns (ICharmsTypes.App memory app, uint8 scale, uint256 locked);
+        returns (ICharmsTypes.App memory app, uint8 scale);
 
     /// @notice Block number of a beam-out, or 0 if that id did not beam.
     /// `scrolls_ethereum` reads this at the `finalized` tag.

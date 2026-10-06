@@ -220,7 +220,7 @@ contract ProvedTest is CharmsTestBase {
 
         assertEq(charms.totalSupply(_key(vault)), 1000);
         assertEq(_balance(vault, bob), 400);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 1000e10, "a beam-in does not touch the collateral");
     }
 
@@ -319,7 +319,7 @@ contract ProvedTest is CharmsTestBase {
         vm.prank(alice);
         bytes32 w =
             charms.wrap{value: uint256(wrapped) * 1e10}(address(0), wrapped, alice, bytes32(0));
-        (vault,,) = charms.vaultOf(address(0));
+        (vault,) = charms.vaultOf(address(0));
         Spell memory s = _spell(_apps(vault), 1, 2);
         s.ins[0] = _input(w, 0, _charms(_token(0, wrapped)));
         s.outs[0] = Output(address(0), _charms(_token(0, beamed)));

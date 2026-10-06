@@ -835,7 +835,7 @@ contract TransactTest is CharmsTestBase {
         vm.deal(owner, uint256(units) * 1e10);
         vm.prank(owner);
         txId = charms.wrap{value: uint256(units) * 1e10}(address(0), units, owner, bytes32(0));
-        (vault,,) = charms.vaultOf(address(0));
+        (vault,) = charms.vaultOf(address(0));
     }
 
     /// @dev `extra` must sort after every app already in `s`.

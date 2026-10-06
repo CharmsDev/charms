@@ -173,6 +173,12 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         return keccak256(abi.encode(app.tag, app.identity, app.vk));
     }
 
+    /// @dev `vaults` is slot 8 of the frozen layout, and `locked` is the third word of a `Vault`.
+    function _locked(address token) internal view returns (uint256) {
+        bytes32 vault = keccak256(abi.encode(token, uint256(8)));
+        return uint256(vm.load(address(charms), bytes32(uint256(vault) + 2)));
+    }
+
     function _kind(bytes32 txId, uint32 index) internal view returns (uint8 kind, address owner) {
         (kind, owner,,) = charms.utxo(UtxoRef(txId, index));
     }

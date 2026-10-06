@@ -119,8 +119,8 @@ contract Handler is CharmsTestBase {
         nftApp = _app(N, "art");
         tokenApps[COIN_A] = _app(T, "coin a");
         tokenApps[COIN_B] = _app(T, "coin b");
-        (tokenApps[FIRST_VAULT],,) = charms_.vaultOf(address(0));
-        (tokenApps[FIRST_VAULT + 1],,) = charms_.vaultOf(address(token));
+        (tokenApps[FIRST_VAULT],) = charms_.vaultOf(address(0));
+        (tokenApps[FIRST_VAULT + 1],) = charms_.vaultOf(address(token));
         for (uint256 i; i < TOKENS; ++i) {
             uint256 j = i;
             while (j != 0 && _lt(tokenApps[i], tokenApps[order[j - 1]])) {

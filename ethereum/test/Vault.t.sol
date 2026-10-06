@@ -18,7 +18,8 @@ contract VaultTest is CharmsTestBase {
     }
 
     function test_ethWrapUsesScaleTenAndMintsToOwner() public {
-        (App memory app, uint8 scale, uint256 locked) = charms.vaultOf(address(0));
+        (App memory app, uint8 scale) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(scale, 10);
         assertEq(locked, 0);
         assertEq(app.tag, T);
@@ -29,7 +30,8 @@ contract VaultTest is CharmsTestBase {
 
         assertEq(_balance(app, bob), 7);
         assertEq(_balance(app, alice), 0);
-        (app, scale, locked) = charms.vaultOf(address(0));
+        (app, scale) = charms.vaultOf(address(0));
+        locked = _locked(address(0));
         assertEq(scale, 10);
         assertEq(locked, 7 * 10 ** 10);
         assertEq(address(charms).balance, 7 * 10 ** 10);
@@ -43,7 +45,7 @@ contract VaultTest is CharmsTestBase {
 
         assertEq(address(charms).balance, 0);
         assertEq(alice.balance, 1 ether);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 0);
     }
 
@@ -57,7 +59,8 @@ contract VaultTest is CharmsTestBase {
         vm.expectRevert(ICharmsErrors.AnchorUsed.selector);
         charms.wrap{value: 10 ** 10}(address(0), 1, alice, salt);
 
-        (App memory app,, uint256 locked) = charms.vaultOf(address(0));
+        (App memory app,) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(_balance(app, alice), 1);
         assertEq(locked, 10 ** 10);
     }
@@ -75,7 +78,7 @@ contract VaultTest is CharmsTestBase {
         assertEq(token.balanceOf(alice), 5);
         assertEq(token.balanceOf(address(charms)), 0);
         assertEq(address(charms).balance, 0);
-        (,, uint256 locked) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(locked, 0);
     }
 
@@ -106,7 +109,7 @@ contract VaultTest is CharmsTestBase {
 
         assertEq(token.balanceOf(alice), 100);
         assertEq(token.balanceOf(address(charms)), 0);
-        (,, uint256 locked) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(locked, 0);
     }
 
@@ -114,7 +117,8 @@ contract VaultTest is CharmsTestBase {
         MutableDecimalsToken token = new MutableDecimalsToken();
         assertEq(token.decimals(), 18);
         _wrap(address(token), 3, 10);
-        (App memory app, uint8 scale, uint256 locked) = charms.vaultOf(address(token));
+        (App memory app, uint8 scale) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(scale, 10);
         assertEq(locked, 3 * 10 ** 10);
         assertEq(_balance(app, alice), 3);
@@ -130,7 +134,7 @@ contract VaultTest is CharmsTestBase {
         charms.unwrap(address(token), 1, bob);
 
         assertEq(_balance(app, alice), 3);
-        (,, locked) = charms.vaultOf(address(token));
+        locked = _locked(address(token));
         assertEq(locked, 3 * 10 ** 10);
         assertEq(token.balanceOf(address(charms)), 3 * 10 ** 10);
         assertEq(token.balanceOf(bob), 0);
@@ -143,7 +147,8 @@ contract VaultTest is CharmsTestBase {
         vm.prank(alice);
         bytes32 txId = charms.unwrap(address(token), 40, bob);
 
-        (App memory app, uint8 scale, uint256 locked) = charms.vaultOf(address(token));
+        (App memory app, uint8 scale) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(scale, 0);
         assertEq(_balance(app, alice), 60);
         assertEq(charms.totalSupply(_key(app)), 60);
@@ -164,7 +169,7 @@ contract VaultTest is CharmsTestBase {
     function test_unwrapAboveBalanceReverts() public {
         MockToken token = new MockToken("USDC", "USDC", 6);
         _wrap(address(token), 10, 0);
-        (App memory app,,) = charms.vaultOf(address(token));
+        (App memory app,) = charms.vaultOf(address(token));
 
         vm.prank(alice);
         vm.expectRevert(ICharmsErrors.InsufficientBalance.selector);
@@ -173,7 +178,7 @@ contract VaultTest is CharmsTestBase {
         assertEq(_balance(app, alice), 10);
         assertEq(token.balanceOf(bob), 0);
         assertEq(token.balanceOf(address(charms)), 10);
-        (,, uint256 locked) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(locked, 10);
     }
 
@@ -188,7 +193,7 @@ contract VaultTest is CharmsTestBase {
         charms.unwrap(address(token), 1, address(charms));
         vm.stopPrank();
 
-        (,, uint256 locked) = charms.vaultOf(address(token));
+        uint256 locked = _locked(address(token));
         assertEq(locked, 10);
         assertEq(token.balanceOf(address(charms)), 10);
     }
@@ -198,14 +203,14 @@ contract VaultTest is CharmsTestBase {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
         charms.wrap{value: 5 * 10 ** 10}(address(0), 5, alice, bytes32(uint256(4)));
-        (App memory app,,) = charms.vaultOf(address(0));
+        (App memory app,) = charms.vaultOf(address(0));
 
         vm.prank(alice);
         vm.expectRevert(ICharmsErrors.EthTransferFailed.selector);
         charms.unwrap(address(0), 2, address(sink));
 
         assertEq(_balance(app, alice), 5);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 5 * 10 ** 10);
         assertEq(address(charms).balance, 5 * 10 ** 10);
         assertEq(address(sink).balance, 0);
@@ -221,8 +226,8 @@ contract VaultTest is CharmsTestBase {
         charms.wrap{value: 10 ** 10}(address(0), 1, alice, bytes32(uint256(1)));
         _wrap(address(token), 1, 0);
 
-        (App memory eth,,) = charms.vaultOf(address(0));
-        (App memory erc,,) = charms.vaultOf(address(token));
+        (App memory eth,) = charms.vaultOf(address(0));
+        (App memory erc,) = charms.vaultOf(address(token));
         assertEq(charms.balanceOf(_appKey(eth), alice), 1);
         assertEq(charms.balanceOf(_appKey(erc), alice), 1);
         assertTrue(_appKey(eth) != _appKey(erc));
@@ -230,13 +235,13 @@ contract VaultTest is CharmsTestBase {
 
     function test_vaultAppKeyDoesNotDependOnScale() public {
         MutableDecimalsToken token = new MutableDecimalsToken();
-        (App memory at18, uint8 scale18,) = charms.vaultOf(address(token));
+        (App memory at18, uint8 scale18) = charms.vaultOf(address(token));
         assertEq(scale18, 10);
         assertEq(at18.identity, _vaultId(address(token)));
         assertEq(at18.vk, sha256("charms/ethereum/vault/v1"));
 
         token.setDecimals(6);
-        (App memory at6, uint8 scale6,) = charms.vaultOf(address(token));
+        (App memory at6, uint8 scale6) = charms.vaultOf(address(token));
         assertEq(scale6, 0);
         assertEq(at6.identity, at18.identity);
         assertEq(at6.vk, at18.vk);
@@ -253,9 +258,9 @@ contract VaultTest is CharmsTestBase {
         _wrap(address(tiny), 1, 0);
         _wrap(address(huge), 1, 16);
 
-        (App memory wideApp,,) = charms.vaultOf(address(wide));
-        (App memory tinyApp,,) = charms.vaultOf(address(tiny));
-        (App memory hugeApp,,) = charms.vaultOf(address(huge));
+        (App memory wideApp,) = charms.vaultOf(address(wide));
+        (App memory tinyApp,) = charms.vaultOf(address(tiny));
+        (App memory hugeApp,) = charms.vaultOf(address(huge));
         CharmToken wideToken = CharmToken(charms.ensureToken(wideApp));
         CharmToken tinyToken = CharmToken(charms.ensureToken(tinyApp));
         CharmToken hugeToken = CharmToken(charms.ensureToken(hugeApp));
@@ -273,7 +278,7 @@ contract VaultTest is CharmsTestBase {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
         charms.wrap{value: 10 ** 10}(address(0), 1, alice, bytes32(uint256(1)));
-        (App memory app,,) = charms.vaultOf(address(0));
+        (App memory app,) = charms.vaultOf(address(0));
         CharmToken token = CharmToken(charms.ensureToken(app));
 
         assertEq(token.decimals(), 8);
@@ -284,7 +289,7 @@ contract VaultTest is CharmsTestBase {
     function test_vaultNameRevertsBeforeTheFirstWrap() public {
         MockToken usdc = new MockToken("USD Coin", "USDC", 6);
         assertEq(usdc.name(), "USD Coin");
-        (App memory app,,) = charms.vaultOf(address(usdc));
+        (App memory app,) = charms.vaultOf(address(usdc));
         CharmToken token = CharmToken(charms.ensureToken(app));
 
         vm.expectRevert(ICharmsErrors.MetadataUnspecified.selector);
@@ -302,7 +307,7 @@ contract VaultTest is CharmsTestBase {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
         charms.wrap{value: 20 * 10 ** 10}(address(0), 20, alice, bytes32(uint256(1)));
-        (App memory app,,) = charms.vaultOf(address(0));
+        (App memory app,) = charms.vaultOf(address(0));
         CharmToken token = CharmToken(charms.ensureToken(app));
 
         vm.prank(alice);
@@ -335,12 +340,14 @@ contract VaultTest is CharmsTestBase {
     }
 
     function _assertScale(address token, uint8 expected) private {
-        (App memory before, uint8 scale, uint256 locked) = charms.vaultOf(token);
+        (App memory before, uint8 scale) = charms.vaultOf(token);
+        uint256 locked = _locked(token);
         assertEq(scale, expected, "scale before the first wrap");
         assertEq(locked, 0);
         _wrap(token, 5, expected);
         App memory registered;
-        (registered, scale, locked) = charms.vaultOf(token);
+        (registered, scale) = charms.vaultOf(token);
+        locked = _locked(token);
         assertEq(scale, expected, "scale after the first wrap");
         assertEq(locked, 5 * 10 ** uint256(expected));
         assertEq(registered.identity, before.identity);
@@ -349,7 +356,7 @@ contract VaultTest is CharmsTestBase {
     }
 
     function _assertIdentity(address token) private view {
-        (App memory app,,) = charms.vaultOf(token);
+        (App memory app,) = charms.vaultOf(token);
         assertEq(app.tag, T);
         assertEq(app.identity, _vaultId(token));
         assertEq(app.vk, sha256("charms/ethereum/vault/v1"));

@@ -76,7 +76,8 @@ contract InvariantsTest is CharmsTestBase {
     function invariant_vaultLockedMatchesWrapsAndCoversSupply() public view {
         for (uint256 v; v < VAULTS; ++v) {
             address token = handler.underlying(v);
-            (App memory app, uint8 scale, uint256 locked) = charms.vaultOf(token);
+            (App memory app, uint8 scale) = charms.vaultOf(token);
+            uint256 locked = _locked(token);
             Handler.Flow memory f = handler.flow(FIRST_VAULT + v);
             assertEq(scale, 10, "both vaults have scale 10");
             assertEq(

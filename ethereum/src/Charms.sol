@@ -259,13 +259,9 @@ contract Charms is
         return (uint8(h.kind), h.owner, h.amount, record);
     }
 
-    function vaultOf(address token)
-        external
-        view
-        returns (App memory app, uint8 scale, uint256 locked)
-    {
+    function vaultOf(address token) external view returns (App memory app, uint8 scale) {
         Vault storage v = vaults[token];
-        return (_vaultApp(token), v.appKey != 0 ? v.scale : _scale(token), v.locked);
+        return (_vaultApp(token), v.appKey != 0 ? v.scale : _scale(token));
     }
 
     function name(App calldata app) external view returns (string memory) {

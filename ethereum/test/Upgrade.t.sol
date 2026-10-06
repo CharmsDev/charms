@@ -171,7 +171,7 @@ contract UpgradeTest is CharmsTestBase {
         assertEq(charms.totalSupply(_key(h.vault)), 1000);
         assertEq(_balance(h.vault, alice), 700);
         assertEq(_balance(h.vault, bob), 300);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 1000e10);
         assertEq(address(charms).balance, 1000e10);
     }
@@ -214,7 +214,7 @@ contract UpgradeTest is CharmsTestBase {
         charms.unwrap(address(0), 700, alice);
 
         assertEq(alice.balance, 700e10);
-        (,, uint256 locked) = charms.vaultOf(address(0));
+        uint256 locked = _locked(address(0));
         assertEq(locked, 300e10);
     }
 
@@ -223,7 +223,7 @@ contract UpgradeTest is CharmsTestBase {
         vm.deal(alice, 1000e10);
         vm.prank(alice);
         h.wrapped = UtxoRef(charms.wrap{value: 1000e10}(address(0), 1000, alice, bytes32(0)), 0);
-        (h.vault,,) = charms.vaultOf(address(0));
+        (h.vault,) = charms.vaultOf(address(0));
         h.token = charms.ensureToken(h.vault);
         vm.prank(alice);
         CharmToken(h.token).transfer(bob, 300);
