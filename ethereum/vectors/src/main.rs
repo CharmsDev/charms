@@ -1896,7 +1896,7 @@ fn generate() -> String {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.as_slice() {
-        [path] => write_file(path, &generate()),
+        [path] if !path.starts_with('-') => write_file(path, &generate()),
         [flag, path] if flag == "--check" => check_file(path, &generate()),
         [flag, tx, path] if flag == "--proof" => write_file(path, &proof_vector(tx)),
         _ => {
