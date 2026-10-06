@@ -50,7 +50,7 @@ bytes32 txId = charms.wrap(address(usdc), 1_000_000, alice, salt);
 charms.unwrap(address(usdc), 400_000, alice);
 ```
 
-`wrap` of ETH is `charms.wrap{value: amount * 10^scale}(address(0), amount, alice, salt)`. The charm amount is an integer count of the vault's unit, not wei. ETH uses `scale = 10` (1 unit = 10 gwei). A token with `decimals <= 8` uses `scale = 0` and keeps its own smallest unit. See [Vault](#vault).
+`wrap` of ETH is `charms.wrap{value: amount * 10^scale}(address(0), amount, alice, salt)`. The charm amount is an integer count of the vault's unit, not wei. ETH is fixed at 18 decimals, so `scale = 10` (1 unit = 10 gwei). A token with `decimals <= 8` uses `scale = 0` and keeps its own smallest unit. Scale is not part of the vault `App`. See [Vault](#vault).
 
 ### A spell file is still a spell file
 
@@ -195,7 +195,8 @@ interface ICharms {
     function utxo(ICharmsTypes.UtxoRef calldata u)
         external view returns (uint8 kind, address owner, uint64 amount, bytes memory body);
 
-    /// @notice Vault `App`, decimal `scale`, and locked underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
+    /// @notice The one vault `App` for `token`, its canonical `scale`, and locked underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
+    /// @dev `app` does not depend on `scale`. ETH (`token == address(0)`) is always `scale` 10. An ERC-20's `scale` is derived from `decimals()` by the rule in Vault.
     function vaultOf(address token) external view returns (ICharmsTypes.App memory app, uint8 scale, uint256 locked);
 
     /// @notice Block number of a beam-out, or 0 if that id did not beam. `scrolls_ethereum` reads this at the `finalized` tag.
@@ -261,7 +262,7 @@ interface ICharmToken {
     /// @notice ERC-20 symbol. This is CHIP-0420 `ticker`, not a separate field. A vault token copies the underlying symbol. Any other token uses `ticker` once published, and `"CHARM"` until then.
     function symbol() external view returns (string memory);
 
-    /// @notice Display decimals. CHIP-0420 `decimals`, default 0. A vault token uses `min(underlying decimals, 8)`.
+    /// @notice Display decimals. CHIP-0420 `decimals`, default 0. A vault token uses `min(underlying decimals, 8)`, which is the charm-unit precision from `scale`. That number is not part of the vault `App`.
     function decimals() external view returns (uint8);
 
     /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then calls `transferFrom`.
@@ -404,7 +405,7 @@ The CBOR shapes `SpellCodec` has to match, from ciborium's non-human-readable se
 - The id preimage is `ASCII "charms/ethereum/tx/v1" ‖ chainid as uint256 BE ‖ proxy (20 bytes) ‖ anchor (32 bytes) ‖ spellCbor`. `ethTxId = keccak256` of that preimage.
 - Proof public values are `to_serialized_pv` for v15 and later: CBOR of `([u8; 32] programVKey, NormalizedSpell)`, which is `0x82 ‖ encode([u8; 32] of programVKey) ‖ spellCbor`. `encode([u8; 32])` is the 32-uint array (`0x98 0x20`, then each byte). The Groth16 verifier commits to those public-value bytes. It does not commit to the id prefix.
 
-Golden vectors from `charms_data::util::write` check `spellCbor` and `to_serialized_pv`. They do not include the id-preimage prefix. A separate vector checks `keccak256` of that prefix concatenated with `spellCbor`.
+Golden vectors from `charms_data::util::write` check `spellCbor` and `to_serialized_pv`. They do not include the id-preimage prefix. A separate vector checks `keccak256` of that prefix concatenated with `spellCbor`. A vault-identity vector checks SHA-256 of `"charms/ethereum/vault/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ token_20`, with no scale byte.
 
 Limits, so a spell cannot be a gas bomb: at most 64 inputs, 64 outputs, 64 apps, and 96 KiB of public values.
 
@@ -490,13 +491,17 @@ For each `t` app touched by `_apply`, net the plain balance change per owner and
 
 Locking an ERC-20 or ETH mints a tag-`t` charm. Burning that charm unlocks the underlying. The policy lives in `Charms`, because the contract is the thing that holds the tokens. An app wasm cannot see an ERC-20 transfer, and a wasm that allowed a mint would allow it on Bitcoin too.
 
+One underlying asset has one vault charm. The asset is the pair `(chain, Charms proxy, token)`.
+
 ```
 VAULT_VK     = SHA-256("charms/ethereum/vault/v1")
-identity     = SHA-256("charms/ethereum/vault/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ token_20 ‖ scale_u8)
+identity     = SHA-256("charms/ethereum/vault/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ token_20)
 app          = t / identity / VAULT_VK
 ```
 
-`token_20` is 20 zero bytes for ETH. `scale = 0` when the token has no `decimals()` or `decimals <= 8`. Otherwise `scale = decimals - 8`. ETH is treated as 18 decimals, so `scale = 10` and one charm unit is 10^10 wei. Charm amounts are `u64` because `sum_token_amount` is `u64`. Eight decimal digits keeps a single output under that cap for any supply this protocol can represent; sub-unit dust of an 18-decimal token cannot be wrapped and is not rounded.
+`token_20` is 20 zero bytes for ETH. `scale` is not in that preimage. `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))` therefore does not include `scale`, and the CREATE2 `CharmToken` address for the vault does not either. A different scale cannot mint a second `App` for the same token.
+
+`wrap` and `unwrap` derive `scale`. The caller does not pass it. ETH is fixed: 18 decimals, so `scale = 10` and one charm unit is 10^10 wei. For an ERC-20, `scale = 0` when the token has no `decimals()` or `decimals <= 8`. Otherwise `scale = decimals - 8`. The contract stores that value on `vaults[token]` at the first `wrap` and uses it on every later `wrap` and `unwrap`. A later `decimals()` that would derive a different `scale` reverts. Charm amounts are `u64` because `sum_token_amount` is `u64`. Eight decimal digits keeps a single output under that cap for any supply this protocol can represent. Sub-unit dust of an 18-decimal token cannot be wrapped and is not rounded.
 
 `VAULT_VK` is the hash of a 24-byte string. That string is not wasm and not a BIP-340 key. No guest can run a contract for it or turn it into a versioned app. On Bitcoin and Cardano the vault charm is transfer-only and beam-only. Minting or burning it there is not a simple transfer and there is no binary that can authorize it.
 
@@ -630,7 +635,7 @@ CLI:
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |
 | `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55, stores the lowercase bytes. |
 | `util eth-token <APP>` | CREATE2 token address. |
-| `util eth-vault --token <addr\|eth> --decimals <d>` | Prints the vault `App`. |
+| `util eth-vault --token <addr\|eth>` | Prints the vault `App`. The `App` does not take a decimals argument. ETH's scale is 10. An ERC-20's scale is derived from `decimals()` and printed beside the `App`. |
 
 App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and a 20-byte `dest`. An app that wants to move ETH moves the vault charm. `charms-sdk` and the app runner do not change. `charms-lib`'s `extractAndVerifySpell` learns the Ethereum envelope in the v16 bump, and the binding documents that a decoded spell is content-authenticated: acceptance of a created output is `utxo(UtxoRef)` on the contract. Acceptance of a beam-out is `beamSourceAt(ethTxId) != 0`.
 
@@ -654,14 +659,14 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 - **Several charms on one UTXO.** One `head` record, one list entry per `t` app, one balance contribution per `t` app. Spending via the tag-`t` token preserves the other `t` or `n` charms on the change output. An `n` charm, an `s` charm, a custom-tag charm, or an empty UTXO is spent with `transact`.
 - **Empty UTXOs.** Allowed, required as beam targets, indexed only in `emptyUtxos` and `head`. They do not affect supply.
 - **u64.** A single output amount and the sum of a spell's inputs of one app must fit in `u64`, because the guest adds them as `u64`. Balances in storage are `uint256` so many UTXOs can sum past `u64`; the facade then needs more than one call, each under the cap.
-- **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. `decimals()` is read once, at vault creation.
+- **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. The first `wrap` stores the canonical `scale`. A later `decimals()` that would change it reverts. The `App` stays the one identity above.
 - **Mixed pins.** After a versioned app bumps its version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select do not share a pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` already requires.
 - **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits for `finalized`.
 - **History.** `Transaction` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
 
 ## Build order
 
-**Phase 0. Codec and verifier, no protocol change.** `SpellCodec` and `CborWellFormed`. Golden vectors from `util::write` cover `spellCbor` and `to_serialized_pv`. They do not cover the `ethTxId` prefix. A second vector checks `keccak256(prefix ‖ spellCbor)`. The fork test calls `ISP1Verifier.verifyProof(programVKey, publicValues, proofBytes)` with `publicValues = to_serialized_pv` and `proofBytes` the Charms `Proof` that `verify_gnark_v6` accepts for v15 (`SP1_V6_2_VK_ROOT`). The verifier address is an input to the test and, later, a constant in the v16 implementation. The CHIP does not hardcode a chain address. Done when the CBOR vectors match, the id-preimage vector matches, and that proof verifies.
+**Phase 0. Codec and verifier, no protocol change.** `SpellCodec` and `CborWellFormed`. Golden vectors from `util::write` cover `spellCbor` and `to_serialized_pv`. They do not cover the `ethTxId` prefix. A second vector checks `keccak256(prefix ‖ spellCbor)`. The fork test calls `ISP1Verifier.verifyProof(programVKey, publicValues, proofBytes)` with `publicValues = to_serialized_pv` and `proofBytes` the Charms `Proof` that `verify_gnark_v6` accepts for v15 (`SP1_V6_2_VK_ROOT`). The verifier address is an input to the test and, later, a constant in the v16 implementation. The CHIP does not hardcode a chain address. Done when the CBOR vectors match, the id-preimage vector matches, the vault-identity vector matches with no scale byte, and that proof verifies.
 
 **Phase 1. Ethereum-local, still v15.** `CharmsProxy`, `Charms`, the shared `CharmToken` implementation, and the per-app clones: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and ERC-1967 upgrade under the admin. The phase-1 implementation accepts spell version 15 and rejects proofs and `beamed_outs`. Host-side Rust for the record type and `tx_id`, behind a feature the guest does not compile. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables, plus a test that an upgrade keeps token addresses and existing `UtxoId`s. Audit, then the CREATE2 proxy deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
 
