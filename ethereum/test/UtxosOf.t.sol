@@ -4,8 +4,8 @@ pragma solidity 0.8.37;
 import {ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
-/// @notice A wallet that pages `utxosOf` from cursor 0 to the end collects every UTXO that stays
-/// live while it pages, even when the UTXO a cursor names is spent between calls.
+/// @notice A wallet that pages `utxosOf` from cursor 0 to the end, and starts again from 0 when the
+/// UTXO its cursor names was spent, collects every UTXO that stays live while it pages.
 contract UtxosOfTest is CharmsTestBase {
     address internal alice = makeAddr("alice");
     address internal bob = makeAddr("bob");
@@ -28,28 +28,32 @@ contract UtxosOfTest is CharmsTestBase {
         }
     }
 
-    function test_pagingContinuesAfterTheCursorUtxoIsSpent() public {
+    function test_aSpentCursorRevertsAndARestartCollectsTheRest() public {
         (UtxoRef[] memory page, uint256 next) = charms.utxosOf(_key(coin), alice, 0, 2);
         _assertRefs(page, 0, 2);
 
         _spend(2);
-        (page, next) = charms.utxosOf(_key(coin), alice, next, 10);
+        vm.expectRevert(ICharmsErrors.InvalidCursor.selector);
+        charms.utxosOf(_key(coin), alice, next, 10);
 
-        assertEq(page.length, 2, "the two receipts after the spent cursor");
-        _assertRef(page[0], 3);
-        _assertRef(page[1], 4);
+        (page, next) = charms.utxosOf(_key(coin), alice, 0, 10);
+        assertEq(page.length, 4);
+        _assertRef(page[0], 0);
+        _assertRef(page[1], 1);
+        _assertRef(page[2], 3);
+        _assertRef(page[3], 4);
         assertEq(next, 0);
     }
 
-    function test_pagingFollowsARunOfSpentUtxos() public {
+    function test_aUtxoSpentAheadOfTheCursorLeavesLaterPages() public {
         (, uint256 next) = charms.utxosOf(_key(coin), alice, 0, 2);
-        _spend(2);
         _spend(3);
 
         (UtxoRef[] memory page, uint256 last) = charms.utxosOf(_key(coin), alice, next, 10);
 
-        assertEq(page.length, 1);
-        _assertRef(page[0], 4);
+        assertEq(page.length, 2);
+        _assertRef(page[0], 2);
+        _assertRef(page[1], 4);
         assertEq(last, 0);
     }
 
@@ -69,7 +73,7 @@ contract UtxosOfTest is CharmsTestBase {
         assertEq(n, 4);
     }
 
-    function testFuzz_pagingReturnsEveryUtxoThatStaysLiveExactlyOnce(
+    function testFuzz_pagingWithRestartsReturnsEveryUtxoThatStaysLiveExactlyOnce(
         uint8 spendMask,
         uint8 pageSize,
         uint8 spendAfterPage
@@ -79,22 +83,39 @@ contract UtxosOfTest is CharmsTestBase {
         uint256[5] memory seen;
         uint256 cursor;
         uint256 pages;
-        do {
-            UtxoRef[] memory page;
-            (page, cursor) = charms.utxosOf(_key(coin), alice, cursor, pageSize);
-            for (uint256 i; i < page.length; ++i) {
-                ++seen[page[i].index];
+        bool restarted;
+        while (true) {
+            try charms.utxosOf(_key(coin), alice, cursor, pageSize) returns (
+                UtxoRef[] memory page, uint256 next
+            ) {
+                for (uint256 i; i < page.length; ++i) {
+                    ++seen[page[i].index];
+                }
+                cursor = next;
+            } catch (bytes memory reason) {
+                assertEq(bytes4(reason), ICharmsErrors.InvalidCursor.selector);
+                assertFalse(restarted, "one round of spends, so one restart at most");
+                restarted = true;
+                delete seen;
+                cursor = 0;
+                continue;
             }
             if (pages++ == spendAfterPage) {
                 for (uint256 r; r < 5; ++r) {
                     if (spendMask & (1 << r) != 0) _spend(r);
                 }
             }
-        } while (cursor != 0);
+            if (cursor == 0) break;
+        }
         for (uint256 r; r < 5; ++r) {
             if (spendMask & (1 << r) == 0) assertEq(seen[r], 1, "a live receipt, once");
             else assertLe(seen[r], 1, "a spent receipt, at most once");
         }
+    }
+
+    function test_aZeroLimitReverts() public {
+        vm.expectRevert(ICharmsErrors.ZeroLimit.selector);
+        charms.utxosOf(_key(coin), alice, 0, 0);
     }
 
     function test_aCursorThatNamesNoUtxoOfTheListReverts() public {

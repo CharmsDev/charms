@@ -143,6 +143,7 @@ interface ICharmsErrors {
     error NotAdmin();
     error ZeroAdmin();
     error InvalidCursor();
+    error ZeroLimit();
 }
 
 /// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on
@@ -192,10 +193,11 @@ interface ICharms is ICharmsErrors {
     /// spell. `transfer` does not.
     /// @dev `appKey == 0` pages `owner`'s empty UTXOs. Pass `cursor` 0 for the first page and
     /// then the `nextCursor` the previous page returned, which is 0 when the list is exhausted.
-    /// A cursor is opaque, not a position: one that never came from this list reverts with
-    /// `InvalidCursor`. It stays valid after the UTXO it names is spent, so paging to the end
-    /// returns every UTXO that stays live meanwhile. `limit` bounds how many entries one call
-    /// reads, and spent entries are read but not returned, so a page can be shorter than `limit`.
+    /// A cursor names a live UTXO of this list, not a position. Any other cursor, including one
+    /// whose UTXO was spent after it was returned, reverts with `InvalidCursor`. Read every page
+    /// at one block (`eth_call` with a fixed block tag) to collect every UTXO live at that block.
+    /// A wallet that reads at the latest block restarts from 0 on `InvalidCursor`. `limit` must
+    /// not be 0.
     function utxosOf(bytes32 appKey, address owner, uint256 cursor, uint256 limit)
         external
         view

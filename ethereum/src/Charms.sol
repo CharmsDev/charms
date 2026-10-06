@@ -227,22 +227,23 @@ contract Charms is
         view
         returns (UtxoRef[] memory page, uint256 nextCursor)
     {
+        if (limit == 0) revert ZeroLimit();
         UtxoList.List storage list = key == 0 ? emptyUtxos[owner] : utxos[owner][key];
         bytes32 start = cursor == 0 ? list.first : bytes32(cursor);
-        if (cursor != 0 && !list.isEntry(start)) revert InvalidCursor();
-        uint256 live;
+        if (cursor != 0 && !list.isMember(start)) revert InvalidCursor();
+        uint256 n;
         bytes32 k = start;
-        for (uint256 read; read < limit && k != 0; ++read) {
-            if (!list.isRemoved(k)) ++live;
+        while (k != 0 && n < limit) {
             k = list.links[k].next;
+            ++n;
         }
         nextCursor = uint256(k);
-        page = new UtxoRef[](live);
+        page = new UtxoRef[](n);
         k = start;
-        for (uint256 n; n < live; k = list.links[k].next) {
-            if (list.isRemoved(k)) continue;
+        for (uint256 i; i < n; ++i) {
             Head storage h = head[k];
-            page[n++] = UtxoRef(h.txId, h.index);
+            page[i] = UtxoRef(h.txId, h.index);
+            k = list.links[k].next;
         }
     }
 
