@@ -43,7 +43,7 @@ token.transferFrom(msg.sender, address(this), amount);
 token.transfer(msg.sender, amount);
 ```
 
-`tokenAddress` is a pure function of a tag-`t` `App` and the `Charms` address. It reverts for any other tag and does not deploy. A wallet or integration that needs on-chain `transfer` or `balanceOf` calls `ensureToken` once. Until then the address is knowable off-chain from `tokenAddress`. `transfer` spends the sender's UTXOs of that `t` app, creates one output to the recipient and one change output, and preserves every other `t` or `n` charm on the change output. NFT, Scroll, custom-tag, and empty UTXOs have no ERC-20. The caller spends them with `transact`. Units of a `t` token that sit on a UTXO next to one of those charms still count in that token's `balanceOf`. `transfer` does not select those UTXOs. Spending them is `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
+`tokenAddress` is a pure function of a tag-`t` `App` and the `Charms` address. It reverts for any other tag and does not deploy. A wallet or integration that needs on-chain `transfer` or `balanceOf` calls `ensureToken` once. Until then the address is knowable off-chain from `tokenAddress`. `transfer` spends the sender's UTXOs of that `t` app and creates one output of that token to the recipient. When any other `t` or `n` charm remains, or this token's remainder is nonzero, it also creates one sender-owned change output. That output carries the remainder when it is nonzero and every other `t` or `n` charm. A zero remainder of this token is not written there. NFT, Scroll, custom-tag, and empty UTXOs have no ERC-20. The caller spends them with `transact`. Units of a `t` token that sit on a UTXO next to one of those charms still count in that token's `balanceOf`. `transfer` does not select those UTXOs. Spending them is `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
 
 ### A wallet locks USDC, beams it, and unlocks it
 
@@ -98,7 +98,7 @@ Deploy a proxy and an implementation. CharmToken contracts and the external Grot
 
 - `CharmsProxy` is the address wallets, tokens, and the guest call `Charms`. Its `fallback` and `receive` always `delegatecall` the implementation in the ERC-1967 slot. It has no other functions and no admin branch. The storage slot is ERC-1967 (`keccak256("eip1967.proxy.implementation") - 1`), the slot OpenZeppelin's UUPS implementation uses. This is not the EIP-1822 `PROXIABLE` slot. Every call is delegated, and the upgrade function is not on the proxy bytecode, so a transfer does not pay for an admin check the way a transparent proxy does.
 - `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, and anchors, in the proxy's storage. `ensureToken` deploys a `CharmToken` only for a tag-`t` app. It also exposes `upgradeToAndCall`. The admin is a single address set at initialization. That address is the only account that can upgrade. There is no timelock and no second role.
-- `CharmToken` is the ERC-20 for one tag-`t` app. It is a clone: a minimal proxy (EIP-1167 with immutable arguments) that `delegatecall`s one shared `CharmToken` implementation. The per-token bytecode is that proxy, not a separately compiled contract. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances. There is no `CharmToken` for tag `n`, tag `s`, a custom tag, or an empty UTXO.
+- `CharmToken` is the ERC-20 for one tag-`t` app. It is a clone: a minimal proxy with immutable arguments. Its fallback appends the packed `App` and a `uint16` length to calldata, then `delegatecall`s one shared `CharmToken` implementation. The per-token bytecode is that proxy, not a separately compiled contract. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances. There is no `CharmToken` for tag `n`, tag `s`, a custom tag, or an empty UTXO.
 - `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
 `CharmToken.transfer` and `transferFrom` are the ERC-20 entry points for a tag-`t` app. They call `Charms.tokenTransfer`, which builds a simple-transfer spell and runs it through the same internal apply path as `transact`. They do not call the external `transact` (that would take the caller's identity from the token). The rules of the spell are still the rules of `transact`. A non-`t` charm has no `transfer` or `transferFrom`. The caller uses `transact`.
@@ -295,8 +295,8 @@ interface ICharmTokenHooks {
 /// @notice User-facing ERC-20 for one fungible charm, tag `t`. Wallets, routers, and DeFi
 /// call this. One per tag-`t` app. NFT, Scroll, custom-tag, and empty UTXOs are not this
 /// interface.
-/// @dev The deployed bytecode is an EIP-1167 minimal proxy with the `App` as immutable
-/// args. It `delegatecall`s a shared implementation.
+/// @dev The deployed bytecode forwards calldata plus the packed `App` and a `uint16`
+/// length, then `delegatecall`s a shared implementation.
 /// Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live
 /// here.
 /// An infinite allowance is not decremented. The token also implements
@@ -378,16 +378,25 @@ interface ICharmToken {
 
 The salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The CREATE2 deployer is the Charms proxy, so an upgrade of Charms does not move token addresses. `tokenAddress(app)` is that address before and after `ensureToken`.
 
-The clone bytecode is clones-with-immutable-args (the wighawag scheme). The deployed runtime is
+The clone bytecode is clones-with-immutable-args (the wighawag scheme). `appData` is `abi.encodePacked(uint32 tag, bytes32 identity, bytes32 vk)`. `uint32 tag` is big-endian, so `appData` is 68 bytes. `extraLength` is `appData.length + 2`, which is 70 (`0x0046`): the `App` plus the trailing length. `runSize` is `55 + extraLength`, which is 125 (`0x007d`).
+
+The creation code is 10 bytes and returns the runtime:
 
 ```text
-hex"363d3d373d3d3d363d73"
-  ‖ charmTokenImplementation (20 bytes)
-  ‖ hex"5af43d82803e903d91602b57fd5bf3"
-  ‖ abi.encodePacked(uint32 tag, bytes32 identity, bytes32 vk)
+hex"61007d3d81600a3d39f3"
 ```
 
-`uint32 tag` is big-endian. The suffix is 68 bytes. The clone's fallback appends that suffix to calldata before it `delegatecall`s `charmTokenImplementation`. The implementation reads the `App` from the tail of `msg.data`. `charmTokenImplementation` is the shared token implementation. It is fixed before the first clone and is part of `initCode`, so it is part of `tokenAddress`. The creation code is the cwia wrapper that returns this runtime. `tokenAddress = CREATE2(CharmsProxy, appKey, that initCode)`.
+The runtime is 55 bytes of forwarding logic, then `appData`, then `uint16(appData.length)` (`0x0044`):
+
+```text
+hex"3d3d3d3d363d3d376100466037363936610046013d73"
+  ‖ charmTokenImplementation
+  ‖ hex"5af43d3d93803e603557fd5bf3"
+  ‖ appData
+  ‖ hex"0044"
+```
+
+`charmTokenImplementation` is 20 bytes. The fallback copies caller calldata to memory, `CODECOPY`s `extraLength` bytes from runtime offset `0x37` onto the end of that copy, and `delegatecall`s `charmTokenImplementation` with args length `calldatasize + extraLength`. The copied bytes are the 68-byte `App` and the trailing `uint16` length. The implementation reads `appData` as the 68 bytes immediately before that `uint16` on `msg.data`. `charmTokenImplementation` is fixed before the first clone and is part of this init code, so it is part of `tokenAddress`. `tokenAddress = CREATE2(CharmsProxy, appKey, creation ‖ runtime)`.
 
 ### Upgrade
 
@@ -565,13 +574,13 @@ The proof does not establish spend authorization. On Bitcoin the owner signs the
 
 - `msg.sender` equals the owner, or
 - the owner signed EIP-712 `Spend(bytes32 txId)` under the Charms domain above (ECDSA or ERC-1271 via `staticcall`), with `txId` equal to `ethTxId`, or
-- `msg.sender` is the CREATE2 token for this app, the spell is native, every input is a UTXO of `from`, other `t`/`n` charms on those inputs are copied onto `from`'s change output, and no custom-tag charm is touched.
+- `msg.sender` is the CREATE2 token for this app, the spell is native, every input is a UTXO of `from`, any other `t`/`n` charm on those inputs is copied onto a change output owned by `from` (including when this token's remainder is zero), and no custom-tag charm is touched.
 
 `txId` commits to every input, output, owner, and beam hash. That is the Ethereum analogue of `SIGHASH_ALL`.
 
 A proved spell must spend at least one input. The proof does not commit to the anchor, so a zero-input proved spell could be replayed under a fresh salt. Bitcoin and Cardano transactions have an input. `hosting_chain_is_bitcoin` looks at the creator of `ins[0]`; an empty input list would make that undefined.
 
-`tokenTransfer` builds the native spell. Inputs come off the front of `utxos[from][app]`. Outputs are `{app: amount}` to `to` and, if there is a remainder, `{app: change, plus every other t/n charm from the inputs}` back to `from`. The contract then runs `_apply` and checks the result is native. A bug in the token cannot move a charm the rules would refuse.
+`tokenTransfer` builds the native spell. Inputs come off the front of `utxos[from][app]`. The recipient output is `{app: amount}` to `to`. When the selected inputs still hold any other `t` or `n` charm, or this token's remainder is nonzero, one more output goes to `from`. That output carries the remainder of this token when the remainder is nonzero, plus every other `t` or `n` charm from the inputs. A zero remainder of this token is not written on it (`ensure_no_zero_amounts`). The change output is omitted only when the selected inputs contain nothing except the transferred amount of this token. The contract then runs `_apply` and checks the result is native. A bug in the token cannot move a charm the rules would refuse.
 
 Idempotency is the EVM's. The call reverts or it is mined once. Submitting it again reverts with `InputSpent` or `AnchorUsed`. `wrap`'s token pull and `unwrap`'s token push are inside the same call. A revert undoes both. Re-proving a spell off-chain yields the same id, because the proof bytes are not in the preimage.
 
@@ -583,11 +592,11 @@ Reentrancy: one lock around `transact`, `wrap`, `unwrap`, and `tokenTransfer`. E
 
 `transfer(balanceOf)` is not always possible in one call. A UTXO that carries a custom-tag charm (anything other than `t` or `n`) cannot move in a native spell, because `is_simple_transfer` is false for those tags even when the data is copied unchanged. Those units stay inside `balanceOf`. `transfer` skips those UTXOs. If the requested amount is larger than the sum of the UTXOs it is allowed to select, it reverts with `RequiresProvedSpell` when the shortfall sits on custom-tag bundles, and with `InsufficientBalance` otherwise. The owner spends the bundle with `transact` and a proof, or splits the token off the bundle that way first.
 
-UTXOs that mix several `t` charms, or `t` with `n`, are selectable. The change output carries the other charms back to the same owner, which is a simple transfer. NFTs are not dropped and are not sent to the recipient unless the whole UTXO's charms are exactly the transferred token.
+UTXOs that mix several `t` charms, or `t` with `n`, are selectable. The sender-owned change output carries the other charms back, including when this token's remainder is zero, which is a simple transfer. NFTs are not dropped and are not sent to the recipient unless the whole UTXO's charms are exactly the transferred token.
 
-Partial spends do not exist. The input UTXO is spent whole. The remainder is a new output. That is the Charms rule, and it is the ERC-20 implementation.
+Partial spends do not exist. The input UTXO is spent whole. Every charm not placed on the recipient output is a new output, even when the transferred token's own remainder is zero. That is the Charms rule, and it is the ERC-20 implementation.
 
-Zero is not a charm amount (`ensure_no_zero_amounts`). `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. There is no Bitcoin dust limit. Change of zero is omitted. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
+Zero is not a charm amount (`ensure_no_zero_amounts`). `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. There is no Bitcoin dust limit. A zero remainder of the transferred token is not written on the change output. That output is still required when any other charm remains, and it is omitted only when the selected inputs contain nothing except the transferred amount of this token. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
 
 For each tag-`t` app whose plain balance changed in `_apply`, set `token = tokenAddress(app)`. If `extcodesize(token) == 0`, skip `emitTransfer` and do not deploy. If code is present, emit `Transfer` through that token, netted per owner, including mint and burn: one `Transfer(from, to, amount)` for a facade transfer, `Transfer(0, to, amount)` for a beam-in or a wrap, and `Transfer(from, 0, amount)` for a beam-out, a burn, or an unwrap. Supply on Ethereum changes in those mint and burn cases whether or not the clone exists. Indexers read the `Transaction` log when no facade exists yet.
 
@@ -764,7 +773,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 
 - **ETH versus a wrapped ERC-20.** ETH is the vault at `address(0)`. WETH is a different vault. They do not share supply.
 - **Allowances.** Charm allowances live on `CharmToken`. The underlying token's `approve` is only for `wrap`, and it names `Charms`, not the facade. `tokenTransfer` checks `msg.sender` is the token whose CREATE2 address it just recomputed.
-- **Several charms on one UTXO.** One `head` record, one list entry per `t` app, one balance contribution per `t` app. Spending via the tag-`t` token preserves the other `t` or `n` charms on the change output. An `n` charm, an `s` charm, a custom-tag charm, or an empty UTXO is spent with `transact`.
+- **Several charms on one UTXO.** One `head` record, one list entry per `t` app, one balance contribution per `t` app. Spending via the tag-`t` token preserves the other `t` or `n` charms on a sender-owned change output, including when this token's remainder is zero. An `n` charm, an `s` charm, a custom-tag charm, or an empty UTXO is spent with `transact`.
 - **Empty UTXOs.** Allowed, required as beam targets, indexed only in `emptyUtxos` and `head`. They do not affect supply.
 - **u64.** A single output amount and the sum of a spell's inputs of one app must fit in `u64`, because the guest adds them as `u64`. Balances in storage are `uint256` so many UTXOs can sum past `u64`; the facade then needs more than one call, each under the cap.
 - **Weird tokens.** Fee-on-transfer reverts. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. The first `wrap` stores the canonical `scale`. A later `decimals()` that would change it reverts. The `App` stays the one identity above.
