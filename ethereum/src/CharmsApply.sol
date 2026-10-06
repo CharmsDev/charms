@@ -40,7 +40,12 @@ contract CharmsApply is CharmsStorage {
 
     /// @dev Spells built by `wrap`, `unwrap`, and `tokenTransfer` carry no proof, so one that is
     /// not native reverts with `ProofRequired`.
-    function applySpell(Spell memory s, Context memory c) external returns (bytes32 txId) {
+    /// @dev Payable because `wrap` reaches it by `delegatecall`, which keeps `msg.value`.
+    function applySpell(Spell memory s, Context memory c)
+        external
+        payable
+        returns (bytes32 txId)
+    {
         if (s.version != SPELL_VERSION) revert UnsupportedVersion(s.version);
         _checkShape(s);
         bool proofs = address(VERIFIER) != address(0);
