@@ -390,6 +390,11 @@ contract Handler is CharmsTestBase {
         uint256 amountSeed
     ) internal {
         uint256[TOKENS][ACTORS] memory most = _selectable();
+        for (uint256 i; i < ACTORS; ++i) {
+            for (uint256 v = FIRST_VAULT; v < TOKENS; ++v) {
+                most[i][v] = 0;
+            }
+        }
         (bool found, uint256 a, uint256 t) = _pick(most, holderSeed);
         if (!found) {
             _skip(op);

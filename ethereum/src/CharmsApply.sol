@@ -432,7 +432,7 @@ contract CharmsApply is CharmsStorage {
 
     function _emitTransfers(Spell memory s, address[] memory inputOwners) private {
         for (uint256 i; i < s.apps.length; ++i) {
-            if (s.apps[i].tag != TAG_T) continue;
+            if (s.apps[i].tag != TAG_T || s.apps[i].vk == VAULT_VK) continue;
             address token = _tokenAddress(s.apps[i]);
             if (token.code.length == 0) continue;
             (address[] memory who, int256[] memory delta) = _netDeltas(s, i, inputOwners);

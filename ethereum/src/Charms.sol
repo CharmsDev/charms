@@ -179,6 +179,9 @@ contract Charms is
         nonReentrant
     {
         if (app.tag != TAG_T) revert NotTokenTag();
+        // A vault charm is the underlying asset's UTXO. Its ERC-20 face is that asset.
+        // The underlying token does not call here, and there is no CharmToken to call here.
+        if (app.vk == VAULT_VK) revert NotToken();
         if (msg.sender != _tokenAddress(app)) revert NotToken();
         if (to == address(0) || to == address(this)) revert InvalidRecipient();
         if (amount > type(uint64).max) revert AmountTooLarge();
@@ -195,6 +198,7 @@ contract Charms is
 
     function ensureToken(App calldata app) external returns (address token) {
         if (app.tag != TAG_T) revert NotTokenTag();
+        if (app.vk == VAULT_VK) return _vaultUnderlying(app);
         token = _tokenAddress(app);
         if (token.code.length != 0) return token;
         bytes memory init = CharmTokenClone.initCode(_charmTokenImplementation(), app);
@@ -208,6 +212,7 @@ contract Charms is
 
     function tokenAddress(App calldata app) external view returns (address) {
         if (app.tag != TAG_T) revert NotTokenTag();
+        if (app.vk == VAULT_VK) return _vaultUnderlying(app);
         return _tokenAddress(app);
     }
 
@@ -264,23 +269,16 @@ contract Charms is
         return (_vaultApp(token), v.appKey != 0 ? v.scale : _scale(token));
     }
 
-    function name(App calldata app) external view returns (string memory) {
-        if (app.vk != VAULT_VK) return "Charm";
-        return IERC20Metadata(_vaultUnderlyingErc20(app)).name();
+    function name(App calldata) external pure returns (string memory) {
+        return "Charm";
     }
 
-    function symbol(App calldata app) external view returns (string memory) {
-        if (app.vk != VAULT_VK) return "CHARM";
-        return IERC20Metadata(_vaultUnderlyingErc20(app)).symbol();
+    function symbol(App calldata) external pure returns (string memory) {
+        return "CHARM";
     }
 
-    function decimals(App calldata app) external view returns (uint8) {
-        if (app.vk != VAULT_VK) return 0;
-        address token = _vaultUnderlying(app);
-        if (token == address(0)) return UNIT_DECIMALS;
-        (bool known, uint256 d) = _decimals(token);
-        if (!known) revert MetadataUnspecified();
-        return d < UNIT_DECIMALS ? uint8(d) : UNIT_DECIMALS;
+    function decimals(App calldata) external pure returns (uint8) {
+        return 0;
     }
 
     function _transferSpell(Transfer memory request) private view returns (Spell memory s) {
@@ -521,17 +519,12 @@ contract Charms is
         return (true, d);
     }
 
-    /// @dev Reverts for an unregistered vault app, whose underlying cannot be recovered from its
-    /// identity hash.
+    /// @dev The first `wrap` records `token` for this app. The identity is a hash, so the
+    /// underlying cannot be recovered before that. `address(0)` is the ETH vault.
     function _vaultUnderlying(App memory app) private view returns (address token) {
         bytes32 key = appKey(app);
         token = vaultTokens[key];
         if (vaults[token].appKey != key) revert MetadataUnspecified();
-    }
-
-    function _vaultUnderlyingErc20(App memory app) private view returns (address token) {
-        token = _vaultUnderlying(app);
-        if (token == address(0)) revert MetadataUnspecified();
     }
 
     function _apply(Spell memory s, Context memory c) private returns (bytes32) {

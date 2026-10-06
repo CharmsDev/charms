@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {CharmToken} from "../src/CharmToken.sol";
 import {ICharmsErrors} from "../src/interfaces/ICharms.sol";
+import {CharmTokenClone} from "../src/libraries/CharmTokenClone.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 import {BareToken, FeeToken, MockToken, MutableDecimalsToken, RejectEth} from "./utils/Mocks.sol";
 
@@ -250,50 +250,65 @@ contract VaultTest is CharmsTestBase {
         assertEq(at6.identity, _vaultId(address(token)));
     }
 
-    function test_erc20VaultCopiesNameSymbolAndCapsDecimals() public {
+    function test_erc20VaultFaceIsTheUnderlyingAndDeploysNoClone() public {
         MockToken wide = new MockToken("Wide", "WIDE", 18);
         MockToken tiny = new MockToken("Tiny", "TINY", 6);
-        MockToken huge = new MockToken("Huge", "HUGE", 24);
         _wrap(address(wide), 1, 10);
         _wrap(address(tiny), 1, 0);
-        _wrap(address(huge), 1, 16);
 
         (App memory wideApp,) = charms.vaultOf(address(wide));
         (App memory tinyApp,) = charms.vaultOf(address(tiny));
-        (App memory hugeApp,) = charms.vaultOf(address(huge));
-        CharmToken wideToken = CharmToken(charms.ensureToken(wideApp));
-        CharmToken tinyToken = CharmToken(charms.ensureToken(tinyApp));
-        CharmToken hugeToken = CharmToken(charms.ensureToken(hugeApp));
 
-        assertEq(wideToken.name(), "Wide");
-        assertEq(wideToken.symbol(), "WIDE");
-        assertEq(wideToken.decimals(), 8);
-        assertEq(tinyToken.name(), "Tiny");
-        assertEq(tinyToken.symbol(), "TINY");
-        assertEq(tinyToken.decimals(), 6);
-        assertEq(hugeToken.decimals(), 8);
+        assertEq(charms.tokenAddress(wideApp), address(wide));
+        assertEq(charms.ensureToken(wideApp), address(wide));
+        assertEq(charms.ensureToken(wideApp), address(wide));
+        assertEq(charms.tokenAddress(tinyApp), address(tiny));
+        assertEq(charms.ensureToken(tinyApp), address(tiny));
+        assertEq(_clone(wideApp).code.length, 0);
+        assertEq(_clone(tinyApp).code.length, 0);
+
+        wide.mint(bob, 5);
+        vm.prank(bob);
+        assertTrue(wide.transfer(alice, 5));
+        assertEq(wide.balanceOf(alice), 5);
+        assertEq(_balance(wideApp, alice), 1);
+        assertEq(_balance(wideApp, bob), 0);
     }
 
-    function test_ethVaultDecimalsAreEightAndNameIsUnspecified() public {
+    function test_ethVaultFaceIsAddressZero() public {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
         charms.wrap{value: 10 ** 10}(address(0), 1, alice, bytes32(uint256(1)));
         (App memory app,) = charms.vaultOf(address(0));
-        CharmToken token = CharmToken(charms.ensureToken(app));
 
-        assertEq(token.decimals(), 8);
-        vm.expectRevert(ICharmsErrors.MetadataUnspecified.selector);
-        token.name();
+        assertEq(charms.tokenAddress(app), address(0));
+        assertEq(charms.ensureToken(app), address(0));
+        assertEq(_clone(app).code.length, 0);
     }
 
-    function test_vaultNameRevertsBeforeTheFirstWrap() public {
+    function test_vaultFaceRevertsBeforeTheFirstWrapAndDeploysNothing() public {
         MockToken usdc = new MockToken("USD Coin", "USDC", 6);
-        assertEq(usdc.name(), "USD Coin");
         (App memory app,) = charms.vaultOf(address(usdc));
-        CharmToken token = CharmToken(charms.ensureToken(app));
 
         vm.expectRevert(ICharmsErrors.MetadataUnspecified.selector);
-        token.name();
+        charms.tokenAddress(app);
+        vm.expectRevert(ICharmsErrors.MetadataUnspecified.selector);
+        charms.ensureToken(app);
+        assertEq(_clone(app).code.length, 0);
+    }
+
+    function test_underlyingCannotDriveVaultTokenTransfer() public {
+        MockToken usdc = new MockToken("USDC", "USDC", 6);
+        _wrap(address(usdc), 10, 0);
+        (App memory app,) = charms.vaultOf(address(usdc));
+
+        vm.prank(address(usdc));
+        vm.expectRevert(ICharmsErrors.NotToken.selector);
+        charms.tokenTransfer(app, alice, bob, 1);
+
+        assertEq(_balance(app, alice), 10);
+        assertEq(_balance(app, bob), 0);
+        assertEq(usdc.balanceOf(address(charms)), 10);
     }
 
     function test_plainEthSendReverts() public {
@@ -303,19 +318,25 @@ contract VaultTest is CharmsTestBase {
         assertEq(address(charms).balance, 0);
     }
 
-    function test_vaultCharmMovesThroughTheFacade() public {
+    function test_vaultCharmMovesThroughTransact() public {
         vm.deal(alice, 1 ether);
         vm.prank(alice);
-        charms.wrap{value: 20 * 10 ** 10}(address(0), 20, alice, bytes32(uint256(1)));
+        bytes32 wrapped =
+            charms.wrap{value: 20 * 10 ** 10}(address(0), 20, alice, bytes32(uint256(1)));
         (App memory app,) = charms.vaultOf(address(0));
-        CharmToken token = CharmToken(charms.ensureToken(app));
+        assertEq(charms.tokenAddress(app), address(0));
 
-        vm.prank(alice);
-        assertTrue(token.transfer(bob, 8));
+        Spell memory s = _spell(_apps(app), 1, 2);
+        s.ins[0] = _input(wrapped, 0, _charms(_token(0, 20)));
+        s.outs[0] = Output(bob, _charms(_token(0, 8)));
+        s.outs[1] = Output(alice, _charms(_token(0, 12)));
+        _transact(alice, s);
 
-        assertEq(token.balanceOf(alice), 12);
-        assertEq(token.balanceOf(bob), 8);
-        assertEq(token.totalSupply(), 20);
+        assertEq(_balance(app, alice), 12);
+        assertEq(_balance(app, bob), 8);
+        assertEq(charms.totalSupply(_key(app)), 20);
+        assertEq(address(charms).balance, 20 * 10 ** 10);
+        assertEq(bob.balance, 0);
         (UtxoRef[] memory alices,) = charms.utxosOf(_key(app), alice, 0, 10);
         (UtxoRef[] memory bobs,) = charms.utxosOf(_key(app), bob, 0, 10);
         assertEq(alices.length, 1);
@@ -360,6 +381,13 @@ contract VaultTest is CharmsTestBase {
         assertEq(app.tag, T);
         assertEq(app.identity, _vaultId(token));
         assertEq(app.vk, sha256("charms/ethereum/vault/v1"));
+    }
+
+    function _clone(App memory app) private view returns (address) {
+        return
+            CharmTokenClone.predict(
+                address(charms), vm.computeCreateAddress(address(charms), 1), app
+            );
     }
 
     function _vaultId(address token) private view returns (bytes32) {

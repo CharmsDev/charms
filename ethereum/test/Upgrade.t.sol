@@ -136,15 +136,28 @@ contract UpgradeTest is CharmsTestBase {
 
     function test_upgradeKeepsTokenAddressesAndTheyStillTransfer() public {
         History memory h = _phase1History();
+        App memory coin = _app(T, "coin");
+        address clone = charms.ensureToken(coin);
 
         _upgradeToV16();
 
-        assertEq(charms.tokenAddress(h.vault), h.token);
-        assertEq(charms.ensureToken(h.vault), h.token);
+        assertEq(h.token, address(0));
+        assertEq(charms.tokenAddress(h.vault), address(0));
+        assertEq(charms.ensureToken(h.vault), address(0));
+        assertEq(charms.tokenAddress(coin), clone);
+
+        _mintOne(bob, _apps(coin), _charms(_token(0, 300)));
         vm.prank(bob);
-        CharmToken(h.token).transfer(carol, 100);
-        assertEq(CharmToken(h.token).balanceOf(bob), 200);
-        assertEq(CharmToken(h.token).balanceOf(carol), 100);
+        CharmToken(clone).transfer(carol, 100);
+        assertEq(CharmToken(clone).balanceOf(bob), 200);
+        assertEq(CharmToken(clone).balanceOf(carol), 100);
+
+        Spell memory s = _spell(_apps(h.vault), 1, 1);
+        s.ins[0] = _input(h.sent.txId, h.sent.index, _charms(_token(0, 300)));
+        s.outs[0] = Output(carol, _charms(_token(0, 300)));
+        _transact(bob, s);
+        assertEq(_balance(h.vault, carol), 300);
+        assertEq(_balance(h.vault, bob), 0);
     }
 
     function test_upgradeKeepsEveryUtxoRecord() public {
@@ -224,9 +237,12 @@ contract UpgradeTest is CharmsTestBase {
         vm.prank(alice);
         h.wrapped = UtxoRef(charms.wrap{value: 1000e10}(address(0), 1000, alice, bytes32(0)), 0);
         (h.vault,) = charms.vaultOf(address(0));
-        h.token = charms.ensureToken(h.vault);
-        vm.prank(alice);
-        CharmToken(h.token).transfer(bob, 300);
+        h.token = charms.tokenAddress(h.vault);
+        Spell memory s = _spell(_apps(h.vault), 1, 2);
+        s.ins[0] = _input(h.wrapped.txId, h.wrapped.index, _charms(_token(0, 1000)));
+        s.outs[0] = Output(bob, _charms(_token(0, 300)));
+        s.outs[1] = Output(alice, _charms(_token(0, 700)));
+        _transact(alice, s);
         h.sent = _onlyUtxo(h.vault, bob);
         h.change = _onlyUtxo(h.vault, alice);
         h.placeholder = UtxoRef(_placeholder(carol), 0);
