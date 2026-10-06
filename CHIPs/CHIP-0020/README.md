@@ -33,9 +33,12 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 ### A contract treats a tag-`t` charm as an ERC-20
 
 ```solidity
-ICharmsTypes.App memory app = ICharmsTypes.App({tag: 0x74, identity: ID, vk: VK}); // 0x74 is tag t
+ICharmsTypes.App memory app = ICharmsTypes.App({
+    tag: 0x74, identity: ID, vk: VK
+}); // 0x74 is tag t
 address predicted = charms.tokenAddress(app); // pure CREATE2, no deploy
-IERC20 token = IERC20(charms.ensureToken(app)); // deploys the clone if it is not there yet
+IERC20 token = IERC20(charms.ensureToken(app));
+// deploys the clone if it is not there yet
 token.transferFrom(msg.sender, address(this), amount);
 token.transfer(msg.sender, amount);
 ```
@@ -75,11 +78,13 @@ Beaming uses the fields that already exist.
 
 ```bash
 # Placeholder on Ethereum. No proof. The id is known before the transaction is sent.
-charms spell prove --chain ethereum --spell placeholder.yaml --caller 0xAlice --salt 0x… > ph.json
+charms spell prove --chain ethereum --spell placeholder.yaml \
+  --caller 0xAlice --salt 0x… > ph.json
 cast send "$CHARMS" "$(jq -r .call.data ph.json)"
 
 # Bitcoin beams to sha256(UtxoId::to_bytes() of that id), as it does today.
-# After Bitcoin finality, claim on Ethereum. A claim is not a local simple transfer, so it has a proof.
+# After Bitcoin finality, claim on Ethereum.
+# A claim is not a local simple transfer, so it has a proof.
 charms spell prove --chain ethereum --spell claim.yaml \
   --beamed-from '{0: ["<btc-txid>:<vout>"]}' \
   --prev-txs "$(jq -c .tx ph.json)" --prev-txs btc-with-block-proof.json > claim.json
@@ -101,10 +106,13 @@ Deploy a proxy and an implementation. CharmToken contracts and the external Grot
 `Charms` implements `ICharms`, `ICharmsLedger`, and `IUpgradeable` as three interfaces. `ICharms` does not extend `ICharmsLedger`. Wallets and the CLI call `ICharms`. The token calls `ICharmsLedger`. The admin calls `IUpgradeable`. A caller of one does not need the methods of the others. `CharmToken` implements `ICharmToken` and `ICharmTokenHooks`. The structs live once, on `ICharmsTypes`, and the other interfaces use them.
 
 ```solidity
-/// @notice Shared structs. No functions. The other interfaces use these so `App` is defined once.
-/// @dev Wallets, CharmToken, and the CLI all pass `App` through. 't' = 0x74, 'n' = 0x6e, 's' = 0x73.
+/// @notice Shared structs. No functions. The other interfaces use these so `App` is
+/// defined once.
+/// @dev Wallets, CharmToken, and the CLI all pass `App` through. 't' = 0x74, 'n' = 0x6e,
+/// 's' = 0x73.
 interface ICharmsTypes {
-    /// @notice Unicode scalar tag plus the 32-byte identity and vk. Same triple as `charms_data::App`.
+    /// @notice Unicode scalar tag plus the 32-byte identity and vk. Same triple as
+    /// `charms_data::App`.
     struct App { uint32 tag; bytes32 identity; bytes32 vk; }
 
     /// @notice One `NormalizedSpell.versioned_apps` entry.
@@ -126,7 +134,8 @@ interface ICharmsTypes {
 
     struct BeamedOut { uint32 index; bytes32 destHash; }
 
-    /// @notice Typed mirror of `NormalizedSpell`. The contract fills `tx.ins` and `tx.coins`.
+    /// @notice Typed mirror of `NormalizedSpell`. The contract fills `tx.ins` and
+    /// `tx.coins`.
     struct Spell {
         uint32 version;
         App[] apps;             // app_public_inputs keys, strictly increasing
@@ -140,34 +149,52 @@ interface ICharmsTypes {
     }
 }
 
-/// @notice Ledger calls from a tag-`t` `CharmToken`. The token stores this address (the Charms proxy) and nothing wider.
-/// @dev Only tag `t` has this surface. `CharmToken.transfer` and `transferFrom` are the only callers of `tokenTransfer`.
-///      `balanceOf` and `totalSupply` on that token read the two views. DeFi calls the token, not this interface.
+/// @notice Ledger calls from a tag-`t` `CharmToken`. The token stores this address (the
+/// Charms proxy) and nothing wider.
+/// @dev Only tag `t` has this surface. `CharmToken.transfer` and `transferFrom` are the
+/// only callers of `tokenTransfer`.
+/// `balanceOf` and `totalSupply` on that token read the two views. DeFi calls the token,
+/// not this interface.
 ///      `tokenTransfer` does not deploy a `CharmToken`.
 interface ICharmsLedger {
-    /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and creating change.
-    /// @dev `app.tag` must be `t`. Only the CREATE2 `CharmToken` for that app may call this. The token has already checked `msg.sender` and the allowance.
-    function tokenTransfer(ICharmsTypes.App calldata app, address from, address to, uint256 amount) external;
+    /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and
+    /// creating change.
+    /// @dev `app.tag` must be `t`. Only the CREATE2 `CharmToken` for that app may call
+    /// this. The token has already checked `msg.sender` and the allowance.
+    function tokenTransfer(
+        ICharmsTypes.App calldata app,
+        address from,
+        address to,
+        uint256 amount
+    ) external;
 
-    /// @notice Ethereum-resident supply of one charm. The token's `totalSupply` returns this.
+    /// @notice Ethereum-resident supply of one charm. The token's `totalSupply` returns
+    /// this.
     function totalSupply(bytes32 appKey) external view returns (uint256);
 
-    /// @notice Sum of this charm on `owner`'s unspent, non-beamed UTXOs. The token's `balanceOf` returns this.
+    /// @notice Sum of this charm on `owner`'s unspent, non-beamed UTXOs. The token's
+    /// `balanceOf` returns this.
     function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
 }
 
-/// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on the proxy.
-/// @dev Does not include `ICharmsLedger`. Those callers use the ERC-20 for balances and do not call `tokenTransfer`.
+/// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call
+/// this on the proxy.
+/// @dev Does not include `ICharmsLedger`. Those callers use the ERC-20 for balances and
+/// do not call `tokenTransfer`.
 interface ICharms {
-    /// @notice A Charms transaction was applied. Indexers and `tx fetch` read `txId` and `spell` from this log.
+    /// @notice A Charms transaction was applied. Indexers and `tx fetch` read `txId` and
+    /// `spell` from this log.
     /// @dev `spell` is the committed CBOR. `anchor` is zero when the spell spent inputs.
     event Transaction(bytes32 indexed txId, bytes32 anchor, bytes spell);
 
     /// @notice Spend `spell.ins` and create `spell.outs`. Returns the new `ethTxId`.
-    /// @dev Wallets and the CLI call this for any spell that is not an ERC-20 `transfer` or a vault lock or unlock.
-    ///      `proof` is empty when the contract can check the spell itself, and required otherwise.
+    /// @dev Wallets and the CLI call this for any spell that is not an ERC-20 `transfer`
+    /// or a vault lock or unlock.
+    /// `proof` is empty when the contract can check the spell itself, and required
+    /// otherwise.
     ///      `salt` is used when `ins` is empty (a placeholder). Otherwise `salt` is 0.
-    ///      `signatures` has one entry per input owner other than `msg.sender`, in order of first appearance,
+    /// `signatures` has one entry per input owner other than `msg.sender`, in order of
+    /// first appearance,
     ///      over EIP-712 `Spend(bytes32 txId)`. ECDSA or ERC-1271 `staticcall`.
     function transact(
         ICharmsTypes.Spell calldata spell,
@@ -176,66 +203,108 @@ interface ICharms {
         bytes[] calldata signatures
     ) external returns (bytes32 txId);
 
-    /// @notice Lock the underlying ERC-20, or ETH when `token` is `address(0)`, and mint that vault charm to `owner`.
-    /// @dev The holder calls this after `approve` on the underlying token. `amount` is in vault units. `salt` names this zero-input creation.
+    /// @notice Lock the underlying ERC-20, or ETH when `token` is `address(0)`, and mint
+    /// that vault charm to `owner`.
+    /// @dev The holder calls this after `approve` on the underlying token. `amount` is in
+    /// vault units. `salt` names this zero-input creation.
     function wrap(address token, uint64 amount, address owner, bytes32 salt)
         external payable returns (bytes32 txId);
 
-    /// @notice Burn `amount` of `msg.sender`'s vault charm and send the underlying asset to `to`.
-    /// @dev The holder calls this. The underlying token is the one recorded for that vault.
-    function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
+    /// @notice Burn `amount` of `msg.sender`'s vault charm and send the underlying asset
+    /// to `to`.
+    /// @dev The holder calls this. The underlying token is the one recorded for that
+    /// vault.
+    function unwrap(address token, uint64 amount, address to)
+        external
+        returns (bytes32 txId);
 
-    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. Pure. Does not deploy. Reverts when `app.tag` is not `t`.
-    /// @dev Wallets compute this off-chain the same way. The address is known before `ensureToken`.
+    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. Pure. Does not
+    /// deploy. Reverts when `app.tag` is not `t`.
+    /// @dev Wallets compute this off-chain the same way. The address is known before
+    /// `ensureToken`.
     function tokenAddress(ICharmsTypes.App calldata app) external view returns (address);
 
-    /// @notice Deploy the `CharmToken` clone for a tag-`t` `app` when no code is at `tokenAddress(app)`. If the clone is already there, return that address.
-    /// @dev A wallet or integration calls this once before `transfer` or `balanceOf`. Any tag other than `t` reverts. `_apply` and `tokenTransfer` do not call this.
+    /// @notice Deploy the `CharmToken` clone for a tag-`t` `app` when no code is at
+    /// `tokenAddress(app)`. If the clone is already there, return that address.
+    /// @dev A wallet or integration calls this once before `transfer` or `balanceOf`. Any
+    /// tag other than `t` reverts. `_apply` and `tokenTransfer` do not call this.
     function ensureToken(ICharmsTypes.App calldata app) external returns (address token);
 
-    /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a spell. `transfer` does not.
+    /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to
+    /// build a spell. `transfer` does not.
     function utxosOf(bytes32 appKey, address owner, uint256 cursor, uint256 limit)
         external view returns (ICharmsTypes.UtxoRef[] memory page, uint256 nextCursor);
 
-    /// @notice The stored record for one UTXO. `charms-lib` and an indexer call this to see that the contract accepted the output.
-    /// @dev `kind` is 0 Empty, 1 Plain, 2 Bundle. `body` is empty for Empty and for an unpinned Plain token. A missing id returns kind 0 and `owner == address(0)`.
+    /// @notice The stored record for one UTXO. `charms-lib` and an indexer call this to
+    /// see that the contract accepted the output.
+    /// @dev `kind` is 0 Empty, 1 Plain, 2 Bundle. `body` is empty for Empty and for an
+    /// unpinned Plain token. A missing id returns kind 0 and `owner == address(0)`.
     function utxo(ICharmsTypes.UtxoRef calldata u)
-        external view returns (uint8 kind, address owner, uint64 amount, bytes memory body);
+        external
+        view
+        returns (uint8 kind, address owner, uint64 amount, bytes memory body);
 
-    /// @notice The one vault `App` for `token`, its canonical `scale`, and locked underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
-    /// @dev `app` does not depend on `scale`. ETH (`token == address(0)`) is always `scale` 10. An ERC-20's `scale` is derived from `decimals()` by the rule in Vault.
-    function vaultOf(address token) external view returns (ICharmsTypes.App memory app, uint8 scale, uint256 locked);
+    /// @notice The one vault `App` for `token`, its canonical `scale`, and locked
+    /// underlying balance. Holders and indexers use this before `wrap` or `unwrap`.
+    /// @dev `app` does not depend on `scale`. ETH (`token == address(0)`) is always
+    /// `scale` 10. An ERC-20's `scale` is derived from `decimals()` by the rule in Vault.
+    function vaultOf(address token)
+        external
+        view
+        returns (ICharmsTypes.App memory app, uint8 scale, uint256 locked);
 
-    /// @notice Block number of a beam-out, or 0 if that id did not beam. `scrolls_ethereum` reads this at the `finalized` tag.
+    /// @notice Block number of a beam-out, or 0 if that id did not beam.
+    /// `scrolls_ethereum` reads this at the `finalized` tag.
     function beamSourceAt(bytes32 txId) external view returns (uint256 blockNumber);
 }
 
-/// @notice Upgrade API on the implementation. The admin is the only caller. Spell clients and CharmToken contracts do not use this. The slot is ERC-1967, as in OpenZeppelin UUPS.
-/// @dev `Charms` implements this beside `ICharms` and `ICharmsLedger`. The proxy itself has no upgrade function. It only `delegatecall`s.
+/// @notice Upgrade API on the implementation. The admin is the only caller. Spell clients
+/// and CharmToken contracts do not use this. The slot is ERC-1967, as in OpenZeppelin
+/// UUPS.
+/// @dev `Charms` implements this beside `ICharms` and `ICharmsLedger`. The proxy itself
+/// has no upgrade function. It only `delegatecall`s.
 interface IUpgradeable {
     /// @notice Point the proxy at `newImplementation`.
-    /// @dev The admin calls this on the proxy. `msg.sender` must be the admin and `address(this)` must be the proxy.
-    ///      `data` is calldata the admin chooses. After the ERC-1967 slot is written, a non-empty `data` is `delegatecall`ed on the new implementation, so the selector inside `data` is whatever method the admin encoded.
-    ///      This design always passes empty `data` (`""`). No second method runs. Accepted spell versions and `programVKey`s are compiled into the new implementation, so the upgrade has nothing further to call.
-    function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
+    /// @dev The admin calls this on the proxy. `msg.sender` must be the admin and
+    /// `address(this)` must be the proxy.
+    /// `data` is calldata the admin chooses. After the ERC-1967 slot is written, a
+    /// non-empty `data` is `delegatecall`ed on the new implementation, so the selector
+    /// inside `data` is whatever method the admin encoded.
+    /// This design always passes empty `data` (`""`). No second method runs. Accepted
+    /// spell versions and `programVKey`s are compiled into the new implementation, so the
+    /// upgrade has nothing further to call.
+    function upgradeToAndCall(address newImplementation, bytes calldata data)
+        external
+        payable;
 
-    /// @notice The ERC-1967 implementation slot. The new implementation must return the same value or the upgrade reverts.
+    /// @notice The ERC-1967 implementation slot. The new implementation must return the
+    /// same value or the upgrade reverts.
     function proxiableUUID() external view returns (bytes32);
 }
 
-/// @notice What `Charms` calls on a `CharmToken`. The token implements this. Holders do not.
+/// @notice What `Charms` calls on a `CharmToken`. The token implements this. Holders do
+/// not.
 interface ICharmTokenHooks {
-    /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only caller.
-    /// @dev `_apply` nets each holder's balance change and calls this so wallets see the event on the token, not on the proxy.
+    /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only
+    /// caller.
+    /// @dev `_apply` nets each holder's balance change and calls this so wallets see the
+    /// event on the token, not on the proxy.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
-/// @notice User-facing ERC-20 for one fungible charm, tag `t`. Wallets, routers, and DeFi call this. One per tag-`t` app. NFT, Scroll, custom-tag, and empty UTXOs are not this interface.
-/// @dev The deployed bytecode is an EIP-1167 minimal proxy with the `App` as immutable args. It `delegatecall`s a shared implementation.
-///      Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live here.
-///      An infinite allowance is not decremented. The token also implements `ICharmTokenHooks`.
+/// @notice User-facing ERC-20 for one fungible charm, tag `t`. Wallets, routers, and DeFi
+/// call this. One per tag-`t` app. NFT, Scroll, custom-tag, and empty UTXOs are not this
+/// interface.
+/// @dev The deployed bytecode is an EIP-1167 minimal proxy with the `App` as immutable
+/// args. It `delegatecall`s a shared implementation.
+/// Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live
+/// here.
+/// An infinite allowance is not decremented. The token also implements
+/// `ICharmTokenHooks`.
 interface ICharmToken {
-    /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes `Transfer` by calling `emitTransfer`. Holders cause `Approval` by calling `approve` or `permit`.
+    /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes
+    /// `Transfer` by calling `emitTransfer`. Holders cause `Approval` by calling
+    /// `approve` or `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
@@ -245,35 +314,57 @@ interface ICharmToken {
     /// @notice The `App` in this token's immutable args.
     function app() external view returns (ICharmsTypes.App memory);
 
-    /// @notice Ethereum-resident supply. Forwards to `ICharmsLedger.totalSupply`. Wallets and routers read this.
+    /// @notice Ethereum-resident supply. Forwards to `ICharmsLedger.totalSupply`. Wallets
+    /// and routers read this.
     function totalSupply() external view returns (uint256);
 
-    /// @notice This charm's total on `owner`'s UTXOs. Forwards to `ICharmsLedger.balanceOf`. Wallets and routers read this.
+    /// @notice This charm's total on `owner`'s UTXOs. Forwards to
+    /// `ICharmsLedger.balanceOf`. Wallets and routers read this.
     function balanceOf(address owner) external view returns (uint256);
 
-    /// @notice Spend the caller's UTXOs and create one output for `to`. Calls `tokenTransfer`.
+    /// @notice Spend the caller's UTXOs and create one output for `to`. Calls
+    /// `tokenTransfer`.
     function transfer(address to, uint256 amount) external returns (bool);
 
-    /// @notice Remaining amount `spender` may move from `owner`. Stored on this token. Routers read this.
+    /// @notice Remaining amount `spender` may move from `owner`. Stored on this token.
+    /// Routers read this.
     function allowance(address owner, address spender) external view returns (uint256);
 
-    /// @notice Let `spender` move up to `amount` of the caller's balance. The caller is the holder.
+    /// @notice Let `spender` move up to `amount` of the caller's balance. The caller is
+    /// the holder.
     function approve(address spender, uint256 amount) external returns (bool);
 
-    /// @notice `spender` moves `amount` from `from` to `to`. This token decrements the allowance, then calls `tokenTransfer`.
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    /// @notice `spender` moves `amount` from `from` to `to`. This token decrements the
+    /// allowance, then calls `tokenTransfer`.
+    function transferFrom(address from, address to, uint256 amount)
+        external
+        returns (bool);
 
-    /// @notice ERC-20 name. A vault token copies the underlying token's name. Any other token uses CHIP-0420 `name` once published, and `"Charm"` until then.
+    /// @notice ERC-20 name. A vault token copies the underlying token's name. Any other
+    /// token uses CHIP-0420 `name` once published, and `"Charm"` until then.
     function name() external view returns (string memory);
 
-    /// @notice ERC-20 symbol. This is CHIP-0420 `ticker`, not a separate field. A vault token copies the underlying symbol. Any other token uses `ticker` once published, and `"CHARM"` until then.
+    /// @notice ERC-20 symbol. This is CHIP-0420 `ticker`, not a separate field. A vault
+    /// token copies the underlying symbol. Any other token uses `ticker` once published,
+    /// and `"CHARM"` until then.
     function symbol() external view returns (string memory);
 
-    /// @notice Display decimals. CHIP-0420 `decimals`, default 0. A vault token uses `min(underlying decimals, 8)`, which is the charm-unit precision from `scale`. That number is not part of the vault `App`.
+    /// @notice Display decimals. CHIP-0420 `decimals`, default 0. A vault token uses
+    /// `min(underlying decimals, 8)`, which is the charm-unit precision from `scale`.
+    /// That number is not part of the vault `App`.
     function decimals() external view returns (uint8);
 
-    /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then calls `transferFrom`.
-    function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external;
+    /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and
+    /// then calls `transferFrom`.
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
 
     /// @notice Next EIP-2612 nonce for `owner`. The signing wallet reads this.
     function nonces(address owner) external view returns (uint256);
@@ -424,7 +515,8 @@ Limits, so a spell cannot be a gas bomb: at most 64 inputs, 64 outputs, 64 apps,
 _apply(spell, anchor, proof, signatures, vaultDelta):
     require this implementation accepts spell.version
     require canonical shape, counts, and owner == 0 iff beamed
-    if ins is empty: require the anchor is unused, and the spell is a placeholder or a wrap
+    if ins is empty:
+        require the anchor is unused, and the spell is a placeholder or a wrap
     for each ref: require it is live
     for each input: require it is live and the opening matches head/body
     cbor = SpellCodec.encode(...)
@@ -504,7 +596,11 @@ One underlying asset has one vault charm. The asset is the pair `(chain, Charms 
 
 ```
 VAULT_VK     = SHA-256("charms/ethereum/vault/v1")
-identity     = SHA-256("charms/ethereum/vault/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ token_20)
+identity     = SHA-256(
+                 "charms/ethereum/vault/v1"
+                 ‖ chainId_be_u256
+                 ‖ Charms_20
+                 ‖ token_20)
 app          = t / identity / VAULT_VK
 ```
 
