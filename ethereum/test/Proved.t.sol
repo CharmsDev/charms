@@ -168,7 +168,7 @@ contract ProvedTest is CharmsTestBase {
         address token = charms.ensureToken(coin);
 
         vm.expectEmit(token);
-        emit ICharmToken.Transfer(alice, address(0), 400);
+        emit ICharmToken.Transfer(alice, address(charms), 400);
         _transact(alice, s);
     }
 
@@ -200,7 +200,7 @@ contract ProvedTest is CharmsTestBase {
         address token = charms.ensureToken(coin);
 
         vm.expectEmit(token);
-        emit ICharmToken.Transfer(address(0), bob, 400);
+        emit ICharmToken.Transfer(address(charms), bob, 400);
         _prove(bob, s);
     }
 

@@ -560,27 +560,52 @@ contract TokenTest is CharmsTestBase {
         charms.tokenTransfer(coin, alice, bob, 1);
     }
 
-    function test_nativeTransactEmitsOneNettedTransfer() public {
+    function test_facadeTransferEmitsFromToIncludingSelf() public {
+        CharmToken token = _funded(alice, 20);
+        vm.prank(alice);
+        assertTrue(token.approve(bob, 6));
+
+        vm.recordLogs();
+        vm.prank(alice);
+        assertTrue(token.transfer(alice, 4));
+        Vm.Log[] memory selfLogs = vm.getRecordedLogs();
+        _assertTransfer(selfLogs, 0, address(token), alice, alice, 4);
+        (uint256 selfCount,,,,) = _transfers(selfLogs);
+        assertEq(selfCount, 1);
+
+        vm.recordLogs();
+        vm.prank(bob);
+        assertTrue(token.transferFrom(alice, carol, 6));
+        Vm.Log[] memory fromLogs = vm.getRecordedLogs();
+        _assertTransfer(fromLogs, 0, address(token), alice, carol, 6);
+        (uint256 fromCount,,,,) = _transfers(fromLogs);
+        assertEq(fromCount, 1);
+        assertEq(token.balanceOf(alice), 14);
+        assertEq(token.balanceOf(carol), 6);
+    }
+
+    function test_spellTransferUsesTheCharmsProxyAsCounterparty() public {
         App memory coin = _app(T, "coin");
         bytes32 minted = _mintPlain(alice, coin, 100);
         CharmToken token = CharmToken(charms.ensureToken(coin));
-        Spell memory s = _spell(_apps(coin), 1, 2);
+        Spell memory s = _spell(_apps(coin), 1, 3);
         s.ins[0] = _input(minted, 0, _charms(_token(0, 100)));
         s.outs[0] = Output(bob, _charms(_token(0, 40)));
-        s.outs[1] = Output(alice, _charms(_token(0, 60)));
+        s.outs[1] = Output(carol, _charms(_token(0, 25)));
+        s.outs[2] = Output(alice, _charms(_token(0, 35)));
 
         vm.recordLogs();
         _transact(alice, s);
 
-        (uint256 count, address from, address to, uint256 amount, address emitter) =
-            _transfers(vm.getRecordedLogs());
-        assertEq(count, 1);
-        assertEq(emitter, address(token));
-        assertEq(from, alice);
-        assertEq(to, bob);
-        assertEq(amount, 40);
-        assertEq(token.balanceOf(alice), 60);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        (uint256 count,,,,) = _transfers(logs);
+        assertEq(count, 3);
+        _assertTransfer(logs, 0, address(token), alice, address(charms), 65);
+        _assertTransfer(logs, 1, address(token), address(charms), bob, 40);
+        _assertTransfer(logs, 2, address(token), address(charms), carol, 25);
+        assertEq(token.balanceOf(alice), 35);
         assertEq(token.balanceOf(bob), 40);
+        assertEq(token.balanceOf(carol), 25);
         assertEq(token.totalSupply(), 100);
     }
 
@@ -727,6 +752,28 @@ contract TokenTest is CharmsTestBase {
             )
         );
         return keccak256(abi.encodePacked(hex"1901", _domain(token), structHash));
+    }
+
+    function _assertTransfer(
+        Vm.Log[] memory logs,
+        uint256 nth,
+        address emitter,
+        address from,
+        address to,
+        uint256 amount
+    ) private pure {
+        bytes32 topic = keccak256("Transfer(address,address,uint256)");
+        uint256 seen;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics.length < 3 || logs[i].topics[0] != topic) continue;
+            if (seen++ != nth) continue;
+            assertEq(logs[i].emitter, emitter);
+            assertEq(address(uint160(uint256(logs[i].topics[1]))), from);
+            assertEq(address(uint160(uint256(logs[i].topics[2]))), to);
+            assertEq(abi.decode(logs[i].data, (uint256)), amount);
+            return;
+        }
+        revert("missing transfer");
     }
 
     function _transfers(Vm.Log[] memory logs)

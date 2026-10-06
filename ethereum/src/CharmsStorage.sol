@@ -47,13 +47,14 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
     }
 
     /// @dev Inputs owned by `authorized` need no signature. `anchor` is zero unless the spell has
-    /// no inputs.
+    /// no inputs. `facade` is set by `tokenTransfer`: that path emits `Transfer(from, to)` itself.
     struct Context {
         bytes32 anchor;
         address authorized;
         VaultMove move;
         bytes proof;
         bytes[] signatures;
+        bool facade;
     }
 
     // v1 storage layout. Append only; never reorder, insert, or retype.

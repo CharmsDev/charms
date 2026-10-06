@@ -253,8 +253,10 @@ interface IUpgradeable is IERC1822Proxiable {
 /// @notice What `Charms` calls on a `CharmToken`. The token implements this. Holders do not.
 interface ICharmTokenHooks {
     /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only caller.
-    /// @dev `_apply` calls this only when this clone is already deployed. It does not deploy the
-    /// clone in order to emit.
+    /// @dev A spell emits `Transfer(sender, Charms, decrease)` and `Transfer(Charms, receiver,
+    /// increase)` on a deployed non-vault clone. `Charms` is the proxy. A facade `transfer` or
+    /// `transferFrom` emits `Transfer(from, to, amount)` instead, including a self-transfer.
+    /// `_apply` does not deploy the clone in order to emit.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
@@ -268,8 +270,9 @@ interface ICharmTokenHooks {
 /// also implements `ICharmTokenHooks`.
 interface ICharmToken {
     /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes `Transfer` by
-    /// calling `emitTransfer` when this clone is already deployed. Holders cause `Approval` by
-    /// calling `approve` or `permit`.
+    /// calling `emitTransfer` when this clone is already deployed. A facade move is
+    /// `Transfer(from, to, amount)`. A spell move uses the Charms proxy as the counterparty.
+    /// Holders cause `Approval` by calling `approve` or `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 

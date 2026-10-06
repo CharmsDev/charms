@@ -192,8 +192,9 @@ contract Charms is
         Spell memory s = _transferSpell(Transfer(app, appKey(app), from, to, uint64(amount)));
         Context memory c;
         c.authorized = from;
+        c.facade = true;
         _apply(s, c);
-        if (from == to) ICharmTokenHooks(msg.sender).emitTransfer(from, to, amount);
+        ICharmTokenHooks(msg.sender).emitTransfer(from, to, amount);
     }
 
     function ensureToken(App calldata app) external returns (address token) {

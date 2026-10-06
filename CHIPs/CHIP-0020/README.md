@@ -294,8 +294,10 @@ interface IUpgradeable {
 interface ICharmTokenHooks {
     /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only
     /// caller.
-    /// @dev `_apply` calls this only when this clone is already deployed. It does not
-    /// deploy the clone in order to emit.
+    /// @dev A spell emits `Transfer(sender, Charms, decrease)` and
+    /// `Transfer(Charms, receiver, increase)` when this clone is already deployed.
+    /// `Charms` is the proxy. A facade `transfer` emits `Transfer(from, to, amount)`.
+    /// `_apply` does not deploy the clone in order to emit.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
@@ -311,7 +313,9 @@ interface ICharmTokenHooks {
 interface ICharmToken {
     /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes
     /// `Transfer` by calling `emitTransfer` when this clone is already deployed.
-    /// Holders cause `Approval` by calling `approve` or `permit`.
+    /// A facade move is `Transfer(from, to, amount)`. A spell move uses the Charms
+    /// proxy as the counterparty. Holders cause `Approval` by calling `approve` or
+    /// `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
@@ -542,10 +546,14 @@ _apply(spell, anchor, proof, signatures, vaultDelta):
     write outputs, delete inputs, update supply, balance, deques, vault, pins
     if ins is empty: mark the anchor used
     emit Transaction(txId, anchor, cbor)
-    for each non-vault tag-t app whose plain balance changed:
-        token = CREATE2 CharmToken address
-        if extcodesize(token) == 0: skip emitTransfer
-        else: emitTransfer the netted Transfer events
+    unless this apply is a facade transfer or transferFrom:
+        for each non-vault tag-t app whose plain balance changed:
+            token = CREATE2 CharmToken address
+            if extcodesize(token) == 0: skip emitTransfer
+            else:
+                for each owner whose balance fell: emitTransfer(owner, Charms, decrease)
+                for each owner whose balance rose: emitTransfer(Charms, owner, increase)
+    a facade transfer emits Transfer(from, to, amount), including a self-transfer
     a vault app emits no CharmToken Transfer and does not call the underlying token
 ```
 
@@ -604,7 +612,7 @@ Partial spends do not exist. The input UTXO is spent whole. Every charm not plac
 
 Zero is not a charm amount (`ensure_no_zero_amounts`). `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. There is no Bitcoin dust limit. A zero remainder of the transferred token is not written on the change output. That output is still required when any other charm remains, and it is omitted only when the selected inputs contain nothing except the transferred amount of this token. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
 
-For each non-vault tag-`t` app whose plain balance changed in `_apply`, set `token` to that app's CREATE2 address. If `extcodesize(token) == 0`, skip `emitTransfer` and do not deploy. If code is present, emit `Transfer` through that clone, netted per owner, including mint and burn: one `Transfer(from, to, amount)` for a facade transfer, `Transfer(0, to, amount)` for a beam-in, and `Transfer(from, 0, amount)` for a beam-out or a burn. A vault app has no clone, so `_apply` does not emit a `CharmToken` `Transfer` for it and does not call the underlying token. Supply on Ethereum changes in mint and burn cases whether or not a non-vault clone exists. Indexers read the `Transaction` log for a vault charm and for a charm whose clone is not deployed yet.
+For each non-vault tag-`t` app whose plain balance changed in a spell (`transact` or any other `_apply` that is not a facade `transfer` or `transferFrom`), set `token` to that app's CREATE2 address. If `extcodesize(token) == 0`, skip `emitTransfer` and do not deploy. If code is present, emit through that clone with the Charms proxy as the counterparty. Each owner whose plain balance decreased emits `Transfer(owner, Charms, decrease)`. Each owner whose plain balance increased emits `Transfer(Charms, owner, increase)`. Senders are emitted first, then receivers. Owners are not paired with each other, so a spell does not emit `Transfer(Alice, Carol)`. This replaces `Transfer(from, 0)` and `Transfer(0, to)` on the spell path. The hub is the Charms proxy. A facade `transfer` or `transferFrom` emits one `Transfer(from, to, amount)`, including a transfer to the holder and a zero amount, and does not use the hub. A vault app has no clone, so `_apply` does not emit a `CharmToken` `Transfer` for it and does not call the underlying token. Supply on Ethereum changes in mint and burn cases whether or not a non-vault clone exists. Indexers read the `Transaction` log for a vault charm and for a charm whose clone is not deployed yet.
 
 ## Vault
 
