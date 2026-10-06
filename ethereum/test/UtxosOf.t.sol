@@ -69,6 +69,34 @@ contract UtxosOfTest is CharmsTestBase {
         assertEq(n, 4);
     }
 
+    function testFuzz_pagingReturnsEveryUtxoThatStaysLiveExactlyOnce(
+        uint8 spendMask,
+        uint8 pageSize,
+        uint8 spendAfterPage
+    ) public {
+        pageSize = uint8(bound(pageSize, 1, 4));
+        spendAfterPage %= 3;
+        uint256[5] memory seen;
+        uint256 cursor;
+        uint256 pages;
+        do {
+            UtxoRef[] memory page;
+            (page, cursor) = charms.utxosOf(_key(coin), alice, cursor, pageSize);
+            for (uint256 i; i < page.length; ++i) {
+                ++seen[page[i].index];
+            }
+            if (pages++ == spendAfterPage) {
+                for (uint256 r; r < 5; ++r) {
+                    if (spendMask & (1 << r) != 0) _spend(r);
+                }
+            }
+        } while (cursor != 0);
+        for (uint256 r; r < 5; ++r) {
+            if (spendMask & (1 << r) == 0) assertEq(seen[r], 1, "a live receipt, once");
+            else assertLe(seen[r], 1, "a spent receipt, at most once");
+        }
+    }
+
     function test_aCursorThatNamesNoUtxoOfTheListReverts() public {
         vm.expectRevert(ICharmsErrors.InvalidCursor.selector);
         charms.utxosOf(_key(coin), alice, 2, 10);
