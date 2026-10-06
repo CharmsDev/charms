@@ -286,26 +286,37 @@ contract CharmsApply is CharmsStorage {
         return true;
     }
 
-    /// @dev `versionedApps` must be exactly the pins the inputs store, and the inputs must agree.
+    /// @dev `versionedApps` must be exactly the pins the inputs store, and every input that
+    /// carries a vk in `versionedApps` must store that pin, so no unit gains or loses a pin.
     function _pinsUnchanged(Spell memory s) private pure returns (bool) {
         Pin[] memory va = s.versionedApps;
         bool[] memory seen = new bool[](va.length);
         for (uint256 i; i < s.ins.length; ++i) {
             Pin[] memory pins = s.ins[i].pins;
             for (uint256 j; j < pins.length; ++j) {
-                uint256 k;
-                while (k < va.length && va[k].vk != pins[j].vk) ++k;
+                uint256 k = _pinIndex(va, pins[j].vk);
                 if (k == va.length) return false;
                 if (va[k].version != pins[j].version || va[k].wasmHash != pins[j].wasmHash) {
                     return false;
                 }
                 seen[k] = true;
             }
+            Charm[] memory charms = s.ins[i].charms;
+            for (uint256 j; j < charms.length; ++j) {
+                bytes32 vk = s.apps[charms[j].app].vk;
+                if (_pinIndex(va, vk) != va.length && _pinIndex(pins, vk) == pins.length) {
+                    return false;
+                }
+            }
         }
         for (uint256 k; k < va.length; ++k) {
             if (!seen[k]) return false;
         }
         return true;
+    }
+
+    function _pinIndex(Pin[] memory pins, bytes32 vk) private pure returns (uint256 k) {
+        while (k < pins.length && pins[k].vk != vk) ++k;
     }
 
     function _checkBlobs(Spell memory s) private pure {
