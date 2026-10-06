@@ -1,0 +1,19 @@
+[package]
+name = "charms-ethereum-vectors"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Separate workspace so the root members list stays untouched, same pattern as
+# charms-spell-checker.
+[workspace]
+
+[dependencies]
+charms-client = { path = "../../charms-client" }
+charms-data = { path = "../../charms-data" }
+ciborium = "0.2.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+sha3 = "0.10.9"
+hex = "0.4.3"
