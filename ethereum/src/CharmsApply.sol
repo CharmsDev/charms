@@ -96,6 +96,9 @@ contract CharmsApply is CharmsStorage {
         if (s.apps.length > MAX_ITEMS || s.ins.length > MAX_ITEMS || s.outs.length > MAX_ITEMS) {
             revert LimitExceeded();
         }
+        if (s.refs.length > type(uint16).max || s.versionedApps.length > type(uint16).max) {
+            revert LimitExceeded();
+        }
         if (s.publicInputs.length != s.apps.length) revert NotCanonical();
         for (uint256 i; i < s.apps.length; ++i) {
             uint32 tag = s.apps[i].tag;

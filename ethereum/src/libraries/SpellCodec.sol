@@ -367,8 +367,8 @@ library SpellCodec {
         return p;
     }
 
-    /// @dev Array and map counts are at most 64, so every head fits in 3 bytes and every
-    /// uint in 9.
+    /// @dev `_checkShape` keeps every array and map under 65,536 entries, so every head fits in
+    /// 3 bytes and every uint in 9.
     function _bound(ICharmsTypes.Spell memory s) private pure returns (uint256 n) {
         n = 128 + (s.ins.length + s.refs.length) * 38 + s.beamedOuts.length * 71 + s.scrolls.length
             * 5 + s.versionedApps.length * 156;
