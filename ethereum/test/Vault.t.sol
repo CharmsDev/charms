@@ -6,6 +6,7 @@ import {CharmTokenClone} from "../src/libraries/CharmTokenClone.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 import {
     BareToken,
+    ExtraFeeToken,
     FeeToken,
     MockToken,
     MutableDecimalsToken,
@@ -161,6 +162,62 @@ contract VaultTest is CharmsTestBase {
         assertEq(token.balanceOf(address(charms)), 0);
         assertEq(_locked(address(token)), 0);
         assertEq(_balance(app, carol), 0);
+    }
+
+    function test_senderPaidFeeOnUnwrapIsUnsupported() public {
+        ExtraFeeToken token = new ExtraFeeToken();
+        token.setExempt(address(charms));
+        address carol = makeAddr("carol");
+
+        token.mint(alice, 100);
+        vm.startPrank(alice);
+        token.approve(address(charms), 100);
+        charms.wrap(address(token), 100, alice, bytes32(uint256(1)));
+        vm.expectRevert();
+        charms.unwrap(address(token), 100, bob);
+        vm.stopPrank();
+
+        (App memory app,) = charms.vaultOf(address(token));
+        assertEq(_balance(app, alice), 100);
+        assertEq(token.balanceOf(bob), 0);
+        assertEq(token.balanceOf(address(charms)), 100);
+        assertEq(_locked(address(token)), 100);
+
+        token.mint(carol, 100);
+        vm.startPrank(carol);
+        token.approve(address(charms), 100);
+        charms.wrap(address(token), 100, carol, bytes32(uint256(1)));
+        vm.stopPrank();
+
+        vm.prank(alice);
+        charms.unwrap(address(token), 100, bob);
+
+        assertEq(token.balanceOf(bob), 100);
+        assertEq(token.balanceOf(address(0xfee)), 1);
+        assertEq(token.balanceOf(address(charms)), 99);
+        assertEq(_locked(address(token)), 100);
+        assertEq(_balance(app, alice), 0);
+        assertEq(_balance(app, carol), 100);
+
+        vm.prank(carol);
+        vm.expectRevert();
+        charms.unwrap(address(token), 100, carol);
+
+        assertEq(_balance(app, carol), 100);
+        assertEq(_locked(address(token)), 100);
+        assertEq(token.balanceOf(address(charms)), 99);
+
+        token.mint(carol, 1);
+        vm.startPrank(carol);
+        token.approve(address(charms), 1);
+        vm.expectRevert(ICharmsErrors.VaultUndercollateralized.selector);
+        charms.wrap(address(token), 1, carol, bytes32(uint256(2)));
+        vm.stopPrank();
+
+        assertEq(_balance(app, carol), 100);
+        assertEq(token.balanceOf(carol), 1);
+        assertEq(_locked(address(token)), 100);
+        assertEq(token.balanceOf(address(charms)), 99);
     }
 
     function test_decimalsChangeRevertsWrapAndUnwrap() public {
