@@ -21,7 +21,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | UTXO id | Content-addressed. Not the Ethereum transaction hash and not a counter. `TxId.0` is the reverse of that id, matching `UtxoId::to_bytes` and Cardano's `tx_id`. |
 | Simple transfer | The contract checks it. The proof is empty. A proof on a spell the contract can check itself is rejected. |
 | Anything else | Groth16 is verified on Ethereum, against the same public values Bitcoin and Cardano already use: CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled. |
-| ERC-20 facade | One `CharmToken` per tag-`t` app, and no token for any other tag. It is a minimal-proxy clone of a shared implementation, deployed with CREATE2. `balanceOf`, `transfer`, and `transferFrom` apply only to that token. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. |
+| ERC-20 facade | One `CharmToken` per tag-`t` app, and no token for any other tag. `tokenAddress` is the CREATE2 address and does not deploy. `ensureToken` deploys the minimal-proxy clone. `balanceOf`, `transfer`, and `transferFrom` apply only to that token. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. `_apply` does not deploy the clone. |
 | ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
 | Finality out of Ethereum | A new `scrolls_ethereum` canister signs the Charms tx id after the execution block is beacon-finalized. Same pattern as Cardano's `FINALITY_VKEY`. |
@@ -34,12 +34,13 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 
 ```solidity
 ICharmsTypes.App memory app = ICharmsTypes.App({tag: 0x74, identity: ID, vk: VK}); // 0x74 is tag t
-IERC20 token = IERC20(charms.tokenAddress(app)); // CREATE2, known before deploy
+address predicted = charms.tokenAddress(app); // pure CREATE2, no deploy
+IERC20 token = IERC20(charms.ensureToken(app)); // deploys the clone if it is not there yet
 token.transferFrom(msg.sender, address(this), amount);
 token.transfer(msg.sender, amount);
 ```
 
-`tokenAddress` is a pure function of a tag-`t` `App` and the `Charms` address. It reverts for any other tag. `transfer` spends the sender's UTXOs of that `t` app, creates one output to the recipient and one change output, and preserves every other `t` or `n` charm on the change output. NFT, Scroll, custom-tag, and empty UTXOs have no ERC-20. The caller spends them with `transact`. Units of a `t` token that sit on a UTXO next to one of those charms still count in that token's `balanceOf`. `transfer` does not select those UTXOs. Spending them is `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
+`tokenAddress` is a pure function of a tag-`t` `App` and the `Charms` address. It reverts for any other tag and does not deploy. A wallet or integration that needs on-chain `transfer` or `balanceOf` calls `ensureToken` once. Until then the address is knowable off-chain from `tokenAddress`. `transfer` spends the sender's UTXOs of that `t` app, creates one output to the recipient and one change output, and preserves every other `t` or `n` charm on the change output. NFT, Scroll, custom-tag, and empty UTXOs have no ERC-20. The caller spends them with `transact`. Units of a `t` token that sit on a UTXO next to one of those charms still count in that token's `balanceOf`. `transfer` does not select those UTXOs. Spending them is `transact` with a proof. See [Balances and bundles](#balances-and-bundles).
 
 ### A wallet locks USDC, beams it, and unlocks it
 
@@ -91,7 +92,7 @@ The other direction marks `beamed_outs` on an Ethereum spell whose token sums st
 Deploy a proxy and an implementation. CharmToken contracts and the external Groth16 verifier sit beside them. Everything else is internal to the implementation.
 
 - `CharmsProxy` is the address wallets, tokens, and the guest call `Charms`. Its `fallback` and `receive` always `delegatecall` the implementation in the ERC-1967 slot. It has no other functions and no admin branch. The storage slot is ERC-1967 (`keccak256("eip1967.proxy.implementation") - 1`), the slot OpenZeppelin's UUPS implementation uses. This is not the EIP-1822 `PROXIABLE` slot. Every call is delegated, and the upgrade function is not on the proxy bytecode, so a transfer does not pay for an admin check the way a transparent proxy does.
-- `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, and anchors, in the proxy's storage. It deploys a `CharmToken` only for a tag-`t` app. It also exposes `upgradeToAndCall`. The admin is a single address set at initialization. That address is the only account that can upgrade. There is no timelock and no second role.
+- `Charms` is the implementation. It owns UTXOs, supply, balances, the vault, and anchors, in the proxy's storage. `ensureToken` deploys a `CharmToken` only for a tag-`t` app. It also exposes `upgradeToAndCall`. The admin is a single address set at initialization. That address is the only account that can upgrade. There is no timelock and no second role.
 - `CharmToken` is the ERC-20 for one tag-`t` app. It is a clone: a minimal proxy (EIP-1167 with immutable arguments) that `delegatecall`s one shared `CharmToken` implementation. The per-token bytecode is that proxy, not a separately compiled contract. It owns allowances, EIP-2612 nonces, and metadata. It owns no balances. There is no `CharmToken` for tag `n`, tag `s`, a custom tag, or an empty UTXO.
 - `SP1VerifierGroth16` is Succinct's immutable verifier. `Charms` calls it directly. Succinct's gateway is not on the path.
 
@@ -142,6 +143,7 @@ interface ICharmsTypes {
 /// @notice Ledger calls from a tag-`t` `CharmToken`. The token stores this address (the Charms proxy) and nothing wider.
 /// @dev Only tag `t` has this surface. `CharmToken.transfer` and `transferFrom` are the only callers of `tokenTransfer`.
 ///      `balanceOf` and `totalSupply` on that token read the two views. DeFi calls the token, not this interface.
+///      `tokenTransfer` does not deploy a `CharmToken`.
 interface ICharmsLedger {
     /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and creating change.
     /// @dev `app.tag` must be `t`. Only the CREATE2 `CharmToken` for that app may call this. The token has already checked `msg.sender` and the allowance.
@@ -183,8 +185,13 @@ interface ICharms {
     /// @dev The holder calls this. The underlying token is the one recorded for that vault.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
-    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. Wallets use this to find the token. Valid before that token is deployed. Reverts when `app.tag` is not `t`.
+    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. Pure. Does not deploy. Reverts when `app.tag` is not `t`.
+    /// @dev Wallets compute this off-chain the same way. The address is known before `ensureToken`.
     function tokenAddress(ICharmsTypes.App calldata app) external view returns (address);
+
+    /// @notice Deploy the `CharmToken` clone for a tag-`t` `app` when no code is at `tokenAddress(app)`. If the clone is already there, return that address.
+    /// @dev A wallet or integration calls this once before `transfer` or `balanceOf`. Any tag other than `t` reverts. `_apply` and `tokenTransfer` do not call this.
+    function ensureToken(ICharmsTypes.App calldata app) external returns (address token);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a spell. `transfer` does not.
     function utxosOf(bytes32 appKey, address owner, uint256 cursor, uint256 limit)
@@ -276,7 +283,9 @@ interface ICharmToken {
 }
 ```
 
-`Charms` deploys a `CharmToken` with CREATE2 only when `app.tag` is `t`, the first time that app's Ethereum-resident supply becomes non-zero. A call that would deploy a token for any other tag reverts. The caller of that `transact` pays for it. The salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The CREATE2 deployer is the Charms proxy, so an upgrade of Charms does not move token addresses. `tokenAddress(app)` is that address and is valid before the deploy.
+`tokenAddress(app)` only computes the CREATE2 address. It does not deploy. `ensureToken(app)` deploys the clone when `extcodesize` at that address is 0, and returns the address. If the clone is already deployed, it returns the same address and does not revert. `app.tag` must be `t`. Any other tag reverts. The caller of `ensureToken` pays for the deploy. A native spell does not. `_apply` and `tokenTransfer` do not deploy.
+
+The salt is `appKey = keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`. The CREATE2 deployer is the Charms proxy, so an upgrade of Charms does not move token addresses. `tokenAddress(app)` is that address before and after `ensureToken`.
 
 The clone bytecode is clones-with-immutable-args (the wighawag scheme). The deployed runtime is
 
@@ -634,7 +643,7 @@ CLI:
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |
 | `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55, stores the lowercase bytes. |
-| `util eth-token <APP>` | CREATE2 token address. |
+| `util eth-token <APP>` | CREATE2 token address from the same formula as `tokenAddress`. Does not deploy. |
 | `util eth-vault --token <addr\|eth>` | Prints the vault `App`. The `App` does not take a decimals argument. ETH's scale is 10. An ERC-20's scale is derived from `decimals()` and printed beside the `App`. |
 
 App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and a 20-byte `dest`. An app that wants to move ETH moves the vault charm. `charms-sdk` and the app runner do not change. `charms-lib`'s `extractAndVerifySpell` learns the Ethereum envelope in the v16 bump, and the binding documents that a decoded spell is content-authenticated: acceptance of a created output is `utxo(UtxoRef)` on the contract. Acceptance of a beam-out is `beamSourceAt(ethTxId) != 0`.
