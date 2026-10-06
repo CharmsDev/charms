@@ -17,8 +17,7 @@ import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice `_apply` of CHIP-0020: the only writer of UTXO, supply, balance, and vault state.
 /// `Charms` `delegatecall`s `applySpell`, so this code runs in the proxy's storage.
-/// @dev Which spell version this build accepts, its `programVKey`, and its verifier are fixed in
-/// the bytecode. A zero verifier is the phase-1 build: it rejects proofs and `beamedOuts`.
+/// @dev A zero verifier is the phase-1 build: it rejects proofs and `beamedOuts`.
 contract CharmsApply is CharmsStorage {
     using UtxoList for UtxoList.List;
 
@@ -140,8 +139,7 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev Checks that every input is live, appears once, and opens to what was stored. Writes
-    /// nothing, so a signature check reads the state the signer saw.
+    /// @dev Writes nothing, so a signature check reads the state the signer saw.
     function _openInputs(Spell memory s, bytes32[] memory keys)
         private
         view
@@ -169,7 +167,6 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev Deletes each opened input and unlinks it from every list that holds it.
     function _spendInputs(
         Spell memory s,
         bytes32[] memory keys,
@@ -248,7 +245,6 @@ contract CharmsApply is CharmsStorage {
         return _sameMultiset(nftIn, nftOut);
     }
 
-    /// @dev Adds token amounts into `sums` and returns one hash per NFT charm, keyed by app.
     function _nfts(Spell memory s, uint256[] memory sums, bool inputs)
         private
         pure
@@ -332,8 +328,6 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev Change (an output whose owner owned an input) goes to the front of each deque and
-    /// every other receipt to the back. Beamed outputs are not UTXOs.
     function _createOutputs(
         Spell memory s,
         bytes32[] memory keys,
@@ -375,7 +369,6 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev The `versionedApps` entries whose vk is the vk of an app on this output.
     function _pinsOf(Spell memory s, Charm[] memory charms)
         private
         pure
@@ -432,8 +425,6 @@ contract CharmsApply is CharmsStorage {
         }
     }
 
-    /// @dev For each tag-`t` app whose clone exists, nets each owner's change and pairs senders
-    /// with receivers in order of appearance. What is left over is a mint from or a burn to 0.
     function _emitTransfers(Spell memory s, address[] memory inputOwners) private {
         for (uint256 i; i < s.apps.length; ++i) {
             if (s.apps[i].tag != TAG_T) continue;
@@ -525,7 +516,6 @@ contract CharmsApply is CharmsStorage {
         return true;
     }
 
-    /// @dev Whether `x` is among the first `n` entries of `a`.
     function _contains(address[] memory a, uint256 n, address x) private pure returns (bool) {
         for (uint256 i; i < n; ++i) {
             if (a[i] == x) return true;

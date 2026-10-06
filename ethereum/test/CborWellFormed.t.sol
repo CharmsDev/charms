@@ -83,7 +83,6 @@ contract CborWellFormedTest is Test {
         assertFalse(CborWellFormed.isSingleItem(_nested(hex"c1", 16)), "17 levels of tags");
     }
 
-    /// @dev `levels` copies of `head` wrapped around the uint 0.
     function _nested(bytes memory head, uint256 levels) internal pure returns (bytes memory b) {
         for (uint256 i; i < levels; ++i) {
             b = bytes.concat(b, head);

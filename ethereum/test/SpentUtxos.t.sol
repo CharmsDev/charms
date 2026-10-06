@@ -59,8 +59,6 @@ contract SpentUtxosTest is CharmsTestBase {
         assertEq(next, 0);
     }
 
-    /// @dev Bob spends his own placeholder in a proved spell whose outputs pay Alice one unit
-    /// each, so they are receipts at the back of Alice's queue.
     function _receive(uint256 count) internal {
         bytes32 placeholder = _placeholder(bob);
         Spell memory s = _spell(_apps(coin), 1, count);

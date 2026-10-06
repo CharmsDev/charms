@@ -14,9 +14,7 @@ import {ACTORS, FIRST_VAULT, Handler, OPS, TOKENS, UNIT, VAULTS} from "./invaria
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 import {MockVerifier} from "./utils/Mocks.sol";
 
-/// @notice CHIP-0020's phase-1 invariants for the supply, balance, and locked tables, checked
-/// after every call of a handler that drives the v16 deployment through a proxy over
-/// `CharmsHarness`.
+/// @notice CHIP-0020's phase-1 invariants for the supply, balance, and locked tables.
 contract InvariantsTest is CharmsTestBase {
     CharmsHarness internal harness;
     Handler internal handler;

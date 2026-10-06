@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @notice Content-addressed ids that other chains recompute: the Charms transaction id and the
-/// vault identity.
+/// @notice Content-addressed ids that other chains recompute.
 library CharmsIds {
     /// @notice `ethTxId = keccak256("charms/ethereum/tx/v1" ‖ chainid as uint256 ‖ Charms proxy
     /// ‖ anchor ‖ committed spell CBOR)`. `UtxoId`'s `TxId.0` is this value reversed.

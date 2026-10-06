@@ -32,8 +32,8 @@ contract Sp1VerifierTest is Test {
         assertEq(verifier.VK_ROOT(), vm.parseJsonBytes32(json, "$.sp1.vkRoot"));
     }
 
-    /// @dev Skipped until `test/vectors/v15-proof.json` exists. To create it from a Bitcoin
-    /// transaction that carries a v15 spell, run from `ethereum/`:
+    /// @dev To create `test/vectors/v15-proof.json` from a Bitcoin transaction that carries a v15
+    /// spell, run from `ethereum/`:
     /// `cargo run --manifest-path vectors/Cargo.toml -- --proof <tx.hex> test/vectors/v15-proof.json`
     function test_realV15ProofVerifies() public {
         vm.skip(!vm.exists(REAL_PROOF));

@@ -70,8 +70,7 @@ contract Handler is CharmsTestBase {
         uint256 reverted;
     }
 
-    /// @dev A spell's apps and the index of each token app among them. The NFT app has tag `n`,
-    /// which sorts before `t`, so it is index 0 whenever present.
+    /// @dev The NFT app has tag `n`, which sorts before `t`, so it is index 0 whenever present.
     struct Layout {
         App[] apps;
         uint32[TOKENS] index;
@@ -131,8 +130,6 @@ contract Handler is CharmsTestBase {
             order[j] = i;
         }
     }
-
-    // ------------------------------------------------------------------ operations
 
     function wrap(uint256 vaultSeed, uint256 senderSeed, uint256 ownerSeed, uint256 amountSeed)
         external
@@ -199,7 +196,6 @@ contract Handler is CharmsTestBase {
         _transfer(Op.TransferFrom, holderSeed, spenderSeed, toSeed, amountSeed);
     }
 
-    /// @dev A native split, merge, or move of one or two live UTXOs into one or two outputs.
     function transact(uint256 inputSeed, uint256 senderSeed, uint256 shapeSeed, uint256 splitSeed)
         external
     {
@@ -259,8 +255,6 @@ contract Handler is CharmsTestBase {
             )) _ok(Op.Placeholder);
     }
 
-    /// @dev A proved spell that spends a placeholder of `owner` and mints any non-empty mix of the
-    /// NFT and the two app tokens to `recipient`.
     function mint(uint256 ownerSeed, uint256 recipientSeed, uint256 shapeSeed, uint256 amountSeed)
         external
     {
@@ -279,8 +273,6 @@ contract Handler is CharmsTestBase {
         _ok(Op.Mint);
     }
 
-    /// @dev A native spell that beams part of one token off a live UTXO and keeps the rest on a
-    /// change output for its owner.
     function beamOut(uint256 inputSeed, uint256 senderSeed, uint256 amountSeed, uint256 shapeSeed)
         external
     {
@@ -304,8 +296,7 @@ contract Handler is CharmsTestBase {
         _ok(Op.BeamOut);
     }
 
-    /// @dev A proved claim of vault units into a placeholder, no more than have beamed out, so the
-    /// vault cap holds.
+    /// @dev Claims no more vault units than have beamed out, so the vault cap holds.
     function beamIn(uint256 vaultSeed, uint256 ownerSeed, uint256 amountSeed) external {
         uint256 t = FIRST_VAULT + vaultSeed % VAULTS;
         uint256 abroad = flows[t].beamedOut - flows[t].beamedIn;
@@ -323,8 +314,6 @@ contract Handler is CharmsTestBase {
         flows[t].beamedIn += outs[0].tokens[t];
         _ok(Op.BeamIn);
     }
-
-    // ------------------------------------------------------------------ views for invariants
 
     function ghostCount() external view returns (uint256) {
         return ghosts.length;
@@ -350,7 +339,6 @@ contract Handler is CharmsTestBase {
         }
     }
 
-    /// @notice Each actor's total of each token over the ghost's live UTXOs.
     function balances() external view returns (uint256[TOKENS][ACTORS] memory bal) {
         for (uint256 i; i < liveIds.length; ++i) {
             Utxo storage u = ghosts[liveIds[i]];
@@ -361,7 +349,6 @@ contract Handler is CharmsTestBase {
         }
     }
 
-    /// @notice Each actor's number of live empty UTXOs in the ghost.
     function emptyCounts() external view returns (uint256[ACTORS] memory n) {
         for (uint256 i; i < liveIds.length; ++i) {
             Utxo storage u = ghosts[liveIds[i]];
@@ -395,10 +382,6 @@ contract Handler is CharmsTestBase {
         return lastRevert[op];
     }
 
-    // ------------------------------------------------------------------ spells and the ghost
-
-    /// @dev `transfer` and `transferFrom` after `ensureToken`, by the holder or by an approved
-    /// spender.
     function _transfer(
         Op op,
         uint256 holderSeed,
@@ -463,9 +446,7 @@ contract Handler is CharmsTestBase {
         if (_kindOf(rest) != 0) _create(txId, index, from, rest);
     }
 
-    /// @dev Spends the ghost UTXOs `ins` and creates `outs` for `owners` through `transact`, with
-    /// a `Spend` signature from every input owner other than `sender`. A zero owner beams that
-    /// output out.
+    /// @dev A zero owner beams that output out.
     function _submit(
         Op op,
         address sender,
@@ -517,7 +498,6 @@ contract Handler is CharmsTestBase {
         }
     }
 
-    /// @dev Calls `target` as `sender`. A revert is tallied against `op` instead of bubbling.
     function _call(Op op, address sender, address target, uint256 value, bytes memory data)
         internal
         returns (bool ok, bytes memory ret)
@@ -551,7 +531,6 @@ contract Handler is CharmsTestBase {
         liveIds.pop();
     }
 
-    /// @dev A live empty UTXO of `owner`, created by `owner` when it has none.
     function _placeholderOf(Op op, address owner) internal returns (bool ok, uint256 id) {
         for (uint256 i; i < liveIds.length; ++i) {
             Utxo storage u = ghosts[liveIds[i]];

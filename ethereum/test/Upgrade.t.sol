@@ -12,7 +12,6 @@ import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
-/// @dev Answers `proxiableUUID` with a slot other than the ERC-1967 implementation slot.
 contract OtherSlotImplementation {
     function proxiableUUID() external pure returns (bytes32) {
         return bytes32(uint256(1));
@@ -27,8 +26,6 @@ contract UpgradeTest is CharmsTestBase {
     address internal bob = makeAddr("bob");
     address internal carol = makeAddr("carol");
 
-    /// @dev Phase-1 state: alice wrapped 1000 units of ETH and sent bob 300 of them through the
-    /// vault token, and carol holds a placeholder.
     struct History {
         App vault;
         address token;
@@ -37,8 +34,6 @@ contract UpgradeTest is CharmsTestBase {
         UtxoRef change;
         UtxoRef placeholder;
     }
-
-    // ------------------------------------------------------------------ initialize
 
     function test_implementationCannotBeInitialized() public {
         Charms impl = _implementationV16();
@@ -62,8 +57,6 @@ contract UpgradeTest is CharmsTestBase {
 
         assertEq(Charms(payable(address(proxy))).admin(), chosen);
     }
-
-    // ------------------------------------------------------------------ upgradeToAndCall
 
     function test_onlyTheAdminCanUpgrade() public {
         Charms next = _implementationV16();
@@ -113,8 +106,6 @@ contract UpgradeTest is CharmsTestBase {
         charms.upgradeToAndCall{value: 1 ether}(address(next), "");
     }
 
-    // ------------------------------------------------------------------ token implementation
-
     function test_sharedTokenImplementationIsTheProxysFirstCreation() public view {
         address impl = vm.computeCreateAddress(address(charms), 1);
 
@@ -131,8 +122,6 @@ contract UpgradeTest is CharmsTestBase {
 
         assertEq(address(bytes20(forwarded)), vm.computeCreateAddress(address(charms), 1));
     }
-
-    // ------------------------------------------------------------------ phase 1 to v16
 
     function test_upgradeWritesTheNewImplementationToTheErc1967Slot() public {
         _phase1History();
@@ -228,8 +217,6 @@ contract UpgradeTest is CharmsTestBase {
         (,, uint256 locked) = charms.vaultOf(address(0));
         assertEq(locked, 300e10);
     }
-
-    // ------------------------------------------------------------------ helpers
 
     function _phase1History() internal returns (History memory h) {
         _deployPhase1();

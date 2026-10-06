@@ -6,9 +6,9 @@ import {ICharmsTypes} from "../interfaces/ICharms.sol";
 /// @notice Writes `charms_data::util::write(&NormalizedSpell)` for a typed `Spell` after the fill
 /// Bitcoin does in `spell_with_committed_ins_and_coins`: `tx.ins` from `ins` and one
 /// `NativeOutput { amount: 0, dest: owner }` per output.
-/// @dev Encodes, never parses. The input must already be canonical: sorted apps, charms, pins,
-/// beamed outs and scrolls, valid tags, and token charms with empty `data`. Every byte not copied
-/// from a caller blob comes from this file.
+/// @dev The input must already be canonical: sorted apps, charms, pins, beamed outs and scrolls,
+/// valid tags, and token charms with empty `data`. Every byte not copied from a caller blob comes
+/// from this file.
 library SpellCodec {
     uint32 internal constant TOKEN = 0x74;
 
@@ -30,7 +30,6 @@ library SpellCodec {
     uint256 private constant MAJOR_ARRAY = 4;
     uint256 private constant MAJOR_MAP = 5;
 
-    /// @notice The committed spell CBOR.
     function encode(ICharmsTypes.Spell memory s) internal pure returns (bytes memory out) {
         out = new bytes(_bound(s) + 32);
         uint256 start;
@@ -74,7 +73,6 @@ library SpellCodec {
         }
     }
 
-    /// @notice Byte length of `publicValues(programVKey, spellCbor)` without building it.
     function publicValuesLength(bytes32 programVKey, uint256 spellCborLength)
         internal
         pure
@@ -351,8 +349,8 @@ library SpellCodec {
         return bytes32(v);
     }
 
-    /// @dev Writes 32 bytes at `p` and advances by `len`. The next write or the final length
-    /// overwrites the tail, and `encode` allocates 32 bytes of slack for the last word.
+    /// @dev The next write or the final length overwrites the bytes past `len`, and `encode`
+    /// allocates 32 bytes of slack for the last word.
     function _raw(uint256 p, bytes32 word, uint256 len) private pure returns (uint256) {
         assembly ("memory-safe") {
             mstore(p, word)
@@ -369,8 +367,8 @@ library SpellCodec {
         return p;
     }
 
-    /// @dev An upper bound on the encoded length. Array and map counts are at most 64, so every
-    /// head fits in 3 bytes and every uint in 9.
+    /// @dev Array and map counts are at most 64, so every head fits in 3 bytes and every
+    /// uint in 9.
     function _bound(ICharmsTypes.Spell memory s) private pure returns (uint256 n) {
         n = 128 + (s.ins.length + s.refs.length) * 38 + s.beamedOuts.length * 71 + s.scrolls.length
             * 5 + s.versionedApps.length * 156;

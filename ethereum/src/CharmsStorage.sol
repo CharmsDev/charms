@@ -5,9 +5,8 @@ import {ICharmsErrors, ICharmsTypes} from "./interfaces/ICharms.sol";
 import {CharmTokenClone} from "./libraries/CharmTokenClone.sol";
 import {UtxoList} from "./libraries/UtxoList.sol";
 
-/// @notice The v1 storage layout of the Charms proxy, and the types and keys that `Charms` and
-/// `CharmsApply` share. Both run in the proxy's storage: `Charms` behind the proxy and
-/// `CharmsApply` through `Charms`'s `delegatecall`.
+/// @notice The v1 storage layout of the Charms proxy. `Charms` and `CharmsApply` both run in the
+/// proxy's storage: `Charms` behind the proxy and `CharmsApply` through `Charms`'s `delegatecall`.
 abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
     uint32 internal constant TAG_T = 0x74;
     uint32 internal constant TAG_N = 0x6e;

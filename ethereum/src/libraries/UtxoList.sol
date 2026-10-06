@@ -48,7 +48,6 @@ library UtxoList {
         link.prev = REMOVED;
     }
 
-    /// @notice Whether `key` is or was a member.
     function isEntry(List storage list, bytes32 key) internal view returns (bool) {
         return key != 0 && (key == list.first || list.links[key].prev != 0);
     }

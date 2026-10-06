@@ -8,14 +8,10 @@ import {UtxoBody} from "../../src/libraries/UtxoBody.sol";
 import {UtxoList} from "../../src/libraries/UtxoList.sol";
 
 /// @notice `Charms` plus the views CHIP-0020 names for the invariant tests. A proxy over this
-/// contract runs them on the storage `_apply` writes, without reading the `balance` cache. Each
-/// view also checks the list it walks: every member is a live UTXO of `owner`, every `prev` link
-/// points back, and `last` is the final member.
+/// contract runs them on the storage `_apply` writes, without reading the `balance` cache.
 contract CharmsHarness is Charms {
     constructor(CharmsApply applier) Charms(applier) {}
 
-    /// @notice The sum of app `key` over the UTXOs that `utxos[owner][key]` lists, read from
-    /// `head` and `body`.
     function utxoBalance(bytes32 key, address owner) external view returns (uint256 sum) {
         UtxoList.List storage list = utxos[owner][key];
         bytes32 prev;
@@ -42,7 +38,6 @@ contract CharmsHarness is Charms {
         require(list.last == prev, "last is not the final member");
     }
 
-    /// @notice How many empty UTXOs `emptyUtxos[owner]` lists.
     function emptyUtxoCount(address owner) external view returns (uint256 count) {
         UtxoList.List storage list = emptyUtxos[owner];
         bytes32 prev;

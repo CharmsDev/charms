@@ -31,7 +31,6 @@ library CharmTokenClone {
         );
     }
 
-    /// @notice `CREATE2(deployer, appKey(app), initCode)`.
     function predict(address deployer, address implementation, ICharmsTypes.App memory app)
         internal
         pure

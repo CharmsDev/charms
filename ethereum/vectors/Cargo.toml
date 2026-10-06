@@ -4,8 +4,6 @@ version = "0.0.0"
 edition = "2024"
 publish = false
 
-# Separate workspace so the root members list stays untouched, same pattern as
-# charms-spell-checker.
 [workspace]
 
 [dependencies]

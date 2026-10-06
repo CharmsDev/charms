@@ -7,12 +7,10 @@ import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 
-/// @notice Deploys the phase-1 (spell version 15) Charms: `CharmsApply`, the `Charms`
-/// implementation, then `CharmsProxy`, each by CREATE2 through `deployer`. The proxy address is
-/// `ETHEREUM_CHARMS`, and it depends only on `deployer`, `admin`, and this bytecode.
+/// @notice Deploys the phase-1 (spell version 15) Charms. The proxy address is `ETHEREUM_CHARMS`,
+/// and it depends only on `deployer`, `admin`, and this bytecode.
 /// @dev `deployer` is a CREATE2 factory that takes `salt ‖ initCode` as calldata, such as
-/// 0x4e59b44847b379578588920ca78fbf26c0b4956c. Contracts already at their address are kept, so a
-/// rerun after a partial deployment finishes it.
+/// 0x4e59b44847b379578588920ca78fbf26c0b4956c. A rerun after a partial deployment finishes it.
 ///
 /// forge script script/Deploy.s.sol --sig "run(address,address)" <deployer> <admin> \
 ///     --rpc-url <url> --broadcast

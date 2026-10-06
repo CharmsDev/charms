@@ -35,7 +35,6 @@ contract MockToken is ERC20 {
     }
 }
 
-/// @dev Keeps 1% of every transfer, so the receiver gets less than `amount`.
 contract FeeToken is MockToken {
     constructor() MockToken("Fee", "FEE", 6) {}
 
@@ -49,7 +48,6 @@ contract FeeToken is MockToken {
     }
 }
 
-/// @dev An ERC-20 whose `decimals` the test can change after the first wrap.
 contract MutableDecimalsToken is MockToken {
     uint8 public dec;
 
@@ -66,8 +64,6 @@ contract MutableDecimalsToken is MockToken {
     }
 }
 
-/// @dev Implements the ERC-20 calls Charms uses and nothing else, so it has no `decimals`,
-/// `name`, or `symbol`.
 contract BareToken {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
@@ -95,7 +91,6 @@ contract BareToken {
     }
 }
 
-/// @dev An ERC-1271 smart wallet whose signer is one EOA.
 contract Wallet1271 {
     address public immutable signer;
 
@@ -113,8 +108,6 @@ contract Wallet1271 {
     }
 }
 
-/// @dev Signs a spend only while it still owns the UTXO it is asked about, as a policy wallet
-/// might.
 contract HoldingWallet1271 {
     address public immutable signer;
     ICharmsUtxo public immutable charms;

@@ -1,8 +1,4 @@
 //! Deterministic golden vectors for the CHIP-0020 Solidity `SpellCodec`.
-//!
-//! The typed JSON spell is the input. `NormalizedSpell` is derived from it with
-//! the mapping in the generator contract, then `spellCbor` and `publicValues`
-//! come from `charms_data::util::write` and `charms_client::tx::to_serialized_pv`.
 
 mod json {
     use serde::Serialize;
@@ -26,7 +22,6 @@ mod json {
         pub vk_root: String,
     }
 
-    /// One real proof, ready for `ISP1Verifier.verifyProof`.
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct ProofVector {
@@ -151,14 +146,11 @@ const TOKEN_TAG: u32 = 't' as u32;
 const TX_DOMAIN: &[u8] = b"charms/ethereum/tx/v1";
 const VAULT_DOMAIN: &[u8] = b"charms/ethereum/vault/v1";
 
-/// Charms proxy used by every hand-written spell and the fixed vault rows.
-/// Bytes sit on both sides of the CBOR uint boundary (23 vs 24).
 const FIXTURE_CHARMS: [u8; 20] = [
     0x01, 0x17, 0x18, 0xff, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
     0x0e, 0x0f, 0x10, 0x20,
 ];
 
-/// Shared `CharmToken` implementation for the two spell-linked token rows.
 const FIXTURE_IMPL: [u8; 20] = [
     0x0a, 0x17, 0x18, 0xaa, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0b, 0x0c, 0x0d,
     0x0e, 0x0f, 0x10, 0x21,
@@ -338,8 +330,7 @@ fn seq32(start: u8) -> [u8; 32] {
     out
 }
 
-/// `seq32(0)` with byte 0 replaced, so the word sorts by `marker` and still
-/// contains both uint widths (`1` and `24`).
+/// The word sorts by `marker` and still contains both uint widths (`1` and `24`).
 fn marked32(marker: u8) -> [u8; 32] {
     let mut out = seq32(0);
     out[0] = marker;
@@ -929,7 +920,6 @@ fn showcase_values() -> [Value; 7] {
         Value::Tag(65_536, Box::new(Value::Text("😀".into()))),
         Value::Tag(4_294_967_296, Box::new(Value::from(0_u64))),
     ]);
-    // Depth 4: map → array → tag → text.
     let nested = Value::Map(vec![(
         Value::Text("nest".into()),
         Value::Array(vec![Value::Tag(1, Box::new(Value::Text("😀".into())))]),
@@ -1318,7 +1308,6 @@ fn random_spell(rng: &mut SplitMix64, index: usize) -> json::SpellVector {
     })
 }
 
-/// 70% in `0..=3`, 20% in `0..=8`, 7% in `0..=16`, 3% anywhere up to `max`.
 fn biased_small(rng: &mut SplitMix64, max: u64) -> u64 {
     if max == 0 {
         return 0;
@@ -1406,7 +1395,6 @@ fn random_amount(rng: &mut SplitMix64) -> u64 {
 }
 
 fn random_value(rng: &mut SplitMix64, depth: u32) -> Value {
-    // `depth` starts at 1. Containers are only chosen while `depth < 4`.
     let kind = if depth < 4 {
         rng.below(10)
     } else {
@@ -1921,9 +1909,6 @@ fn main() {
     }
 }
 
-/// Extracts the spell and Groth16 proof of a Bitcoin transaction, verifies them the way
-/// `charms-lib` does for the current protocol version, and writes what the stock SP1 verifier
-/// needs to verify the same proof.
 fn proof_vector(tx_path: &str) -> String {
     use charms_client::tx::{EnchantedTx, Tx};
 

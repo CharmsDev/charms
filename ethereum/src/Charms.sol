@@ -285,9 +285,6 @@ contract Charms is
         return d < UNIT_DECIMALS ? uint8(d) : UNIT_DECIMALS;
     }
 
-    /// @dev The native spell behind `transfer` and `unwrap`: inputs from the front of
-    /// `utxos[from][app]`, one output of `amount` to `to` (none when `to` is zero, which burns),
-    /// and one change output to `from` carrying the remainder and every other charm.
     function _transferSpell(Transfer memory request) private view returns (Spell memory s) {
         (App memory app, bytes32 key, address from, address to, uint64 amount) =
             (request.app, request.key, request.from, request.to, request.amount);
@@ -368,10 +365,8 @@ contract Charms is
         }
     }
 
-    /// @dev Walks `utxos[from][app]` from the front. A UTXO with a custom-tag charm is skipped;
-    /// so is one that would put a second NFT of the same app, a conflicting pin, or a `u64`
-    /// overflow on the one change output. Once `amount` is covered, the next front UTXO is
-    /// taken too when it fits, so a passive holder's UTXO count stays bounded.
+    /// @dev Once `amount` is covered, the next front UTXO is taken too when it fits, so a passive
+    /// holder's UTXO count stays bounded.
     function _select(App memory app, bytes32 key, address from, uint64 amount)
         private
         view
@@ -470,7 +465,6 @@ contract Charms is
         return 0;
     }
 
-    /// @dev Hash of the pin stored for `vk`, or zero when the UTXO stores none.
     function _pinHash(Pin[] memory pins, bytes32 vk) private pure returns (bytes32) {
         for (uint256 j; j < pins.length; ++j) {
             if (pins[j].vk == vk) return keccak256(abi.encode(pins[j]));
@@ -514,7 +508,7 @@ contract Charms is
         return App(TAG_T, CharmsIds.vaultIdentity(block.chainid, address(this), token), VAULT_VK);
     }
 
-    /// @dev ETH is fixed at 18 decimals. An ERC-20 keeps its own unit up to 8 decimals.
+    /// @dev ETH is fixed at 18 decimals.
     function _scale(address token) private view returns (uint8) {
         if (token == address(0)) return ETH_SCALE;
         (bool known, uint256 d) = _decimals(token);
@@ -529,8 +523,8 @@ contract Charms is
         return (true, d);
     }
 
-    /// @dev The underlying of a registered vault app. Reverts for an unregistered one, whose
-    /// underlying cannot be recovered from its identity hash.
+    /// @dev Reverts for an unregistered vault app, whose underlying cannot be recovered from its
+    /// identity hash.
     function _vaultUnderlying(App memory app) private view returns (address token) {
         bytes32 key = appKey(app);
         token = vaultTokens[key];

@@ -12,9 +12,6 @@ import {CharmsIds} from "../../src/libraries/CharmsIds.sol";
 import {SpellCodec} from "../../src/libraries/SpellCodec.sol";
 import {MockVerifier} from "./Mocks.sol";
 
-/// @notice Deploys a proxy and builds spells. `setUp` deploys the v16 build with an accepting mock
-/// verifier, so `_mint` can create any charms through a proved spell. Phase-1 tests call
-/// `_deployPhase1`.
 abstract contract CharmsTestBase is Test, ICharmsTypes {
     uint32 internal constant T = 0x74;
     uint32 internal constant N = 0x6e;
@@ -47,13 +44,10 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         charms = _deploy(15, bytes32(0), ISP1Verifier(address(0)));
     }
 
-    // ------------------------------------------------------------------ apps and spells
-
     function _app(uint32 tag, string memory label) internal pure returns (App memory) {
         return App(tag, keccak256(bytes(label)), keccak256(abi.encodePacked(label, "/vk")));
     }
 
-    /// @dev A spell with `nApps` null public inputs and empty input and output slots.
     function _spell(App[] memory apps, uint256 nIns, uint256 nOuts)
         internal
         view
@@ -112,16 +106,12 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         input.charms = opening;
     }
 
-    // ------------------------------------------------------------------ submitting
-
-    /// @dev The id `transact` will return for `s` sent by `sender` with `salt`.
     function _txId(Spell memory s, address sender, bytes32 salt) internal view returns (bytes32) {
         bytes32 anchor = s.ins.length == 0 ? keccak256(abi.encode(sender, salt)) : bytes32(0);
         return CharmsIds.ethTxId(block.chainid, address(charms), anchor, SpellCodec.encode(s));
     }
 
-    /// @dev EIP-712 `Spend(bytes32 txId)` under the "Charms" / "1" domain, computed here from the
-    /// CHIP rather than read from the contract.
+    /// @dev Computed from the CHIP rather than read from the contract.
     function _spendDigest(bytes32 txId) internal view returns (bytes32) {
         bytes32 domain = keccak256(
             abi.encode(
@@ -148,7 +138,6 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         return charms.transact(s, bytes32(0), "", new bytes[](0));
     }
 
-    /// @dev A fresh empty UTXO owned by `owner`, created by `owner` with a new salt.
     function _placeholder(address owner) internal returns (bytes32 txId) {
         Spell memory s = _spell(new App[](0), 0, 1);
         s.outs[0].owner = owner;
@@ -156,8 +145,7 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         txId = charms.transact(s, bytes32(++salts), "", new bytes[](0));
     }
 
-    /// @dev Creates `outs` for `owner` through a proved spell that spends a fresh placeholder of
-    /// `owner`. Needs the default v16 deployment.
+    /// @dev Needs the default v16 deployment.
     function _mint(App[] memory apps, Output[] memory outs) internal returns (bytes32 txId) {
         address owner = outs[0].owner;
         bytes32 placeholder = _placeholder(owner);

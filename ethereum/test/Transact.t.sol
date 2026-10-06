@@ -37,8 +37,6 @@ contract TransactTest is CharmsTestBase {
         v2 = Pin(coin.vk, 2, keccak256("coin wasm v2"));
     }
 
-    // ------------------------------------------------------------------ placeholders
-
     function test_zeroInputSpellWithOnlyEmptyOutputsCreatesPlaceholders() public {
         Spell memory s = _spell(new App[](0), 0, 2);
         s.outs[0].owner = alice;
@@ -82,8 +80,6 @@ contract TransactTest is CharmsTestBase {
         vm.expectRevert(ICharmsErrors.SaltNotZero.selector);
         charms.transact(s, bytes32(uint256(1)), "", new bytes[](0));
     }
-
-    // ------------------------------------------------------------------ spend authorization
 
     function test_ownersSpendSignatureLetsAnotherAccountSubmit() public {
         bytes32 minted = _coinFor(alice, 100);
@@ -210,8 +206,6 @@ contract TransactTest is CharmsTestBase {
         charms.transact(s, bytes32(0), "", sigs);
     }
 
-    // ------------------------------------------------------------------ openings
-
     function test_openingWithTheWrongAmountReverts() public {
         bytes32 minted = _coinFor(alice, 100);
         _expectRejected(_spendTo(minted, 0, 99, bob), ICharmsErrors.OpeningMismatch.selector);
@@ -254,8 +248,6 @@ contract TransactTest is CharmsTestBase {
         s.outs[0] = Output(alice, _charms(_token(0, 200)));
         _expectRejected(s, ICharmsErrors.InputSpent.selector);
     }
-
-    // ------------------------------------------------------------------ canonical shape
 
     function test_appsOutOfOrderAreNotCanonical() public {
         bytes32 held = _bundle();
@@ -403,8 +395,6 @@ contract TransactTest is CharmsTestBase {
         _expectRejected(s, ICharmsErrors.LimitExceeded.selector);
     }
 
-    // ------------------------------------------------------------------ native predicate
-
     function test_balancedBundleTransferIsNative() public {
         bytes32 txId = _transact(alice, _bundleTransfer(_bundle()));
 
@@ -532,8 +522,6 @@ contract TransactTest is CharmsTestBase {
         charms.transact(s, bytes32(0), PROOF, new bytes[](0));
     }
 
-    // ------------------------------------------------------------------ version
-
     function test_spellOfAnotherVersionIsUnsupported() public {
         bytes32 minted = _coinFor(alice, 100);
         Spell memory s = _spendTo(minted, 0, 100, bob);
@@ -545,8 +533,6 @@ contract TransactTest is CharmsTestBase {
         );
         charms.transact(s, bytes32(0), "", new bytes[](0));
     }
-
-    // ------------------------------------------------------------------ phase 1
 
     function test_phase1RefusesBeamedOutputs() public {
         _deployPhase1();
@@ -569,8 +555,6 @@ contract TransactTest is CharmsTestBase {
         vm.expectRevert(ICharmsErrors.ProofsUnsupported.selector);
         charms.transact(s, bytes32(0), PROOF, new bytes[](0));
     }
-
-    // ------------------------------------------------------------------ Transaction log
 
     function test_placeholderLogCarriesItsIdItsAnchorAndTheSpell() public {
         Spell memory s = _spell(new App[](0), 0, 1);
@@ -607,8 +591,6 @@ contract TransactTest is CharmsTestBase {
         assertEq(anchor, bytes32(0));
         assertEq(spell, SpellCodec.encode(s));
     }
-
-    // ------------------------------------------------------------------ utxo and utxosOf
 
     function test_utxoOfAPlaceholderIsAnOwnedEmptyRecord() public {
         bytes32 placeholder = _placeholder(alice);
@@ -741,8 +723,6 @@ contract TransactTest is CharmsTestBase {
         _assertRef(page[1], split, 0);
     }
 
-    // ------------------------------------------------------------------ helpers
-
     function _coinFor(address owner, uint64 amount) internal returns (bytes32) {
         return _mintOne(owner, _apps(coin), _charms(_token(0, amount)));
     }
@@ -757,12 +737,11 @@ contract TransactTest is CharmsTestBase {
         s.outs[0] = Output(to, _charms(_token(0, amount)));
     }
 
-    /// @dev Alice's UTXO holding the NFT `art` and 100 `coin`. `art` sorts before `coin`.
+    /// @dev `art` sorts before `coin`.
     function _bundle() internal returns (bytes32) {
         return _mintOne(alice, _apps(art, coin), _charms(_nft(0, ART), _token(1, 100)));
     }
 
-    /// @dev Native: the NFT and 60 coin to bob, 40 coin back to alice.
     function _bundleTransfer(bytes32 held) internal view returns (Spell memory s) {
         s = _spell(_apps(art, coin), 1, 2);
         s.ins[0] = _input(held, 0, _charms(_nft(0, ART), _token(1, 100)));
@@ -780,7 +759,6 @@ contract TransactTest is CharmsTestBase {
         return charms.transact(s, bytes32(0), PROOF, new bytes[](0));
     }
 
-    /// @dev Spends 100 coin pinned to `v1` to bob, declaring `declared`.
     function _pinnedSpend(bytes32 pinned, Pin memory declared)
         internal
         view
@@ -800,7 +778,6 @@ contract TransactTest is CharmsTestBase {
         s.outs[0] = Output(bob, _charms(_token(0, 100)));
     }
 
-    /// @dev Inputs owned by carol, bob, alice, bob, in that order, all paid to carol.
     function _fourInputsOfThreeOwners() internal returns (Spell memory s) {
         Output[] memory outs = new Output[](4);
         outs[0] = Output(carol, _charms(_token(0, 10)));
@@ -815,8 +792,7 @@ contract TransactTest is CharmsTestBase {
         s.outs[0] = Output(carol, _charms(_token(0, 100)));
     }
 
-    /// @dev Outputs 1 to 5 hold 10, 20, 30, 40, 50 coin for alice. Carol's placeholder pays for
-    /// them, so they are receipts in output order.
+    /// @dev Carol's placeholder pays for alice's outputs, so they are receipts in output order.
     function _fiveCoinsOfAlice() internal returns (bytes32) {
         Output[] memory outs = new Output[](6);
         outs[0] = Output(carol, new Charm[](0));
@@ -826,8 +802,6 @@ contract TransactTest is CharmsTestBase {
         return _mint(_apps(coin), outs);
     }
 
-    /// @dev Alice holds receipts of 10 and 20 and bob one of 30. Alice then splits the 20 into 5
-    /// for bob and 15 of change.
     function _aliceSplitsTwenty() internal returns (bytes32 minted, bytes32 split) {
         Output[] memory outs = new Output[](4);
         outs[0] = Output(carol, new Charm[](0));

@@ -23,8 +23,6 @@ contract ProvedTest is CharmsTestBase {
         art = _app(N, "art");
     }
 
-    // ------------------------------------------------------------------ proofs
-
     function test_verifierGetsTheProgramVKeyTheCommittedSpellAndTheProof() public {
         Spell memory s = _claim(alice, coin, 1000);
         bytes memory publicValues =
@@ -86,8 +84,6 @@ contract ProvedTest is CharmsTestBase {
         _expectProvedRevert(s, ICharmsErrors.OpeningMismatch.selector);
     }
 
-    // ------------------------------------------------------------------ blobs
-
     function test_wellFormedNftDataIsAccepted() public {
         bytes32 txId = _prove(alice, _claimWithArt(ART));
 
@@ -133,8 +129,6 @@ contract ProvedTest is CharmsTestBase {
         );
     }
 
-    // ------------------------------------------------------------------ beaming out
-
     function test_balancedBeamOutIsNativeAndTheBeamedOutputIsNotAUtxo() public {
         (Spell memory s,) = _beamOut();
 
@@ -177,8 +171,6 @@ contract ProvedTest is CharmsTestBase {
         emit ICharmToken.Transfer(alice, address(0), 400);
         _transact(alice, s);
     }
-
-    // ------------------------------------------------------------------ beaming in
 
     function test_provedBeamInSpendsThePlaceholderAndRaisesSupply() public {
         Spell memory s = _claim(bob, coin, 400);
@@ -244,8 +236,6 @@ contract ProvedTest is CharmsTestBase {
         assertEq(_balance(coin, alice), 700);
     }
 
-    // ------------------------------------------------------------------ refs and pins
-
     function test_liveRefIsAcceptedAndStaysLive() public {
         bytes32 ref = _placeholder(bob);
         Spell memory s = _claim(alice, coin, 100);
@@ -298,10 +288,6 @@ contract ProvedTest is CharmsTestBase {
         assertEq(_balance(coin, bob), 100, "the bumped UTXO opens with the new pin");
     }
 
-    // ------------------------------------------------------------------ helpers
-
-    /// @dev Spends a fresh placeholder of `owner` and gives `owner` `amount` of `app`: the shape
-    /// of a beam-in claim.
     function _claim(address owner, App memory app, uint64 amount)
         internal
         returns (Spell memory s)
@@ -312,7 +298,6 @@ contract ProvedTest is CharmsTestBase {
         s.outs[0] = Output(owner, _charms(_token(0, amount)));
     }
 
-    /// @dev A claim for alice of the NFT `art` with `data` beside 1000 coin.
     function _claimWithArt(bytes memory data) internal returns (Spell memory s) {
         bytes32 placeholder = _placeholder(alice);
         s = _spell(_apps(art, coin), 1, 1);
@@ -320,7 +305,6 @@ contract ProvedTest is CharmsTestBase {
         s.outs[0] = Output(alice, _charms(_nft(0, data), _token(1, 1000)));
     }
 
-    /// @dev Alice beams 400 of her 1000 coin out and keeps 600.
     function _beamOut() internal returns (Spell memory s, bytes32 minted) {
         minted = _mintOne(alice, _apps(coin), _charms(_token(0, 1000)));
         s = _spell(_apps(coin), 1, 2);
