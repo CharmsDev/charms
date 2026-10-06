@@ -1,0 +1,36 @@
+name: Ethereum contracts
+
+on:
+  pull_request:
+    paths: ['ethereum/**', '.github/workflows/ethereum.yml']
+  push:
+    branches: ['main']
+    paths: ['ethereum/**', '.github/workflows/ethereum.yml']
+
+jobs:
+  forge:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ethereum
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.8.5
+
+      - name: Install dependencies
+        run: forge soldeer install
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build within the EIP-170 size limit
+        run: forge build --sizes
+
+      - name: Check the storage layout
+        run: scripts/check-storage-layout.sh
+
+      - name: Test
+        run: forge test
