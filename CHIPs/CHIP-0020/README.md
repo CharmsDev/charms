@@ -240,12 +240,15 @@ interface ICharms {
 
     /// @notice The stored record for one UTXO. `charms-lib` and an indexer call this to
     /// see that the contract accepted the output.
-    /// @dev `kind` is 0 Empty, 1 Plain, 2 Bundle. `body` is empty for Empty and for an
-    /// unpinned Plain token. A missing id returns kind 0 and `owner == address(0)`.
+    /// @dev Returns `owner` and `body` only. `body` is empty for a missing or spent id,
+    /// for an Empty UTXO, and for an unpinned Plain token. A missing or spent id is
+    /// `owner == address(0)` with that empty `body`. Kind and the Plain amount stay in
+    /// `head` and are not returned, so an owned Empty UTXO and an unpinned Plain token
+    /// both read as that owner plus an empty `body`.
     function utxo(ICharmsTypes.UtxoRef calldata u)
         external
         view
-        returns (uint8 kind, address owner, uint64 amount, bytes memory body);
+        returns (address owner, bytes memory body);
 
     /// @notice The one vault `App` for `token` and its canonical `scale`. Holders and
     /// indexers use this before `wrap` or `unwrap`.
@@ -441,6 +444,8 @@ Kind is one function of the output's charms:
 | none | Empty | `head` only, plus `emptyUtxos[owner]` |
 | one charm, tag `t`, no pin | Plain | amount in `head`. The deque slot names the app. |
 | anything else | Bundle | `body` holds the charm map and pins. Listed in `utxos` for each `t` app it contains. |
+
+`utxo(UtxoRef)` returns `(owner, body)` only. Kind and the Plain amount stay in `head`; they are not on that return. `body` is empty unless the UTXO is a Bundle. A missing or spent id has no `head` and returns `owner == address(0)` with an empty `body`. An owned Empty UTXO and an unpinned Plain token are not distinguishable from that return.
 
 A beamed output is not a UTXO. It still occupies an index, so `tx_outs_len` and `beamed_out_to_hash` see it. It is absent from `head`, from `balance`, and from `supply`.
 

@@ -138,14 +138,17 @@ contract TokenTest is CharmsTestBase {
         UtxoRef[] memory bobs = _page(coin, bob);
         assertEq(bobs.length, 1);
         assertEq(bobs[0].index, 0);
-        (uint8 kind, address owner, uint64 amount, bytes memory body) = charms.utxo(bobs[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(bobs[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(bobs[0].txId, bobs[0].index);
         assertEq(owner, bob);
-        assertEq(amount, 100);
         assertEq(body.length, 0);
-        (kind, owner,,) = charms.utxo(UtxoRef(bobs[0].txId, 1));
-        assertEq(kind, 0, "no change output");
-        assertEq(owner, address(0));
+        assertEq(kind, 1);
+        assertEq(amount, 100);
+        (owner, body) = charms.utxo(UtxoRef(bobs[0].txId, 1));
+        (kind,,) = _storedHead(bobs[0].txId, 1);
+        assertEq(owner, address(0), "no change output");
+        assertEq(body.length, 0);
+        assertEq(kind, 0);
     }
 
     function test_remainderGoesToAChangeOutput() public {
@@ -171,13 +174,17 @@ contract TokenTest is CharmsTestBase {
         assertEq(bobs[0].index, 0);
         assertEq(alices[0].index, 1);
 
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(bobs[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(bobs[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(bobs[0].txId, bobs[0].index);
         assertEq(owner, bob);
-        assertEq(amount, 40);
-        (kind, owner, amount,) = charms.utxo(alices[0]);
+        assertEq(body.length, 0);
         assertEq(kind, 1);
+        assertEq(amount, 40);
+        (owner, body) = charms.utxo(alices[0]);
+        (kind,, amount) = _storedHead(alices[0].txId, alices[0].index);
         assertEq(owner, alice);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 60);
     }
 
@@ -197,15 +204,17 @@ contract TokenTest is CharmsTestBase {
         UtxoRef[] memory bobs = _page(coin, bob);
         assertEq(bobs.length, 1);
         assertEq(bobs[0].index, 0);
-        (uint8 kind, address owner, uint64 amount, bytes memory body) = charms.utxo(bobs[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(bobs[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(bobs[0].txId, bobs[0].index);
         assertEq(owner, bob);
-        assertEq(amount, 50);
         assertEq(body.length, 0);
+        assertEq(kind, 1);
+        assertEq(amount, 50);
 
-        (kind, owner, amount, body) = charms.utxo(UtxoRef(bobs[0].txId, 1));
-        assertEq(kind, 2);
+        (owner, body) = charms.utxo(UtxoRef(bobs[0].txId, 1));
+        (kind,,) = _storedHead(bobs[0].txId, 1);
         assertEq(owner, alice);
+        assertEq(kind, 2);
         (CharmRecord[] memory held, StoredPin[] memory pins) = _open(body);
         assertEq(pins.length, 0);
         assertEq(held.length, 1, "change holds the NFT and no zero token amount");
@@ -245,14 +254,16 @@ contract TokenTest is CharmsTestBase {
         assertEq(bobs[0].index, 0);
         assertEq(alices[0].index, 1);
 
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(bobs[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(bobs[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(bobs[0].txId, bobs[0].index);
         assertEq(owner, bob);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 30);
-        bytes memory body;
-        (kind, owner,, body) = charms.utxo(alices[0]);
-        assertEq(kind, 2);
+        (owner, body) = charms.utxo(alices[0]);
+        (kind,,) = _storedHead(alices[0].txId, alices[0].index);
         assertEq(owner, alice);
+        assertEq(kind, 2);
         (CharmRecord[] memory held,) = _open(body);
         (, uint64 coinLeft,) = _find(held, coin);
         (, uint64 otherLeft,) = _find(held, other);
@@ -285,9 +296,11 @@ contract TokenTest is CharmsTestBase {
         assertEq(stayed[0].txId, before[0].txId);
         assertEq(stayed[0].index, before[0].index);
         assertEq(stayed[0].txId, minted);
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(stayed[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(stayed[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(stayed[0].txId, stayed[0].index);
         assertEq(owner, alice);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 5);
     }
 
@@ -335,9 +348,10 @@ contract TokenTest is CharmsTestBase {
         UtxoRef[] memory page = _page(coin, alice);
         assertEq(page.length, 2);
         for (uint256 i; i < page.length; ++i) {
-            (uint8 kind,,, bytes memory body) = charms.utxo(page[i]);
+            (, bytes memory body) = charms.utxo(page[i]);
+            (uint8 kind,, uint64 amount) = _storedHead(page[i].txId, page[i].index);
             if (kind == 1) {
-                (,, uint64 amount,) = charms.utxo(page[i]);
+                assertEq(body.length, 0);
                 plain += amount;
             } else {
                 assertEq(kind, 2);
@@ -682,15 +696,15 @@ contract TokenTest is CharmsTestBase {
     }
 
     function _amount(UtxoRef memory u) private view returns (uint64 amount) {
-        (,, amount,) = charms.utxo(u);
+        (,, amount) = _storedHead(u.txId, u.index);
     }
 
     function _owner(UtxoRef memory u) private view returns (address owner) {
-        (, owner,,) = charms.utxo(u);
+        (owner,) = charms.utxo(u);
     }
 
     function _body(UtxoRef memory u) private view returns (bytes memory body) {
-        (,,, body) = charms.utxo(u);
+        (, body) = charms.utxo(u);
     }
 
     function _runtime(App memory app) private view returns (bytes memory) {

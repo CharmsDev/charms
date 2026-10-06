@@ -58,9 +58,11 @@ contract CoreTest is CharmsTestBase {
         assertEq(_balance(coin, alice), 700);
         assertEq(_balance(coin, bob), 300);
         assertEq(charms.totalSupply(_key(coin)), 1000);
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(UtxoRef(txId, 0));
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(txId, 0));
+        (uint8 kind,, uint64 amount) = _storedHead(txId, 0);
         assertEq(owner, bob);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 300);
 
         vm.prank(bob);

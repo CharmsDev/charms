@@ -157,13 +157,17 @@ contract VaultTest is CharmsTestBase {
         assertEq(token.balanceOf(address(charms)), 60);
         assertEq(locked, 60);
 
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(UtxoRef(txId, 0));
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(UtxoRef(txId, 0));
+        (uint8 kind,, uint64 amount) = _storedHead(txId, 0);
         assertEq(owner, alice);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 60);
-        (kind, owner,,) = charms.utxo(UtxoRef(txId, 1));
-        assertEq(kind, 0);
+        (owner, body) = charms.utxo(UtxoRef(txId, 1));
+        (kind,,) = _storedHead(txId, 1);
         assertEq(owner, address(0));
+        assertEq(body.length, 0);
+        assertEq(kind, 0);
     }
 
     function test_unwrapAboveBalanceReverts() public {
@@ -341,13 +345,17 @@ contract VaultTest is CharmsTestBase {
         (UtxoRef[] memory bobs,) = charms.utxosOf(_key(app), bob, 0, 10);
         assertEq(alices.length, 1);
         assertEq(bobs.length, 1);
-        (uint8 kind, address owner, uint64 amount,) = charms.utxo(alices[0]);
-        assertEq(kind, 1);
+        (address owner, bytes memory body) = charms.utxo(alices[0]);
+        (uint8 kind,, uint64 amount) = _storedHead(alices[0].txId, alices[0].index);
         assertEq(owner, alice);
-        assertEq(amount, 12);
-        (kind, owner, amount,) = charms.utxo(bobs[0]);
+        assertEq(body.length, 0);
         assertEq(kind, 1);
+        assertEq(amount, 12);
+        (owner, body) = charms.utxo(bobs[0]);
+        (kind,, amount) = _storedHead(bobs[0].txId, bobs[0].index);
         assertEq(owner, bob);
+        assertEq(body.length, 0);
+        assertEq(kind, 1);
         assertEq(amount, 8);
     }
 

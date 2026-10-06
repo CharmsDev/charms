@@ -103,14 +103,16 @@ contract InvariantsTest is CharmsTestBase {
         uint256 n = handler.ghostCount();
         for (uint256 id; id < n; ++id) {
             Handler.Utxo memory g = handler.ghost(id);
-            (uint8 kind, address owner, uint64 amount, bytes memory body) = charms.utxo(g.ref);
+            (address owner, bytes memory body) = charms.utxo(g.ref);
+            (uint8 kind,, uint64 amount) = _storedHead(g.ref.txId, g.ref.index);
             if (!g.live) {
                 assertEq(owner, address(0), "a spent or beamed output has no owner");
-                assertEq(kind, 0, "a spent or beamed output reads as Empty");
+                assertEq(body.length, 0, "a spent or beamed output has no body");
+                assertEq(kind, 0, "a spent or beamed output is Empty in head");
                 continue;
             }
             assertEq(owner, g.owner, "owner");
-            assertEq(kind, handler.kindOf(id), "kind");
+            assertEq(kind, handler.kindOf(id), "kind stays in head");
             if (kind != 2) assertEq(body.length, 0, "Empty and unpinned Plain have no body");
             if (kind == 1) {
                 UtxoBody.Held[] memory only = handler.heldOf(id);

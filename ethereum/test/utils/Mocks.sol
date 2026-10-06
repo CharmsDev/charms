@@ -128,7 +128,7 @@ contract HoldingWallet1271 {
         view
         returns (bytes4)
     {
-        (, address owner,,) = charms.utxo(ICharmsTypes.UtxoRef(txId, index));
+        (address owner,) = charms.utxo(ICharmsTypes.UtxoRef(txId, index));
         (address recovered,,) = ECDSA.tryRecover(hash, signature);
         return
             owner == address(this) && recovered == signer ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
@@ -139,7 +139,7 @@ interface ICharmsUtxo {
     function utxo(ICharmsTypes.UtxoRef calldata u)
         external
         view
-        returns (uint8 kind, address owner, uint64 amount, bytes memory body);
+        returns (address owner, bytes memory body);
 }
 
 contract RejectEth {

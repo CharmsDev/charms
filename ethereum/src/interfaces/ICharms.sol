@@ -214,12 +214,15 @@ interface ICharms is ICharmsErrors {
 
     /// @notice The stored record for one UTXO. `charms-lib` and an indexer call this to see that
     /// the contract accepted the output.
-    /// @dev `kind` is 0 Empty, 1 Plain, 2 Bundle. `body` is empty for Empty and for an unpinned
-    /// Plain token. A missing id returns kind 0 and `owner == address(0)`.
+    /// @dev Returns `owner` and `body` only. `body` is empty for a missing or spent id, for an
+    /// Empty UTXO, and for an unpinned Plain token. A missing or spent id is
+    /// `owner == address(0)` with that empty `body`. Kind and the Plain amount stay in `head`
+    /// and are not returned, so an owned Empty UTXO and an unpinned Plain token both read as
+    /// that owner plus an empty `body`.
     function utxo(ICharmsTypes.UtxoRef calldata u)
         external
         view
-        returns (uint8 kind, address owner, uint64 amount, bytes memory body);
+        returns (address owner, bytes memory body);
 
     /// @notice The one vault `App` for `token` and its canonical `scale`. Holders and indexers use
     /// this before `wrap` or `unwrap`.

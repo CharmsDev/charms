@@ -276,18 +276,19 @@ contract UpgradeTest is CharmsTestBase {
     }
 
     function _record(UtxoRef memory u) internal view returns (bytes memory) {
-        (uint8 kind, address owner, uint64 amount, bytes memory body) = charms.utxo(u);
-        return abi.encode(kind, owner, amount, body);
+        (address owner, bytes memory body) = charms.utxo(u);
+        return abi.encode(owner, body);
     }
 
     function _assertRecord(UtxoRef memory u, uint8 kind, address owner, uint64 amount)
         internal
         view
     {
-        (uint8 k, address o, uint64 a, bytes memory body) = charms.utxo(u);
-        assertEq(k, kind);
+        (address o, bytes memory body) = charms.utxo(u);
+        (uint8 k,, uint64 a) = _storedHead(u.txId, u.index);
         assertEq(o, owner);
-        assertEq(a, amount);
         assertEq(body.length, 0);
+        assertEq(k, kind);
+        assertEq(a, amount);
     }
 }

@@ -254,15 +254,11 @@ contract Charms is
         }
     }
 
-    function utxo(UtxoRef calldata u)
-        external
-        view
-        returns (uint8 kind, address owner, uint64 amount, bytes memory record)
-    {
+    function utxo(UtxoRef calldata u) external view returns (address owner, bytes memory record) {
         bytes32 key = _utxoKey(u.txId, u.index);
         Head storage h = head[key];
+        owner = h.owner;
         if (h.kind == Kind.Bundle) record = body[key];
-        return (uint8(h.kind), h.owner, h.amount, record);
     }
 
     function vaultOf(address token) external view returns (App memory app, uint8 scale) {
