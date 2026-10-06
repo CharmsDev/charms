@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
+import {ICharmsTypes} from "../../src/interfaces/ICharms.sol";
 import {ISP1Verifier} from "../../src/interfaces/ISP1Verifier.sol";
 
 contract MockVerifier is ISP1Verifier {
@@ -110,6 +111,42 @@ contract Wallet1271 {
         (address recovered,,) = ECDSA.tryRecover(hash, signature);
         return recovered == signer ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
     }
+}
+
+/// @dev Signs a spend only while it still owns the UTXO it is asked about, as a policy wallet
+/// might.
+contract HoldingWallet1271 {
+    address public immutable signer;
+    ICharmsUtxo public immutable charms;
+    bytes32 public txId;
+    uint32 public index;
+
+    constructor(address signer_, ICharmsUtxo charms_) {
+        signer = signer_;
+        charms = charms_;
+    }
+
+    function watch(bytes32 txId_, uint32 index_) external {
+        (txId, index) = (txId_, index_);
+    }
+
+    function isValidSignature(bytes32 hash, bytes calldata signature)
+        external
+        view
+        returns (bytes4)
+    {
+        (, address owner,,) = charms.utxo(ICharmsTypes.UtxoRef(txId, index));
+        (address recovered,,) = ECDSA.tryRecover(hash, signature);
+        return
+            owner == address(this) && recovered == signer ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
+    }
+}
+
+interface ICharmsUtxo {
+    function utxo(ICharmsTypes.UtxoRef calldata u)
+        external
+        view
+        returns (uint8 kind, address owner, uint64 amount, bytes memory body);
 }
 
 contract RejectEth {

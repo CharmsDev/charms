@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {CharmToken} from "../src/CharmToken.sol";
 import {ICharmToken, ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
+import {HoldingWallet1271, ICharmsUtxo} from "./utils/Mocks.sol";
 
 contract CoreTest is CharmsTestBase {
     address internal alice;
@@ -108,5 +109,55 @@ contract CoreTest is CharmsTestBase {
         (,, locked) = charms.vaultOf(address(0));
         assertEq(locked, 0.3 ether);
         assertEq(address(charms).balance, 0.3 ether);
+    }
+
+    function test_aWalletThatChecksItStillHoldsTheInputCanSignARelayedSpend() public {
+        App memory coin = _app(T, "coin");
+        HoldingWallet1271 wallet = new HoldingWallet1271(alice, ICharmsUtxo(address(charms)));
+        bytes32 minted = _mintOne(address(wallet), _apps(coin), _charms(_token(0, 10)));
+        wallet.watch(minted, 0);
+
+        Spell memory s = _spell(_apps(coin), 1, 1);
+        s.ins[0] = _input(minted, 0, _charms(_token(0, 10)));
+        s.outs[0] = Output(bob, _charms(_token(0, 10)));
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = _sign(aliceKey, _txId(s, bob, 0));
+
+        vm.prank(bob);
+        charms.transact(s, bytes32(0), "", sigs);
+
+        assertEq(_balance(coin, bob), 10);
+        assertEq(_balance(coin, address(wallet)), 0);
+    }
+
+    function test_theSameInputTwiceInOneSpellReadsAsSpent() public {
+        App memory coin = _app(T, "coin");
+        Output[] memory outs = new Output[](1);
+        outs[0] = Output(alice, _charms(_token(0, 5)));
+        bytes32 minted = _mint(_apps(coin), outs);
+
+        Spell memory s = _spell(_apps(coin), 2, 1);
+        s.ins[0] = _input(minted, 0, _charms(_token(0, 5)));
+        s.ins[1] = _input(minted, 0, _charms(_token(0, 5)));
+        s.outs[0] = Output(alice, _charms(_token(0, 10)));
+
+        vm.prank(alice);
+        vm.expectRevert(ICharmsErrors.InputSpent.selector);
+        charms.transact(s, bytes32(0), PROOF, new bytes[](0));
+    }
+
+    function test_aRefThatIsAlsoAnInputIsNotLive() public {
+        App memory coin = _app(T, "coin");
+        bytes32 minted = _mintOne(alice, _apps(coin), _charms(_token(0, 5)));
+
+        Spell memory s = _spell(_apps(coin), 1, 1);
+        s.ins[0] = _input(minted, 0, _charms(_token(0, 5)));
+        s.refs = new UtxoRef[](1);
+        s.refs[0] = UtxoRef(minted, 0);
+        s.outs[0] = Output(bob, _charms(_token(0, 5)));
+
+        vm.prank(alice);
+        vm.expectRevert(ICharmsErrors.RefNotLive.selector);
+        charms.transact(s, bytes32(0), PROOF, new bytes[](0));
     }
 }
