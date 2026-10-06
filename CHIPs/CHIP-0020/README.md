@@ -287,8 +287,8 @@ interface IUpgradeable {
 interface ICharmTokenHooks {
     /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only
     /// caller.
-    /// @dev `_apply` nets each holder's balance change and calls this so wallets see the
-    /// event on the token, not on the proxy.
+    /// @dev `_apply` calls this only when this clone is already deployed. It does not
+    /// deploy the clone in order to emit.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
@@ -303,8 +303,8 @@ interface ICharmTokenHooks {
 /// `ICharmTokenHooks`.
 interface ICharmToken {
     /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes
-    /// `Transfer` by calling `emitTransfer`. Holders cause `Approval` by calling
-    /// `approve` or `permit`.
+    /// `Transfer` by calling `emitTransfer` when this clone is already deployed.
+    /// Holders cause `Approval` by calling `approve` or `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
@@ -528,7 +528,10 @@ _apply(spell, anchor, proof, signatures, vaultDelta):
     write outputs, delete inputs, update supply, balance, deques, vault, pins
     if ins is empty: mark the anchor used
     emit Transaction(txId, anchor, cbor)
-    emit ERC-20 Transfer events from the per-holder deltas
+    for each tag-t app whose plain balance changed:
+        token = tokenAddress(app)
+        if extcodesize(token) == 0: skip emitTransfer
+        else: emitTransfer the netted Transfer events
 ```
 
 `native` is the guest's simple-transfer path (`is_correct` with no app binaries), plus what this contract can see:
@@ -586,7 +589,7 @@ Partial spends do not exist. The input UTXO is spent whole. The remainder is a n
 
 Zero is not a charm amount (`ensure_no_zero_amounts`). `transfer(to, 0)` emits an ERC-20 `Transfer` and creates no UTXO. There is no Bitcoin dust limit. Change of zero is omitted. `to` of `address(0)` or of `Charms` reverts. An amount above `type(uint64).max` reverts.
 
-For each `t` app touched by `_apply`, net the plain balance change per owner and emit `Transfer` events through the token. A facade transfer emits one `Transfer(from, to, amount)`. A beam-in or a wrap emits `Transfer(0, to, amount)`. A beam-out, a burn, or an unwrap emits `Transfer(from, 0, amount)`. Supply on Ethereum changes only in those mint and burn cases.
+For each tag-`t` app whose plain balance changed in `_apply`, set `token = tokenAddress(app)`. If `extcodesize(token) == 0`, skip `emitTransfer` and do not deploy. If code is present, emit `Transfer` through that token, netted per owner, including mint and burn: one `Transfer(from, to, amount)` for a facade transfer, `Transfer(0, to, amount)` for a beam-in or a wrap, and `Transfer(from, 0, amount)` for a beam-out, a burn, or an unwrap. Supply on Ethereum changes in those mint and burn cases whether or not the clone exists. Indexers read the `Transaction` log when no facade exists yet.
 
 ## Vault
 
