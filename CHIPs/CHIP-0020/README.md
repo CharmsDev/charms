@@ -245,10 +245,13 @@ interface ICharms {
         returns (uint8 kind, address owner, uint64 amount, bytes memory body);
 
     /// @notice The one vault `App` for `token` and its canonical `scale`. Holders and
-    /// indexers use this before `wrap` or `unwrap`. The underlying balance is
-    /// `token.balanceOf(charms)`, or the ETH balance of `charms` for the ETH vault.
+    /// indexers use this before `wrap` or `unwrap`.
     /// @dev `app` does not depend on `scale`. ETH (`token == address(0)`) is always
     /// `scale` 10. An ERC-20's `scale` is derived from `decimals()` by the rule in Vault.
+    /// `token.balanceOf(charms)`, or the ETH balance of `charms` for the ETH vault, is
+    /// what `charms` holds, not the committed vault backing. A direct transfer raises it
+    /// without raising `locked`, so it can exceed `locked`. `locked` is not returned; it
+    /// stays an internal check in `_checkVaults`.
     function vaultOf(address token)
         external
         view
