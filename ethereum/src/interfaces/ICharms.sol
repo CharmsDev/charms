@@ -144,6 +144,7 @@ interface ICharmsErrors {
     error ZeroAdmin();
     error InvalidCursor();
     error ZeroLimit();
+    error NotDelegated();
 }
 
 /// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on

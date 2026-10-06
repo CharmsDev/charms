@@ -5,6 +5,7 @@ import {CharmToken} from "../src/CharmToken.sol";
 import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
+import {CharmsStorage} from "../src/CharmsStorage.sol";
 import {ICharmToken, ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
@@ -169,5 +170,14 @@ contract CoreTest is CharmsTestBase {
         Charms impl = new Charms(new CharmsApply(15, bytes32(0), ISP1Verifier(address(0))));
         vm.expectRevert(ICharmsErrors.ZeroAdmin.selector);
         new CharmsProxy(address(impl), abi.encodeCall(Charms.initialize, (address(0))));
+    }
+
+    function test_theApplyModuleRefusesADirectCall() public {
+        CharmsApply module = new CharmsApply(15, bytes32(0), ISP1Verifier(address(0)));
+        Spell memory s = _spell(_apps(_app(T, "coin")), 0, 1);
+        CharmsStorage.Context memory c;
+
+        vm.expectRevert(ICharmsErrors.NotDelegated.selector);
+        module.applySpell{value: 1}(s, c);
     }
 }

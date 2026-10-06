@@ -30,6 +30,7 @@ contract CharmsApply is CharmsStorage {
     uint32 public immutable SPELL_VERSION;
     bytes32 public immutable PROGRAM_VKEY;
     ISP1Verifier public immutable VERIFIER;
+    address private immutable SELF = address(this);
 
     constructor(uint32 spellVersion, bytes32 programVKey, ISP1Verifier verifier) {
         SPELL_VERSION = spellVersion;
@@ -41,6 +42,7 @@ contract CharmsApply is CharmsStorage {
     /// not native reverts with `ProofRequired`.
     /// @dev Payable because `wrap` reaches it by `delegatecall`, which keeps `msg.value`.
     function applySpell(Spell memory s, Context memory c) external payable returns (bytes32 txId) {
+        if (address(this) == SELF) revert NotDelegated();
         if (s.version != SPELL_VERSION) revert UnsupportedVersion(s.version);
         _checkShape(s);
         bool proofs = address(VERIFIER) != address(0);
