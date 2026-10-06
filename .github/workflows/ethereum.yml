@@ -30,7 +30,7 @@ jobs:
         run: forge build --sizes
 
       - name: Check the storage layout
-        run: scripts/check-storage-layout.sh
+        run: scripts/check-storage-layout.py
 
       - name: Test
         run: forge test
