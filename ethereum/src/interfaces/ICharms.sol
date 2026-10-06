@@ -142,6 +142,7 @@ interface ICharmsErrors {
     error EthRejected();
     error NotAdmin();
     error ZeroAdmin();
+    error InvalidCursor();
 }
 
 /// @notice Spell and vault API. Wallets, the CLI, and contracts that build spells call this on
