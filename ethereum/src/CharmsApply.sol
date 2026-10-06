@@ -239,8 +239,8 @@ contract CharmsApply is CharmsStorage {
 
         uint256[] memory sumIn = new uint256[](n);
         uint256[] memory sumOut = new uint256[](n);
-        bytes32[] memory nftIn = _nfts(s, sumIn, true);
-        bytes32[] memory nftOut = _nfts(s, sumOut, false);
+        bytes32[] memory nftIn = _tally(s, sumIn, true);
+        bytes32[] memory nftOut = _tally(s, sumOut, false);
         for (uint256 i; i < n; ++i) {
             if (s.apps[i].tag != TAG_T) continue;
             if (sumIn[i] > type(uint64).max || sumOut[i] > type(uint64).max) return false;
@@ -250,7 +250,7 @@ contract CharmsApply is CharmsStorage {
         return _sameMultiset(nftIn, nftOut);
     }
 
-    function _nfts(Spell memory s, uint256[] memory sums, bool inputs)
+    function _tally(Spell memory s, uint256[] memory sums, bool inputs)
         private
         pure
         returns (bytes32[] memory nfts)
