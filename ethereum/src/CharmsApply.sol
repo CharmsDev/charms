@@ -88,7 +88,7 @@ contract CharmsApply is CharmsStorage {
         _checkVaults(s, keys);
         if (s.beamedOuts.length != 0) beamSources[txId] = block.number;
         emit Transaction(txId, c.anchor, cbor);
-        _emitTransfers(s, owners);
+        if (!c.facade) _emitTransfers(s, owners);
     }
 
     /// @dev Calldata order is the CBOR order, so this checks it rather than sorting.
@@ -432,11 +432,22 @@ contract CharmsApply is CharmsStorage {
 
     function _emitTransfers(Spell memory s, address[] memory inputOwners) private {
         for (uint256 i; i < s.apps.length; ++i) {
-            if (s.apps[i].tag != TAG_T) continue;
+            if (s.apps[i].tag != TAG_T || s.apps[i].vk == VAULT_VK) continue;
             address token = _tokenAddress(s.apps[i]);
             if (token.code.length == 0) continue;
             (address[] memory who, int256[] memory delta) = _netDeltas(s, i, inputOwners);
-            _emitNetted(ICharmTokenHooks(token), who, delta);
+            _emitHub(ICharmTokenHooks(token), who, delta);
+        }
+    }
+
+    /// @dev The counterparty is this contract, the Charms proxy under `delegatecall`. Senders
+    /// first, then receivers. Holders are not paired with each other.
+    function _emitHub(ICharmTokenHooks token, address[] memory who, int256[] memory delta) private {
+        for (uint256 i; i < who.length; ++i) {
+            if (delta[i] < 0) token.emitTransfer(who[i], address(this), uint256(-delta[i]));
+        }
+        for (uint256 i; i < who.length; ++i) {
+            if (delta[i] > 0) token.emitTransfer(address(this), who[i], uint256(delta[i]));
         }
     }
 
@@ -481,30 +492,6 @@ contract CharmsApply is CharmsStorage {
         who[n] = owner;
         delta[n] = amount;
         return n + 1;
-    }
-
-    function _emitNetted(ICharmTokenHooks token, address[] memory who, int256[] memory delta)
-        private
-    {
-        uint256 r;
-        for (uint256 i; i < who.length; ++i) {
-            if (delta[i] >= 0) continue;
-            uint256 owed = uint256(-delta[i]);
-            while (owed != 0) {
-                while (r < who.length && delta[r] <= 0) ++r;
-                if (r == who.length) {
-                    token.emitTransfer(who[i], address(0), owed);
-                    break;
-                }
-                uint256 x = owed < uint256(delta[r]) ? owed : uint256(delta[r]);
-                token.emitTransfer(who[i], who[r], x);
-                delta[r] -= int256(x);
-                owed -= x;
-            }
-        }
-        for (; r < who.length; ++r) {
-            if (delta[r] > 0) token.emitTransfer(address(0), who[r], uint256(delta[r]));
-        }
     }
 
     function _amountOfApp(Charm[] memory charms, uint256 app) private pure returns (uint256) {

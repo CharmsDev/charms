@@ -77,8 +77,9 @@ interface ICharmsTypes {
 interface ICharmsLedger {
     /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and creating
     /// change.
-    /// @dev `app.tag` must be `t`. Only the CREATE2 `CharmToken` for that app may call this. The
-    /// token has already checked `msg.sender` and the allowance.
+    /// @dev `app.tag` must be `t`, and `app` must not be a vault. Only the CREATE2 `CharmToken`
+    /// for that app may call this. The token has already checked `msg.sender` and the allowance.
+    /// A vault charm moves through `transact`.
     function tokenTransfer(ICharmsTypes.App calldata app, address from, address to, uint256 amount)
         external;
 
@@ -89,14 +90,18 @@ interface ICharmsLedger {
     /// returns this.
     function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
 
-    /// @notice The token's ERC-20 `name`. The token forwards here because its own implementation
-    /// is part of `tokenAddress` and cannot change, while this policy can.
+    /// @notice The token's ERC-20 `name`. A non-vault clone forwards here because its
+    /// implementation is part of `tokenAddress` and cannot change, while this policy can.
+    /// @dev `"Charm"` until CHIP-0420 metadata is published. A vault app has no clone and no
+    /// second name.
     function name(ICharmsTypes.App calldata app) external view returns (string memory);
 
     /// @notice The token's ERC-20 `symbol`. Forwarded for the same reason as `name`.
+    /// @dev `"CHARM"` until CHIP-0420 `ticker` is published.
     function symbol(ICharmsTypes.App calldata app) external view returns (string memory);
 
     /// @notice The token's ERC-20 `decimals`. Forwarded for the same reason as `name`.
+    /// @dev `0` until CHIP-0420 `decimals` is published.
     function decimals(ICharmsTypes.App calldata app) external view returns (uint8);
 }
 
@@ -178,17 +183,19 @@ interface ICharms is ICharmsErrors {
     /// @dev The holder calls this. The underlying token is the one recorded for that vault.
     function unwrap(address token, uint64 amount, address to) external returns (bytes32 txId);
 
-    /// @notice CREATE2 address of the `CharmToken` for a tag-`t` `app`. It depends only on `app`
-    /// and this contract's address. Does not deploy.
-    /// Reverts when `app.tag` is not `t`.
-    /// @dev Wallets compute this off-chain the same way. The address is known before
-    /// `ensureToken`.
+    /// @notice ERC-20 face of a tag-`t` `app`. Does not deploy.
+    /// @dev A non-vault app returns the CREATE2 address of its `CharmToken`. That address
+    /// depends only on `app` and this contract. A vault app returns the underlying ERC-20
+    /// recorded for that vault on the first `wrap`, or `address(0)` for ETH. The identity is a
+    /// hash, so before that record exists the call reverts and no clone is deployed. Any tag
+    /// other than `t` reverts.
     function tokenAddress(ICharmsTypes.App calldata app) external view returns (address);
 
-    /// @notice Deploy the `CharmToken` clone for a tag-`t` `app` when no code is at
-    /// `tokenAddress(app)`. If the clone is already there, return that address.
-    /// @dev A wallet or integration calls this once before `transfer` or `balanceOf`. Any tag
-    /// other than `t` reverts. `_apply` and `tokenTransfer` do not call this.
+    /// @notice ERC-20 face of a tag-`t` `app`. A non-vault app deploys its `CharmToken` clone
+    /// when no code is at `tokenAddress(app)`. A vault app does not deploy.
+    /// @dev A vault app returns the same address as `tokenAddress`. If the non-vault clone is
+    /// already there, return that address. Any tag other than `t` reverts. `_apply` and
+    /// `tokenTransfer` do not call this.
     function ensureToken(ICharmsTypes.App calldata app) external returns (address token);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a
@@ -246,21 +253,26 @@ interface IUpgradeable is IERC1822Proxiable {
 /// @notice What `Charms` calls on a `CharmToken`. The token implements this. Holders do not.
 interface ICharmTokenHooks {
     /// @notice Emit ERC-20 `Transfer` from the token address. `Charms` is the only caller.
-    /// @dev `_apply` calls this only when this clone is already deployed. It does not deploy the
-    /// clone in order to emit.
+    /// @dev A spell emits `Transfer(sender, Charms, decrease)` and `Transfer(Charms, receiver,
+    /// increase)` on a deployed non-vault clone. `Charms` is the proxy. A facade `transfer` or
+    /// `transferFrom` emits `Transfer(from, to, amount)` instead, including a self-transfer.
+    /// `_apply` does not deploy the clone in order to emit.
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
-/// @notice User-facing ERC-20 for one fungible charm, tag `t`. Wallets, routers, and DeFi call
-/// this. One per tag-`t` app. NFT, Scroll, custom-tag, and empty UTXOs are not this interface.
+/// @notice User-facing ERC-20 for one non-vault fungible charm, tag `t`. Wallets, routers, and
+/// DeFi call this. One per such app. A vault app has no clone: its ERC-20 face is the underlying
+/// token, or `address(0)` for ETH, and the charm moves through `transact`. NFT, Scroll,
+/// custom-tag, and empty UTXOs are not this interface.
 /// @dev The deployed bytecode forwards calldata plus the packed `App` and a `uint16` length, then
 /// `delegatecall`s a shared implementation. Implements IERC-20, IERC-20 metadata, and EIP-2612.
 /// Allowances and permit nonces live here. An infinite allowance is not decremented. The token
 /// also implements `ICharmTokenHooks`.
 interface ICharmToken {
     /// @notice `Transfer` and `Approval` are the ERC-20 events. `Charms` causes `Transfer` by
-    /// calling `emitTransfer` when this clone is already deployed. Holders cause `Approval` by
-    /// calling `approve` or `permit`.
+    /// calling `emitTransfer` when this clone is already deployed. A facade move is
+    /// `Transfer(from, to, amount)`. A spell move uses the Charms proxy as the counterparty.
+    /// Holders cause `Approval` by calling `approve` or `permit`.
     event Transfer(address indexed from, address indexed to, uint256 amount);
     event Approval(address indexed owner, address indexed spender, uint256 amount);
 
@@ -294,13 +306,16 @@ interface ICharmToken {
     /// then calls `tokenTransfer`.
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 
-    /// @notice ERC-20 name. Forwards to `ICharmsLedger.name`.
+    /// @notice ERC-20 name. Forwards to `ICharmsLedger.name`. `"Charm"` until CHIP-0420 metadata
+    /// is published.
     function name() external view returns (string memory);
 
-    /// @notice ERC-20 symbol. Forwards to `ICharmsLedger.symbol`.
+    /// @notice ERC-20 symbol. Forwards to `ICharmsLedger.symbol`. `"CHARM"` until CHIP-0420
+    /// `ticker` is published.
     function symbol() external view returns (string memory);
 
-    /// @notice Display decimals. Forwards to `ICharmsLedger.decimals`.
+    /// @notice Display decimals. Forwards to `ICharmsLedger.decimals`. `0` until CHIP-0420
+    /// `decimals` is published.
     function decimals() external view returns (uint8);
 
     /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then

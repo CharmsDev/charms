@@ -66,6 +66,7 @@ contract InvariantsTest is CharmsTestBase {
             uint256 supply = charms.totalSupply(key);
             assertEq(supply, sum, "every resident unit is on an actor's UTXO");
             assertEq(supply, handler.supplyOf(t), "supply moved by the Supply table");
+            if (app.vk == VAULT_VK) continue;
             address token = charms.tokenAddress(app);
             if (token.code.length != 0) {
                 assertEq(CharmToken(token).totalSupply(), supply, "the clone reports the supply");
