@@ -177,6 +177,22 @@ contract VaultTest is CharmsTestBase {
         assertEq(locked, 10);
     }
 
+    function test_unwrapToZeroOrToCharmsReverts() public {
+        MockToken token = new MockToken("USDC", "USDC", 6);
+        _wrap(address(token), 10, 0);
+
+        vm.startPrank(alice);
+        vm.expectRevert(ICharmsErrors.InvalidRecipient.selector);
+        charms.unwrap(address(token), 1, address(0));
+        vm.expectRevert(ICharmsErrors.InvalidRecipient.selector);
+        charms.unwrap(address(token), 1, address(charms));
+        vm.stopPrank();
+
+        (,, uint256 locked) = charms.vaultOf(address(token));
+        assertEq(locked, 10);
+        assertEq(token.balanceOf(address(charms)), 10);
+    }
+
     function test_unwrapToARevertingRecipientLeavesTheBalance() public {
         RejectEth sink = new RejectEth();
         vm.deal(alice, 1 ether);

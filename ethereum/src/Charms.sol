@@ -153,6 +153,7 @@ contract Charms is
         nonReentrant
         returns (bytes32 txId)
     {
+        if (to == address(0) || to == address(this)) revert InvalidRecipient();
         Vault storage v = vaults[token];
         bytes32 key = v.appKey;
         if (key == 0) revert InsufficientBalance();
