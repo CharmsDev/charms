@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 
 pub const ENVELOPE_PREFIX: &[u8] = b"CHET";
 
+const MAX_OUTPUTS: usize = 64;
+
 pub const TRANSACT_SIGNATURE: &str = "transact((uint32,(uint32,bytes32,bytes32)[],bytes[],(bytes32,uint32,bytes32)[],((bytes32,uint32),(uint32,uint64,bytes)[],(bytes32,uint32,bytes32)[])[],(bytes32,uint32)[],(address,(uint32,uint64,bytes)[])[],(uint32,bytes32)[],uint32[]),bytes32,bytes,bytes[])";
 
 /// One Ethereum Charms transaction. The id is `keccak256` of the CHIP-0020 preimage, not the
@@ -69,24 +71,25 @@ impl EnchantedTx for EthereumTx {
         _spell_vk: &[u8; 32],
         mock: bool,
     ) -> anyhow::Result<NormalizedSpell> {
+        ensure!(
+            self.anchor.is_some(),
+            "ethereum placeholder is missing an anchor"
+        );
+        ensure!(
+            self.proof.is_empty(),
+            "ethereum placeholder proof must be empty"
+        );
         let spell = self.decode()?;
-        ensure!(
-            spell.tx.ins.is_some(),
-            "ethereum spell is missing committed inputs"
-        );
-        let coins = spell
-            .tx
-            .coins
-            .as_ref()
-            .context("ethereum spell is missing coins")?;
-        ensure!(
-            coins.len() == spell.tx.outs.len(),
-            "ethereum spell coins do not match outputs"
-        );
         if !mock {
             ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
         }
-        Ok(spell)
+        let (committed, _) = committed_placeholder(&spell)?;
+        let canonical = util::write(&committed)?;
+        ensure!(
+            self.spell == canonical,
+            "ethereum spell CBOR is not the committed placeholder"
+        );
+        Ok(committed)
     }
 
     fn virtual_spell(
@@ -256,6 +259,10 @@ fn committed_placeholder(
         !spell.tx.outs.is_empty(),
         "a placeholder needs at least one output"
     );
+    ensure!(
+        spell.tx.outs.len() <= MAX_OUTPUTS,
+        "a placeholder has at most {MAX_OUTPUTS} outputs"
+    );
     for (index, charms) in spell.tx.outs.iter().enumerate() {
         ensure!(
             charms.is_empty(),
@@ -286,6 +293,10 @@ fn committed_placeholder(
         );
         let mut owner = [0u8; 20];
         owner.copy_from_slice(&coin.dest);
+        ensure!(
+            owner != [0u8; 20],
+            "coins[{index}].dest must not be the zero address"
+        );
         owners.push(owner);
     }
 
@@ -494,5 +505,109 @@ app_public_inputs: {}
         let spell: NormalizedSpell = serde_yaml::from_str(yaml).unwrap();
         let err = plan_placeholder(&spell, &request(None)).unwrap_err();
         assert_eq!(err.to_string(), "output 0 must carry an empty charm set");
+    }
+
+    #[test]
+    fn a_charm_envelope_is_not_accepted() {
+        let yaml = r#"
+version: 15
+tx:
+  ins:
+    - fe12fb10d8317475b864e2393961d5aa2af56d0923de9c79ac8bc0eb02f3e7a7:0
+  outs:
+    - 0: 1
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#;
+        let carried: NormalizedSpell = serde_yaml::from_str(yaml).unwrap();
+        let record = EthereumTx {
+            chain_id: 1,
+            charms: [0x33; 20],
+            anchor: Some([7u8; 32]),
+            spell: util::write(&carried).unwrap(),
+            proof: Vec::new(),
+        };
+        let err = record
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "a placeholder has no inputs");
+
+        let mut charm_only = spell(1);
+        charm_only.tx.outs[0].insert(0, charms_data::Data::from(&1u64));
+        charm_only.tx.ins = Some(Vec::new());
+        let record = EthereumTx {
+            chain_id: 1,
+            charms: [0x33; 20],
+            anchor: Some([7u8; 32]),
+            spell: util::write(&charm_only).unwrap(),
+            proof: Vec::new(),
+        };
+        let err = record
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "output 0 must carry an empty charm set");
+    }
+
+    #[test]
+    fn a_placeholder_envelope_must_be_canonical() {
+        let plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap();
+
+        let mut proved = plan.record.clone();
+        proved.proof = vec![1];
+        let err = proved
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "ethereum placeholder proof must be empty");
+
+        let mut unanchored = plan.record.clone();
+        unanchored.anchor = None;
+        let err = unanchored
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "ethereum placeholder is missing an anchor");
+
+        let mut loose = spell(1);
+        loose.tx.refs = Some(Vec::new());
+        let mut record = plan.record.clone();
+        record.spell = util::write(&loose).unwrap();
+        let err = record
+            .extract_and_verify_spell(&[0u8; 32], false)
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ethereum spell CBOR is not the committed placeholder"
+        );
+    }
+
+    #[test]
+    fn sixty_four_outputs_are_the_contract_limit() {
+        plan_placeholder(&spell(64), &request(None)).unwrap();
+        let err = plan_placeholder(&spell(65), &request(None)).unwrap_err();
+        assert_eq!(err.to_string(), "a placeholder has at most 64 outputs");
+    }
+
+    #[test]
+    fn a_zero_owner_is_not_a_placeholder() {
+        let yaml = r#"
+version: 15
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0000000000000000000000000000000000000000"
+app_public_inputs: {}
+"#;
+        let spell: NormalizedSpell = serde_yaml::from_str(yaml).unwrap();
+        let err = plan_placeholder(&spell, &request(None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "coins[0].dest must not be the zero address"
+        );
     }
 }
