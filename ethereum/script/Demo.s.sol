@@ -140,6 +140,8 @@ contract Demo is Script {
         console2.log("holder vault units before unwrap", charms.balanceOf(vaultKey, HOLDER));
         console2.log("unwrap amount (vault units)", uint256(units));
 
+        // This simulation does not charge gas, so the holder gains exactly 1 ETH.
+        uint256 holderBeforeUnwrap = HOLDER.balance;
         vm.startBroadcast(ANVIL_KEY);
         bytes32 unwrapTxId = charms.unwrap(address(0), units, HOLDER);
         vm.stopBroadcast();
@@ -148,11 +150,14 @@ contract Demo is Script {
         console2.log(
             "unwrap returned Charms tx id (not the Ethereum hash)", vm.toString(unwrapTxId)
         );
+        uint256 holderReceived = HOLDER.balance - holderBeforeUnwrap;
+        console2.log("holder received on unwrap (wei)", holderReceived);
         console2.log("holder balance after unwrap (ETH)", HOLDER.balance / 1 ether);
         console2.log("Charms balance after unwrap (ETH)", address(charms).balance / 1 ether);
         console2.log("Charms balance after unwrap (wei)", address(charms).balance);
         console2.log("holder vault units after unwrap", charms.balanceOf(vaultKey, HOLDER));
         console2.log("vault UTXO count after unwrap", utxos.length);
+        require(holderReceived == 1 ether, "holder did not receive 1 ETH");
         require(address(charms).balance == 0, "Charms still holds ETH");
         require(charms.balanceOf(vaultKey, HOLDER) == 0, "vault balance remains");
         require(utxos.length == 0, "vault UTXO is still unspent");
