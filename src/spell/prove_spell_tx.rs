@@ -119,6 +119,9 @@ impl ProveSpellTxImpl {
             collateral_utxo,
         } = prove_request;
 
+        if chain == Chain::Ethereum {
+            bail!("this build does not prove Ethereum spells");
+        }
         if chain == Chain::Cardano && collateral_utxo.is_none() {
             bail!("Collateral UTXO is required for Cardano spells");
         }
@@ -161,6 +164,7 @@ impl ProveSpellTxImpl {
                 )?;
                 Ok(txs)
             }
+            Chain::Ethereum => unreachable!(),
             Chain::Cardano => {
                 let txs = cardano_tx::make_transactions(
                     &norm_spell,

@@ -8,7 +8,7 @@ use crate::{
         read_private_inputs,
     },
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use charms_app_runner::AppRunner;
 use charms_client::{
     CURRENT_VERSION,
@@ -58,6 +58,11 @@ impl SpellCli {
 
 impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
+        if params.chain == Chain::Ethereum {
+            println!("{}", ethereum_placeholder_json(&params)?);
+            return Ok(());
+        }
+
         let SpellProveParams {
             spell,
             payload,
@@ -72,7 +77,10 @@ impl Prove for SpellCli {
             chain,
             mock,
             collateral_utxo,
+            ..
         } = params;
+        let change_address =
+            change_address.context("--change-address is required for this chain")?;
 
         let spell_prover = ProveSpellTxImpl::new(mock);
 
@@ -184,6 +192,7 @@ impl Prove for SpellCli {
                 });
                 println!("{}", tx_draft);
             }
+            Chain::Ethereum => unreachable!(),
         }
 
         Ok(())
@@ -299,4 +308,94 @@ impl Check for SpellCli {
 
         Ok(())
     }
+}
+
+pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<String> {
+    ensure!(
+        params.change_address.is_none(),
+        "--change-address is not used for an Ethereum placeholder"
+    );
+    ensure!(
+        !params.payload,
+        "--payload is the prover API. An Ethereum placeholder is built locally"
+    );
+    ensure!(
+        params.prev_txs.is_empty(),
+        "--prev-txs is not used for an Ethereum placeholder"
+    );
+    ensure!(
+        params.beamed_from.is_none(),
+        "--beamed-from is the claim side, not the placeholder"
+    );
+    ensure!(
+        params.app_bins.is_empty(),
+        "a placeholder has no app binaries"
+    );
+    ensure!(
+        params.private_inputs.is_none(),
+        "a placeholder has no private inputs"
+    );
+    ensure!(
+        params.app_signatures.is_none(),
+        "a placeholder has no app signatures"
+    );
+    ensure!(
+        params.collateral_utxo.is_none(),
+        "--collateral-utxo is not used on Ethereum"
+    );
+    ensure!(!params.mock, "an Ethereum placeholder has no proof to mock");
+
+    let caller = parse_fixed(
+        params
+            .caller
+            .as_deref()
+            .context("--caller is required for --chain ethereum")?,
+    )?;
+    let salt = parse_fixed(
+        params
+            .salt
+            .as_deref()
+            .context("--salt is required for --chain ethereum")?,
+    )?;
+    let chain_id = params
+        .chain_id
+        .context("--chain-id is required for --chain ethereum")?;
+    let charms = parse_fixed(
+        params
+            .charms
+            .as_deref()
+            .context("--charms is required for --chain ethereum")?,
+    )?;
+    let spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(&params.spell)?)?;
+    let plan = charms_client::ethereum_tx::plan_placeholder(
+        &spell,
+        &charms_client::ethereum_tx::PlaceholderRequest {
+            chain_id,
+            charms,
+            caller,
+            salt,
+            nonce: params.nonce,
+        },
+    )?;
+    let body = json!({
+        "tx": Tx::Ethereum(plan.record),
+        "tx_id": plan.tx_id,
+        "utxo_ids": plan.utxo_ids,
+        "beamed_outs": plan.beamed_outs,
+        "nonce": plan.nonce,
+        "call": plan.call,
+    });
+    Ok(serde_json::to_string(&body)?)
+}
+
+fn parse_fixed<const N: usize>(text: &str) -> Result<[u8; N]> {
+    let text = text
+        .strip_prefix("0x")
+        .or_else(|| text.strip_prefix("0X"))
+        .unwrap_or(text);
+    let bytes = hex::decode(text).context("expected hex")?;
+    ensure!(bytes.len() == N, "expected {N} bytes, got {}", bytes.len());
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("expected {N} bytes"))
 }

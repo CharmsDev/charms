@@ -198,6 +198,12 @@ pub fn adjust_coin_contents(norm_spell: &mut NormalizedSpell, chain: Chain) -> a
                     "coins[{i}].content must be None for Bitcoin"
                 );
             }
+            Chain::Ethereum => {
+                ensure!(
+                    coin.content.is_none(),
+                    "coins[{i}].content must be None for Ethereum"
+                );
+            }
             Chain::Cardano => {
                 let output_content: OutputContent = match coin.content.take() {
                     Some(content) => {
@@ -228,6 +234,9 @@ impl ProveSpellTxImpl {
         prove_request: &mut super::request::ProveRequest,
         scroll_outputs: Option<&SignedScrollOutputs>,
     ) -> anyhow::Result<(u64, bool)> {
+        if prove_request.chain == Chain::Ethereum {
+            bail!("this build does not prove Ethereum spells");
+        }
         ensure!(
             prove_request.spell.mock == self.mock,
             "cannot prove a mock=={} spell on a mock=={} prover",
@@ -416,6 +425,7 @@ impl ProveSpellTxImpl {
                 tracing::warn!("spell validation for cardano is not yet implemented");
                 Ok((total_cycles, verified))
             }
+            Chain::Ethereum => unreachable!(),
         }
     }
 }

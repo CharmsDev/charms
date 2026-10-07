@@ -96,7 +96,7 @@ bincode = { version = "1.3.3" }
 bitcoin = { workspace = true, features = ["rand", "rand-std"] }
 candid = { version = "0.10" }
 charms-app-runner = { path = "./charms-app-runner", version = "16.0.0" }
-charms-client = { path = "./charms-client", version = "16.0.0" }
+charms-client = { path = "./charms-client", version = "16.0.0", features = ["ethereum"] }
 charms-data = { path = "./charms-data", version = "16.0.0" }
 charms-lib = { path = "./charms-lib", version = "16.0.0" }
 charms-proof-wrapper = { path = "./charms-proof-wrapper", version = "16.0.0" }
