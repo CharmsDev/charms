@@ -16,16 +16,18 @@ import {Deploy} from "./Deploy.s.sol";
 /// `ensureToken` both return address(0).
 ///
 /// Steps:
-/// 1. Etch the keyless CREATE2 factory. Anvil does not include it. `vm.etch` updates this
-///    simulation; `anvil_setCode` writes the same bytecode onto the running node.
+/// 1. Etch the keyless CREATE2 factory (same bytecode as `Deploy.t.sol`). Anvil often already
+///    has it; the script writes it anyway so deploy still works when it is missing.
+///    `vm.etch` updates this simulation; `anvil_setCode` writes that bytecode on the node.
 /// 2. Deploy Charms through that factory, same CREATE2 path as `Deploy.s.sol` / `Deploy.t.sol`.
 /// 3. Wrap 1 ETH. The holder sends 1 ETH and gets one vault UTXO: the unspent record of that
-///    deposit. Its id is (wrap transaction id, output index).
+///    deposit. Its id is (tx id, index 0). That tx id is Charms' id, not the Ethereum tx hash.
 /// 4. Unwrap the full amount. Charms sends the 1 ETH back and that UTXO is spent.
 ///
-/// The ETH vault's scale is 10: 1 vault unit = 10^10 wei, so 1 ETH = 10^8 units. Holder wei
-/// totals include gas, so they will not return to the exact pre-wrap balance. The Charms
-/// contract balance is exact: 0, then 1 ETH, then 0.
+/// The ETH vault's scale is 10: 1 vault unit = 10^10 wei, so 1 ETH = 10^8 units.
+/// Logged ETH balances are from this simulation, which does not charge gas, so the holder
+/// moves by exactly 1 ETH. Charms' balance is exact here and on anvil: 0, then 1 ETH, then 0.
+/// A later `cast balance` of the holder is lower by the gas that anvil charged.
 ///
 /// Restart anvil before each run. The wrap salt is fixed, so a second run reverts.
 /// Run the forge command from `ethereum/`. Account #0 is
@@ -61,7 +63,7 @@ contract Demo is Script {
         console2.log("holder (anvil account #0)", HOLDER);
 
         console2.log("=== 1. etch CREATE2 factory ===");
-        console2.log("anvil has no keyless CREATE2 factory; write the bytecode Deploy uses");
+        console2.log("write Deploy's factory bytecode; this anvil may already include it");
         console2.log("factory", FACTORY);
         console2.log("factory code bytes before", FACTORY.code.length);
         // `vm.etch` changes this simulation only. `anvil_setCode` writes the same bytecode
@@ -95,9 +97,10 @@ contract Demo is Script {
 
         console2.log("=== 3. wrap 1 ETH ===");
         console2.log("wrap sends ETH in and records one UTXO (the unspent deposit)");
-        console2.log("holder ETH before wrap (wei)", HOLDER.balance);
-        console2.log("Charms ETH before wrap (wei)", address(charms).balance);
-        console2.log("holder vault balance before wrap (units)", charms.balanceOf(vaultKey, HOLDER));
+        console2.log("ETH balances below are whole ETH; this simulation does not charge gas");
+        console2.log("holder balance before wrap (ETH)", HOLDER.balance / 1 ether);
+        console2.log("Charms balance before wrap (ETH)", address(charms).balance / 1 ether);
+        console2.log("holder vault units before wrap", charms.balanceOf(vaultKey, HOLDER));
         console2.log("wei per vault unit", weiPerUnit);
         console2.log("wrap amount (vault units)", uint256(units));
         console2.log("ETH sent (wei)", uint256(1 ether));
@@ -106,16 +109,18 @@ contract Demo is Script {
         bytes32 wrapTxId = charms.wrap{value: 1 ether}(address(0), units, HOLDER, WRAP_SALT);
         vm.stopBroadcast();
 
-        console2.log("wrap transaction id", vm.toString(wrapTxId));
+        console2.log("UTXO id = (tx id, index). tx id is Charms' id, not the Ethereum hash");
+        console2.log("wrap returned UTXO tx id", vm.toString(wrapTxId));
         (ICharmsTypes.UtxoRef[] memory utxos,) = charms.utxosOf(vaultKey, HOLDER, 0, 10);
         require(utxos.length == 1, "wrap did not create one UTXO");
-        console2.log("vault UTXO tx id", vm.toString(utxos[0].txId));
-        console2.log("vault UTXO index", uint256(utxos[0].index));
+        console2.log("stored vault UTXO tx id", vm.toString(utxos[0].txId));
+        console2.log("stored vault UTXO index", uint256(utxos[0].index));
         (address utxoOwner,) = charms.utxo(utxos[0]);
         console2.log("vault UTXO owner", utxoOwner);
-        console2.log("holder ETH after wrap (wei)", HOLDER.balance);
-        console2.log("Charms ETH after wrap (wei)", address(charms).balance);
-        console2.log("holder vault balance after wrap (units)", charms.balanceOf(vaultKey, HOLDER));
+        console2.log("holder balance after wrap (ETH)", HOLDER.balance / 1 ether);
+        console2.log("Charms balance after wrap (ETH)", address(charms).balance / 1 ether);
+        console2.log("Charms balance after wrap (wei)", address(charms).balance);
+        console2.log("holder vault units after wrap", charms.balanceOf(vaultKey, HOLDER));
         address tokenFace = charms.tokenAddress(vault);
         address ensured = charms.ensureToken(vault);
         console2.log("tokenAddress (0 = native ETH, no ERC-20)", tokenFace);
@@ -123,17 +128,16 @@ contract Demo is Script {
         require(utxos[0].txId == wrapTxId && utxos[0].index == 0, "UTXO id is not the wrap output");
         require(utxoOwner == HOLDER, "UTXO owner is not the holder");
         require(address(charms).balance == 1 ether, "Charms did not lock 1 ETH");
-        require(charms.balanceOf(vaultKey, HOLDER) == units, "vault balance is not the wrap amount");
+        require(charms.balanceOf(vaultKey, HOLDER) == units, "vault units mismatch");
         require(tokenFace == address(0), "ETH vault tokenAddress must be 0");
         require(ensured == address(0), "ETH vault ensureToken must be 0");
 
         console2.log("=== 4. unwrap all ===");
         console2.log("unwrap spends the UTXO and sends the locked ETH back to the holder");
-        console2.log("holder ETH before unwrap (wei)", HOLDER.balance);
-        console2.log("Charms ETH before unwrap (wei)", address(charms).balance);
-        console2.log(
-            "holder vault balance before unwrap (units)", charms.balanceOf(vaultKey, HOLDER)
-        );
+        console2.log("holder balance before unwrap (ETH)", HOLDER.balance / 1 ether);
+        console2.log("Charms balance before unwrap (ETH)", address(charms).balance / 1 ether);
+        console2.log("Charms balance before unwrap (wei)", address(charms).balance);
+        console2.log("holder vault units before unwrap", charms.balanceOf(vaultKey, HOLDER));
         console2.log("unwrap amount (vault units)", uint256(units));
 
         vm.startBroadcast(ANVIL_KEY);
@@ -141,12 +145,13 @@ contract Demo is Script {
         vm.stopBroadcast();
 
         (utxos,) = charms.utxosOf(vaultKey, HOLDER, 0, 10);
-        console2.log("unwrap transaction id", vm.toString(unwrapTxId));
-        console2.log("holder ETH after unwrap (wei)", HOLDER.balance);
-        console2.log("Charms ETH after unwrap (wei)", address(charms).balance);
         console2.log(
-            "holder vault balance after unwrap (units)", charms.balanceOf(vaultKey, HOLDER)
+            "unwrap returned Charms tx id (not the Ethereum hash)", vm.toString(unwrapTxId)
         );
+        console2.log("holder balance after unwrap (ETH)", HOLDER.balance / 1 ether);
+        console2.log("Charms balance after unwrap (ETH)", address(charms).balance / 1 ether);
+        console2.log("Charms balance after unwrap (wei)", address(charms).balance);
+        console2.log("holder vault units after unwrap", charms.balanceOf(vaultKey, HOLDER));
         console2.log("vault UTXO count after unwrap", utxos.length);
         require(address(charms).balance == 0, "Charms still holds ETH");
         require(charms.balanceOf(vaultKey, HOLDER) == 0, "vault balance remains");
