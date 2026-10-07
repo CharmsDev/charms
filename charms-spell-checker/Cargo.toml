@@ -2,7 +2,7 @@
 name = "charms-spell-checker"
 description = "Recursive validation of spells creating Charms"
 
-version = "15.1.0"
+version = "16.0.0"
 edition = "2024"
 authors = ["Ivan Mikushin <ivan@charms.dev>"]
 license = "MIT"
@@ -11,8 +11,8 @@ license = "MIT"
 
 [dependencies]
 # Guest build leaves wasmi validation off. A panic fails the proof.
-charms-client = { path = "../charms-client", version = "15.1.0", default-features = false }
-charms-data = { path = "../charms-data", version = "15.1.0" }
+charms-client = { path = "../charms-client", version = "16.0.0", default-features = false }
+charms-data = { path = "../charms-data", version = "16.0.0" }
 sp1-zkvm = { version = "6.8.1", features = ["verify"] }
 
 [profile.release]
