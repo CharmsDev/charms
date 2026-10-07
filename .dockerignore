@@ -1,9 +1,14 @@
 .DS_Store
+**/.DS_Store
 /.fleet
 /.github
 /.idea
 /.run
 /elf
 /target
+**/target
 /tmp
+**/.icp
+/src/bin
+/.git
 *.Dockerfile

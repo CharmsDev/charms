@@ -1,0 +1,11 @@
+[package]
+name = "spell-checker-vk"
+description = "Write charms-spell-checker's SP1 verification key into charms-proof-wrapper"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sp1-sdk = { version = "=6.8.1", default-features = false, features = ["blocking"] }

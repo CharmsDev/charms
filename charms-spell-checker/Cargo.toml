@@ -17,7 +17,6 @@ sp1-zkvm = { version = "6.8.1", features = ["verify"] }
 
 [profile.release]
 codegen-units = 1
-lto = "fat"
 opt-level = 3
 strip = "debuginfo"
 overflow-checks = true
