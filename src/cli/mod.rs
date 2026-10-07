@@ -187,8 +187,9 @@ pub struct SpellProveParams {
     app_signatures: Option<PathBuf>,
 
     /// Bitcoin or Cardano address to send the change to.
+    /// Required for Bitcoin and Cardano. Not used for an Ethereum placeholder.
     #[arg(long)]
-    change_address: String,
+    change_address: Option<String>,
 
     /// Fee rate in sats/vB (Bitcoin only).
     #[arg(long, default_value = "2.0")]
@@ -197,6 +198,30 @@ pub struct SpellProveParams {
     /// Target chain.
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
+
+    /// Ethereum account that submits the placeholder. This is `msg.sender` in the anchor,
+    /// not the output owner. Required for `--chain ethereum`.
+    #[arg(long)]
+    caller: Option<String>,
+
+    /// 32-byte salt for an empty-input Ethereum spell. Required for `--chain ethereum`.
+    /// This is not the beam nonce.
+    #[arg(long)]
+    salt: Option<String>,
+
+    /// EVM chain id mixed into the placeholder UTXO id. Required for `--chain ethereum`.
+    #[arg(long)]
+    chain_id: Option<u64>,
+
+    /// Charms proxy address mixed into the placeholder UTXO id. Required for `--chain ethereum`.
+    #[arg(long)]
+    charms: Option<String>,
+
+    /// Beam nonce for an Ethereum placeholder. Requires `--chain ethereum`.
+    /// When set, each `beamed_outs` value is SHA-256 of the UTXO id with this
+    /// little-endian u64 appended. Omit it when the source spell's beam has no nonce.
+    #[arg(long)]
+    nonce: Option<u64>,
 
     /// Use mock mode (skip proof generation).
     #[arg(long, default_value = "false", hide_env = true)]
@@ -302,8 +327,10 @@ pub enum SpellCommands {
     Check(#[command(flatten)] SpellCheckParams),
     /// Prove spell correctness and build a ready-to-broadcast transaction.
     ///
-    /// Outputs a JSON array of hex-encoded transactions (Bitcoin)
-    /// or a Ledger CDDL JSON envelope (Cardano).
+    /// Bitcoin prints a JSON array of hex-encoded transactions.
+    /// Cardano prints a Ledger CDDL JSON envelope.
+    /// Ethereum prints a placeholder: the `transact` call, the UTXO ids, and the
+    /// `beamed_outs` hashes a source spell stores. No proof is generated.
     #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
     /// Print the current protocol version and spell verification key (VK) as JSON to stdout.
@@ -641,6 +668,214 @@ fn print_output<T: Serialize>(output: &T, json: bool) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
+    use super::*;
+    use crate::cli::spell::ethereum_placeholder_json;
+    use std::fs;
+    use std::path::PathBuf;
+
+    const TX_ID: &str = "fe12fb10d8317475b864e2393961d5aa2af56d0923de9c79ac8bc0eb02f3e7a7";
+    const BEAM: &str = "adcaddcc66a2d1719f8a3145e458023be9f5fb8c466fdceae2a03e31b0015d5c";
+    const CALL: &str = "0x27485a930000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000003200000000000000000000000000000000000000000000000000000000000000340000000000000000000000000000000000000000000000000000000000000000f000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000160000000000000000000000000000000000000000000000000000000000000018000000000000000000000000000000000000000000000000000000000000001a000000000000000000000000000000000000000000000000000000000000001c00000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000028000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000200000000000000000000000000102030405060708090a0b0c0d0e0f1011121314000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    fn spell_file(name: &str, body: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "charms-placeholder-{}-{name}.yaml",
+            std::process::id()
+        ));
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    fn placeholder_spell() -> &'static str {
+        r#"
+version: 15
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#
+    }
+
     #[test]
-    fn dummy() {}
+    fn ethereum_prove_prints_the_beam_target() {
+        let path = spell_file("beam", placeholder_spell());
+        let cli = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "0x1111111111111111111111111111111111111111",
+            "--salt",
+            "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "0x3333333333333333333333333333333333333333",
+        ])
+        .unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
+        assert_eq!(json["tx_id"], TX_ID);
+        assert_eq!(json["utxo_ids"][0], format!("{TX_ID}:0"));
+        assert_eq!(json["beamed_outs"]["0"], BEAM);
+        assert_eq!(json["nonce"], serde_json::Value::Null);
+        assert_eq!(
+            json["call"]["from"],
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            json["call"]["to"],
+            "0x3333333333333333333333333333333333333333"
+        );
+        assert_eq!(json["call"]["value"], "0");
+        assert_eq!(json["call"]["data"], CALL);
+        assert_eq!(json["tx"]["ethereum"]["chain_id"], 1);
+        assert!(json["tx"]["ethereum"]["proof"].as_str().unwrap().is_empty());
+        let tx: charms_client::tx::Tx = serde_json::from_value(json["tx"].clone()).unwrap();
+        tx::tx_show_spell(ShowSpellParams {
+            chain: Chain::Ethereum,
+            tx: tx.hex(),
+            json: true,
+            mock: false,
+        })
+        .unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ethereum_prove_nonce_is_the_beam_suffix() {
+        let path = spell_file("nonce", placeholder_spell());
+        let cli = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "1111111111111111111111111111111111111111",
+            "--salt",
+            "0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "3333333333333333333333333333333333333333",
+            "--nonce",
+            "1",
+        ])
+        .unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
+        assert_eq!(json["tx_id"], TX_ID);
+        assert_eq!(json["nonce"], 1);
+        assert_eq!(
+            json["beamed_outs"]["0"],
+            "9cc13c1cf309dfd6cc3fd38f3e14b3b7f1e971f5842a686591dc352b0accdd1a"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ethereum_prove_rejects_a_short_salt() {
+        let path = spell_file("salt", placeholder_spell());
+        let cli = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "1111111111111111111111111111111111111111",
+            "--salt",
+            "07",
+            "--chain-id",
+            "1",
+            "--charms",
+            "3333333333333333333333333333333333333333",
+        ])
+        .unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let err = ethereum_placeholder_json(&params).unwrap_err();
+        assert_eq!(err.to_string(), "expected 32 bytes, got 1");
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn bitcoin_and_cardano_prove_reject_ethereum_options() {
+        let cases = [
+            ("--nonce", "1", "--nonce requires --chain ethereum"),
+            ("--caller", "11", "--caller requires --chain ethereum"),
+            ("--salt", "00", "--salt requires --chain ethereum"),
+            ("--chain-id", "1", "--chain-id requires --chain ethereum"),
+            ("--charms", "33", "--charms requires --chain ethereum"),
+        ];
+        for chain in ["bitcoin", "cardano"] {
+            for (flag, value, message) in cases {
+                let cli = Cli::try_parse_from([
+                    "charms",
+                    "spell",
+                    "prove",
+                    "--chain",
+                    chain,
+                    "--spell",
+                    "unused.yaml",
+                    flag,
+                    value,
+                ])
+                .unwrap();
+                let Commands::Spell {
+                    command: SpellCommands::Prove(params),
+                } = cli.command
+                else {
+                    panic!("spell prove");
+                };
+                let err = super::spell_cli().prove(params).await.unwrap_err();
+                assert_eq!(err.to_string(), message, "{chain} {flag}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn bitcoin_prove_still_requires_a_change_address() {
+        let cli =
+            Cli::try_parse_from(["charms", "spell", "prove", "--spell", "unused.yaml"]).unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let err = super::spell_cli().prove(params).await.unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "--change-address is required for this chain"
+        );
+    }
 }

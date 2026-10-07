@@ -19,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod ark;
 pub mod bitcoin_tx;
 pub mod cardano_tx;
+#[cfg(feature = "ethereum")]
+pub mod ethereum_tx;
 pub mod request;
 pub mod sorted_app_map;
 pub mod tx;

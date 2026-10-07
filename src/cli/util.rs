@@ -12,9 +12,12 @@ pub fn dest(params: DestParams) -> anyhow::Result<()> {
         "exactly one of --addr or --apps must be provided"
     );
     if has_apps {
-        if let Some(Chain::Bitcoin) = params.chain {
-            bail!("--apps only works with Cardano");
-        };
+        match params.chain {
+            Some(Chain::Cardano) | None => {}
+            Some(Chain::Bitcoin) | Some(Chain::Ethereum) => {
+                bail!("--apps only works with Cardano");
+            }
+        }
     }
 
     let dest_bytes = if let Some(addr) = &params.addr {
@@ -31,6 +34,7 @@ fn dest_from_addr(addr: &str, chain: Option<Chain>) -> anyhow::Result<Vec<u8>> {
     match chain {
         Some(Chain::Bitcoin) => bitcoin_dest(addr),
         Some(Chain::Cardano) => cardano_dest(addr),
+        Some(Chain::Ethereum) => ethereum_dest(addr),
         None => {
             // Auto-detect: try Cardano first (bech32 with addr/addr_test prefix),
             // then Bitcoin
@@ -43,6 +47,16 @@ fn dest_from_addr(addr: &str, chain: Option<Chain>) -> anyhow::Result<Vec<u8>> {
             bail!("could not parse address as Bitcoin or Cardano; try specifying --chain")
         }
     }
+}
+
+fn ethereum_dest(addr: &str) -> anyhow::Result<Vec<u8>> {
+    let text = addr
+        .strip_prefix("0x")
+        .or_else(|| addr.strip_prefix("0X"))
+        .unwrap_or(addr);
+    let bytes = hex::decode(text).map_err(|_| anyhow::anyhow!("expected hex"))?;
+    ensure!(bytes.len() == 20, "expected a 20-byte Ethereum address");
+    Ok(bytes)
 }
 
 fn bitcoin_dest(addr: &str) -> anyhow::Result<Vec<u8>> {
@@ -73,4 +87,18 @@ fn dest_from_apps(apps: &[charms_data::App]) -> anyhow::Result<Vec<u8>> {
         pallas_addresses::ShelleyDelegationPart::Null,
     );
     Ok(pallas_addresses::Address::Shelley(shelley_addr).to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ethereum_dest_is_the_address() {
+        let bytes = ethereum_dest("0x0102030405060708090a0b0c0d0e0f1011121314").unwrap();
+        assert_eq!(
+            hex::encode(bytes),
+            "0102030405060708090a0b0c0d0e0f1011121314"
+        );
+    }
 }
