@@ -40,6 +40,7 @@ pub struct PlaceholderRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct EthCall {
+    pub from: String,
     pub to: String,
     pub data: String,
     pub value: String,
@@ -207,6 +208,7 @@ pub fn plan_placeholder(
         beamed_outs,
         nonce: request.nonce,
         call: EthCall {
+            from: format!("0x{}", hex::encode(request.caller)),
             to: format!("0x{}", hex::encode(request.charms)),
             data: format!("0x{}", hex::encode(data)),
             value: "0".to_string(),
@@ -442,6 +444,7 @@ mod tests {
         assert_eq!(plan.utxo_ids, vec![format!("{TX_ID}:0")]);
         assert_eq!(plan.beamed_outs["0"], BEAM);
         assert_eq!(plan.call.data, CALL);
+        assert_eq!(plan.call.from, "0x1111111111111111111111111111111111111111");
         assert_eq!(plan.call.to, "0x3333333333333333333333333333333333333333");
         assert_eq!(plan.call.value, "0");
         assert!(plan.record.proof.is_empty());
@@ -455,6 +458,22 @@ mod tests {
             format!("{TX_ID}:0")
         );
         assert_eq!(Chain::from_str("ethereum").unwrap(), Chain::Ethereum);
+    }
+
+    #[test]
+    fn the_saved_call_names_its_caller() {
+        let plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        let mut other = request(None);
+        other.caller = [0x22; 20];
+        let other_plan = plan_placeholder(&spell(1), &other).unwrap();
+        assert_eq!(plan.call.from, "0x1111111111111111111111111111111111111111");
+        assert_eq!(
+            other_plan.call.from,
+            "0x2222222222222222222222222222222222222222"
+        );
+        assert_ne!(plan.tx_id, other_plan.tx_id);
+        assert_ne!(plan.beamed_outs["0"], other_plan.beamed_outs["0"]);
+        assert_eq!(plan.call.data, other_plan.call.data);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::{
         read_private_inputs,
     },
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use charms_app_runner::AppRunner;
 use charms_client::{
     CURRENT_VERSION,
@@ -62,6 +62,7 @@ impl Prove for SpellCli {
             println!("{}", ethereum_placeholder_json(&params)?);
             return Ok(());
         }
+        reject_ethereum_only_options(&params)?;
 
         let SpellProveParams {
             spell,
@@ -308,6 +309,24 @@ impl Check for SpellCli {
 
         Ok(())
     }
+}
+
+fn reject_ethereum_only_options(params: &SpellProveParams) -> Result<()> {
+    ensure!(
+        params.caller.is_none(),
+        "--caller requires --chain ethereum"
+    );
+    ensure!(params.salt.is_none(), "--salt requires --chain ethereum");
+    ensure!(
+        params.chain_id.is_none(),
+        "--chain-id requires --chain ethereum"
+    );
+    ensure!(
+        params.charms.is_none(),
+        "--charms requires --chain ethereum"
+    );
+    ensure!(params.nonce.is_none(), "--nonce requires --chain ethereum");
+    Ok(())
 }
 
 pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<String> {

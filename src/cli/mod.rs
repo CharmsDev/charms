@@ -217,7 +217,8 @@ pub struct SpellProveParams {
     #[arg(long)]
     charms: Option<String>,
 
-    /// Beam nonce. When set, each `beamed_outs` value is SHA-256 of the UTXO id with this
+    /// Beam nonce for an Ethereum placeholder. Requires `--chain ethereum`.
+    /// When set, each `beamed_outs` value is SHA-256 of the UTXO id with this
     /// little-endian u64 appended. Omit it when the source spell's beam has no nonce.
     #[arg(long)]
     nonce: Option<u64>,
@@ -732,6 +733,10 @@ app_public_inputs: {}
         assert_eq!(json["beamed_outs"]["0"], BEAM);
         assert_eq!(json["nonce"], serde_json::Value::Null);
         assert_eq!(
+            json["call"]["from"],
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
             json["call"]["to"],
             "0x3333333333333333333333333333333333333333"
         );
@@ -820,6 +825,41 @@ app_public_inputs: {}
         let err = ethereum_placeholder_json(&params).unwrap_err();
         assert_eq!(err.to_string(), "expected 32 bytes, got 1");
         let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn bitcoin_and_cardano_prove_reject_ethereum_options() {
+        let cases = [
+            ("--nonce", "1", "--nonce requires --chain ethereum"),
+            ("--caller", "11", "--caller requires --chain ethereum"),
+            ("--salt", "00", "--salt requires --chain ethereum"),
+            ("--chain-id", "1", "--chain-id requires --chain ethereum"),
+            ("--charms", "33", "--charms requires --chain ethereum"),
+        ];
+        for chain in ["bitcoin", "cardano"] {
+            for (flag, value, message) in cases {
+                let cli = Cli::try_parse_from([
+                    "charms",
+                    "spell",
+                    "prove",
+                    "--chain",
+                    chain,
+                    "--spell",
+                    "unused.yaml",
+                    flag,
+                    value,
+                ])
+                .unwrap();
+                let Commands::Spell {
+                    command: SpellCommands::Prove(params),
+                } = cli.command
+                else {
+                    panic!("spell prove");
+                };
+                let err = super::spell_cli().prove(params).await.unwrap_err();
+                assert_eq!(err.to_string(), message, "{chain} {flag}");
+            }
+        }
     }
 
     #[tokio::test]

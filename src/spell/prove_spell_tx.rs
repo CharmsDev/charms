@@ -122,6 +122,7 @@ impl ProveSpellTxImpl {
         if chain == Chain::Ethereum {
             bail!("this build does not prove Ethereum spells");
         }
+        super::validate::ensure_no_ethereum_history(&prev_txs)?;
         if chain == Chain::Cardano && collateral_utxo.is_none() {
             bail!("Collateral UTXO is required for Cardano spells");
         }
@@ -360,5 +361,48 @@ impl ProveSpellTx for ProveSpellTxImpl {
         let bytes = response.bytes().await?;
         let txs: Vec<Tx> = util::read(&bytes[..])?;
         Ok(txs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spell::ProveSpellTx;
+    use charms_client::{
+        NormalizedSpell,
+        ethereum_tx::EthereumTx,
+        request::ProveRequest,
+        tx::{Chain, Tx},
+    };
+
+    #[tokio::test]
+    async fn ethereum_history_does_not_reach_the_prover() {
+        let prover = ProveSpellTxImpl::new(false);
+        let request = ProveRequest {
+            spell: NormalizedSpell::default(),
+            app_private_inputs: Default::default(),
+            tx_ins_beamed_source_utxos: Default::default(),
+            binaries: Default::default(),
+            app_signatures: Default::default(),
+            prev_txs: vec![Tx::Ethereum(EthereumTx {
+                chain_id: 1,
+                charms: [3; 20],
+                anchor: Some([1; 32]),
+                spell: Vec::new(),
+                proof: Vec::new(),
+            })],
+            change_address: "addr".to_string(),
+            fee_rate: 1.0,
+            chain: Chain::Cardano,
+            collateral_utxo: None,
+        };
+        let err = prover
+            .do_prove_spell_tx(request, 0, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "prev_txs cannot include an Ethereum transaction in this build"
+        );
     }
 }
