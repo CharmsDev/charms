@@ -19,13 +19,15 @@ export CHARMS_VERIFY_REPO="<repository-root>"
 .cursor/skills/verify-charms/scripts/control-charms launch
 ```
 
-`CHARMS_VERIFY_RUN_ID` must match `[A-Za-z0-9._-]+`. Launch runs the repo build:
+`CHARMS_VERIFY_RUN_ID` must match `[A-Za-z0-9._-]+`. `protoc` must be on `PATH` before that build. `sp1-prover-types` compiles protobufs and fails with `Could not find protoc` when it is missing. The image workflow installs protoc 34.x; protoc 3.21 is enough for this crate. Check with `protoc --version`.
+
+Launch runs the repo build:
 
 ```bash
 cargo build --profile=test --bin charms
 ```
 
-That profile is the one in `Cargo.toml` (`opt-level = 3`, LTO off). The binary is `target/test/charms`. Launch is finished when that command exits 0 and the binary is executable. There is no server to wait for.
+That profile is the one in `Cargo.toml` (`opt-level = 3`, LTO off). Cargo still writes this built-in profile to `target/debug/charms`, not `target/test/charms`. Launch is finished when that command exits 0 and `target/debug/charms` is executable. There is no server to wait for.
 
 Launch also creates:
 
@@ -52,8 +54,8 @@ Run this before every drive, and again whenever a command looks wrong:
 Doctor is read-only. It exits 0 only when all of these are true:
 
 - state for `CHARMS_VERIFY_RUN_ID` exists and names this binary
-- `target/test/charms` is executable
-- `target/test/charms --version` prints `charms <version>` where `<version>` is `[workspace.package] version` in `Cargo.toml` (currently `16.0.0`)
+- `target/debug/charms` is executable
+- `target/debug/charms --version` prints `charms <version>` where `<version>` is `[workspace.package] version` in `Cargo.toml` (currently `16.0.0`)
 - the work directory exists, is the one launch created, and is not inside the repository
 - the evidence directory exists
 
@@ -62,7 +64,7 @@ Stdout looks like:
 ```text
 run_id: <id>
 repo: <repository-root>
-binary: <repository-root>/target/test/charms
+binary: <repository-root>/target/debug/charms
 version: charms 16.0.0
 work: /tmp/charms-verify-work/<id>
 evidence: /tmp/charms-verify-evidence/<id>
@@ -81,7 +83,7 @@ Put the harness on `PATH` or call it by the path under `.cursor/skills/verify-ch
 control-charms cli --feature <feature-id> --evidence <name> -- <charms-args>
 ```
 
-The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs `target/test/charms` with `<charms-args>`. It forwards only `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER` into that session when they are already set. It never writes `NETWORK_PRIVATE_KEY` into the evidence files.
+The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs `target/debug/charms` with `<charms-args>`. It forwards only `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER` into that session when they are already set. It never writes `NETWORK_PRIVATE_KEY` into the evidence files.
 
 The harness exits with the charms process exit code after writing the transcript. A rejection check expects a non-zero exit; the transcript is still written. Default timeout is 60 seconds (`--timeout` seconds). `--cwd` must be the work directory or a subdirectory of it; `app build` uses it so the session is inside the app crate rather than the Charms repository.
 

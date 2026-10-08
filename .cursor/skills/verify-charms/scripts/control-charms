@@ -4,7 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
-CHARMS_BIN=${CHARMS_BIN:-"$REPO/target/test/charms"}
+# Cargo writes the built-in `test` profile to target/debug, not target/test.
+CHARMS_BIN=${CHARMS_BIN:-"$REPO/target/debug/charms"}
 
 if [[ -f /exec-daemon/tmux.portal.conf ]]; then
   TMUX=(tmux -f /exec-daemon/tmux.portal.conf)
@@ -67,15 +68,22 @@ EOF
   echo "evidence $EVIDENCE"
 }
 
+state_field() {
+  local key=$1
+  sed -n "s/^${key}=//p" "$STATE/instance"
+}
+
 cmd_doctor() {
   require_run_id
   [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
-  # shellcheck disable=SC1090
-  source "$STATE/instance"
-  [[ "$binary" == "$CHARMS_BIN" ]] || die "state binary $binary does not match CHARMS_BIN $CHARMS_BIN"
+  local state_binary state_work state_evidence
+  state_binary=$(state_field binary)
+  state_work=$(state_field work)
+  state_evidence=$(state_field evidence)
+  [[ "$state_binary" == "$CHARMS_BIN" ]] || die "state binary $state_binary does not match CHARMS_BIN $CHARMS_BIN"
   [[ -x "$CHARMS_BIN" ]] || die "binary is missing: $CHARMS_BIN"
-  [[ "$work" == "$WORK" && -d "$WORK" ]] || die "work directory is missing: $WORK"
-  [[ "$evidence" == "$EVIDENCE" && -d "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
+  [[ "$state_work" == "$WORK" && -d "$WORK" ]] || die "work directory is missing: $WORK"
+  [[ "$state_evidence" == "$EVIDENCE" && -d "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
   case "$WORK" in
     "$REPO"|"$REPO"/*) die "work directory is inside the repo: $WORK" ;;
   esac

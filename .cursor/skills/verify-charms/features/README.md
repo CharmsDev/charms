@@ -4,7 +4,8 @@ This directory is the maintained source for verifying the user-facing behavior o
 
 ## Baseline preconditions
 
-- Build with `control-charms launch`, which runs `cargo build --profile=test --bin charms` and produces `target/test/charms`.
+- `protoc` is on `PATH` (`protoc --version`). The test-profile build fails without it.
+- Build with `control-charms launch`, which runs `cargo build --profile=test --bin charms` and produces `target/debug/charms`.
 - Set `CHARMS_VERIFY_RUN_ID` to a unique id and keep it for launch, doctor, every drive, and cleanup.
 - Set `CHARMS_VERIFY_REPO` to the repository root.
 - The disposable work directory is `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`. The harness uses it as the process working directory.
