@@ -97,16 +97,51 @@ private_roots() {
   EVIDENCE_ROOT=$(canonical_path /tmp/charms-verify-evidence)
 }
 
+# Walk from the trusted root to path. mkdir -p would skip the private-directory
+# check on the missing parents between them.
+ensure_under_root() {
+  local root=$1 path=$2 label=$3 create=$4
+  if [[ "$create" == yes ]]; then
+    ensure_private_dir "$root" "$label"
+  else
+    assert_existing_private "$root" "$label"
+  fi
+  [[ "$path" == "$root" ]] && return 0
+  local rel="${path#"$root"/}"
+  local prefix=$root part old_ifs=$IFS
+  local -a parts=()
+  IFS=/
+  read -r -a parts <<< "$rel"
+  IFS=$old_ifs
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != . && "$part" != .. ]] || die "$label has an unsafe component: $path"
+    prefix="${prefix}/${part}"
+    if [[ "$create" == yes ]]; then
+      ensure_private_dir "$prefix" "$label"
+    else
+      assert_existing_private "$prefix" "$label"
+    fi
+  done
+}
+
 prepare_run_dirs() {
   private_roots
-  ensure_private_dir "$WORK_ROOT" "work root"
-  ensure_private_dir "$STATE_ROOT" "state root"
-  ensure_private_dir "$EVIDENCE_ROOT" "evidence root"
-  ensure_private_dir "$WORK" "work directory"
-  ensure_private_dir "$STATE" "state directory"
-  ensure_private_dir "$EVIDENCE" "evidence directory"
+  ensure_under_root "$WORK_ROOT" "$WORK" "work directory" yes
+  ensure_under_root "$STATE_ROOT" "$STATE" "state directory" yes
+  ensure_under_root "$EVIDENCE_ROOT" "$EVIDENCE" "evidence directory" yes
   ensure_private_dir "$WORK/out" "work output directory"
   ensure_private_dir "$WORK/runners" "work runners directory"
+}
+
+capture_pane() {
+  local session=$1
+  "${TMUX[@]}" capture-pane -pJt "$session" -S -32768 2>/dev/null \
+    || "${TMUX[@]}" capture-pane -pt "$session" -S -32768 \
+    || true
+}
+
+remove_regular_file() {
+  rm -f -- "$1"
 }
 
 # Create or replace a regular file. O_NOFOLLOW refuses a symlink final
@@ -358,11 +393,9 @@ cmd_cli() {
   local env_file="$WORK/runners/${evidence}.env"
   local stdout_file="$WORK/out/${evidence}.stdout"
   local stderr_file="$WORK/out/${evidence}.stderr"
-  local exit_file="$WORK/out/${evidence}.code"
-
-  if [[ -e "$exit_file" || -L "$exit_file" ]]; then
-    die "exit file already exists: $exit_file"
-  fi
+  local pane_token exit_file
+  pane_token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  exit_file="$WORK/out/${evidence}.$(python3 -c 'import secrets; print(secrets.token_hex(8))').code"
 
   {
     echo "#!/bin/bash"
@@ -425,6 +458,7 @@ EOS
     echo "cat $(printf '%q' "$stdout_file")"
     echo 'echo "--- stderr ---"'
     echo "cat $(printf '%q' "$stderr_file")"
+    echo "echo CHARMS_VERIFY_PANE_DONE:${pane_token}"
   } | write_nofollow "$runner" 0700
   write_caller_env "$env_file"
 
@@ -443,18 +477,22 @@ EOS
 
   local deadline=$((SECONDS + timeout))
   local timed_out=0
+  local pane_marker="CHARMS_VERIFY_PANE_DONE:${pane_token}"
+  pane=""
   while true; do
     if [[ -f "$exit_file" && ! -L "$exit_file" ]]; then
-      break
+      pane=$(capture_pane "$session")
+      if [[ "$pane" == *"$pane_marker"* ]]; then
+        break
+      fi
     fi
     if (( SECONDS >= deadline )); then
       timed_out=1
+      pane=$(capture_pane "$session")
       break
     fi
     sleep 0.2
   done
-
-  pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -32768 || true)
 
   if (( timed_out )); then
     "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
@@ -463,6 +501,8 @@ EOS
     preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
     preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
     printf '%s\n' timeout | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
+    remove_regular_file "$exit_file"
+    remove_regular_file "${exit_file}.partial"
     echo "control-charms: timed out after ${timeout}s; transcript $EVIDENCE/${evidence}.txt" >&2
     return 1
   fi
@@ -476,6 +516,8 @@ EOS
   preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
   preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
   printf '%s\n' "$code" | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
+  remove_regular_file "$exit_file"
+  remove_regular_file "${exit_file}.partial"
 
   "${TMUX[@]}" kill-session -t "=$session" || true
   return "$code"
@@ -493,9 +535,8 @@ remove_private_tree() {
 cmd_cleanup() {
   require_run_id
   private_roots
-  assert_existing_private "$WORK_ROOT" "work root"
-  assert_existing_private "$STATE_ROOT" "state root"
-  assert_existing_private "$STATE" "state directory"
+  ensure_under_root "$WORK_ROOT" "$WORK" "work directory" no
+  ensure_under_root "$STATE_ROOT" "$STATE" "state directory" no
   if [[ -d "$STATE" && ! -L "$STATE" ]]; then
     if [[ -L "$STATE/sessions" ]]; then
       die "state sessions file is a symlink: $STATE/sessions"
@@ -508,7 +549,6 @@ cmd_cleanup() {
       done <"$STATE/sessions"
     fi
   fi
-  assert_existing_private "$WORK" "work directory"
   remove_private_tree "$WORK" "work directory"
   remove_private_tree "$STATE" "state directory"
   if [[ -d "$EVIDENCE" && ! -L "$EVIDENCE" ]]; then
