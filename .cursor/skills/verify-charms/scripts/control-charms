@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# Verification harness for the charms CLI. See ../SKILL.md.
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+CHARMS_BIN=${CHARMS_BIN:-"$REPO/target/test/charms"}
+
+if [[ -f /exec-daemon/tmux.portal.conf ]]; then
+  TMUX=(tmux -f /exec-daemon/tmux.portal.conf)
+else
+  TMUX=(tmux)
+fi
+
+die() {
+  echo "control-charms: $*" >&2
+  exit 1
+}
+
+require_run_id() {
+  [[ -n "${CHARMS_VERIFY_RUN_ID:-}" ]] || die "set CHARMS_VERIFY_RUN_ID before launch, doctor, cli, or cleanup"
+  [[ "$CHARMS_VERIFY_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "CHARMS_VERIFY_RUN_ID must match [A-Za-z0-9._-]+"
+  RUN_ID=$CHARMS_VERIFY_RUN_ID
+  WORK=${CHARMS_VERIFY_WORK:-"/tmp/charms-verify-work/$RUN_ID"}
+  EVIDENCE=${CHARMS_VERIFY_EVIDENCE:-"/tmp/charms-verify-evidence/$RUN_ID"}
+  STATE=${CHARMS_VERIFY_STATE:-"/tmp/charms-verify-state/$RUN_ID"}
+  case "$WORK" in
+    /tmp/charms-verify-work/*) ;;
+    *) die "CHARMS_VERIFY_WORK must stay under /tmp/charms-verify-work/" ;;
+  esac
+  case "$EVIDENCE" in
+    /tmp/charms-verify-evidence/*) ;;
+    *) die "CHARMS_VERIFY_EVIDENCE must stay under /tmp/charms-verify-evidence/" ;;
+  esac
+  case "$STATE" in
+    /tmp/charms-verify-state/*) ;;
+    *) die "CHARMS_VERIFY_STATE must stay under /tmp/charms-verify-state/" ;;
+  esac
+}
+
+workspace_version() {
+  awk '
+    $0 ~ /^\[workspace\.package\]/ { in_ws=1; next }
+    in_ws && $0 ~ /^\[/ { in_ws=0 }
+    in_ws && $0 ~ /^version[[:space:]]*=/ {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' "$REPO/Cargo.toml"
+}
+
+cmd_launch() {
+  require_run_id
+  cargo build --profile=test --bin charms --manifest-path "$REPO/Cargo.toml"
+  [[ -x "$CHARMS_BIN" ]] || die "build finished but $CHARMS_BIN is not executable"
+  mkdir -p "$WORK/out" "$WORK/runners" "$EVIDENCE" "$STATE"
+  cat >"$STATE/instance" <<EOF
+run_id=$RUN_ID
+repo=$REPO
+binary=$CHARMS_BIN
+work=$WORK
+evidence=$EVIDENCE
+EOF
+  echo "launched $CHARMS_BIN"
+  echo "work $WORK"
+  echo "evidence $EVIDENCE"
+}
+
+cmd_doctor() {
+  require_run_id
+  [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
+  # shellcheck disable=SC1090
+  source "$STATE/instance"
+  [[ "$binary" == "$CHARMS_BIN" ]] || die "state binary $binary does not match CHARMS_BIN $CHARMS_BIN"
+  [[ -x "$CHARMS_BIN" ]] || die "binary is missing: $CHARMS_BIN"
+  [[ "$work" == "$WORK" && -d "$WORK" ]] || die "work directory is missing: $WORK"
+  [[ "$evidence" == "$EVIDENCE" && -d "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
+  case "$WORK" in
+    "$REPO"|"$REPO"/*) die "work directory is inside the repo: $WORK" ;;
+  esac
+  local expected actual
+  expected=$(workspace_version)
+  [[ -n "$expected" ]] || die "could not read [workspace.package] version from $REPO/Cargo.toml"
+  actual=$("$CHARMS_BIN" --version)
+  [[ "$actual" == "charms $expected" ]] || die "version mismatch: binary says '$actual', Cargo.toml says charms $expected"
+  echo "run_id: $RUN_ID"
+  echo "repo: $REPO"
+  echo "binary: $CHARMS_BIN"
+  echo "version: $actual"
+  echo "work: $WORK"
+  echo "evidence: $EVIDENCE"
+  echo "ready: yes"
+}
+
+append_forwarded_env() {
+  local name="$1"
+  if [[ -n "${!name:-}" ]]; then
+    TMUX_ENV+=(-e "$name=${!name}")
+  fi
+}
+
+cmd_cli() {
+  require_run_id
+  local feature="" evidence="cli" timeout=60 cwd=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --feature)
+        feature=$2
+        shift 2
+        ;;
+      --evidence)
+        evidence=$2
+        shift 2
+        ;;
+      --timeout)
+        timeout=$2
+        shift 2
+        ;;
+      --cwd)
+        cwd=$2
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        die "unknown flag $1 (use -- before the charms arguments)"
+        ;;
+    esac
+  done
+  [[ $# -ge 1 ]] || die "missing charms arguments after --"
+  [[ "$evidence" =~ ^[A-Za-z0-9._-]+$ ]] || die "--evidence must match [A-Za-z0-9._-]+"
+  [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a whole number of seconds"
+  if [[ -z "$cwd" ]]; then
+    cwd=$WORK
+  fi
+  case "$cwd" in
+    "$WORK"|"$WORK"/*) ;;
+    *) die "--cwd must stay inside $WORK" ;;
+  esac
+  [[ -d "$cwd" ]] || die "--cwd is not a directory: $cwd"
+  cmd_doctor >/dev/null
+
+  local session="charms-verify-${RUN_ID}-${evidence}"
+  local runner="$WORK/runners/${evidence}.sh"
+  local stdout_file="$WORK/out/${evidence}.stdout"
+  local stderr_file="$WORK/out/${evidence}.stderr"
+  mkdir -p "$WORK/out" "$WORK/runners" "$EVIDENCE"
+
+  {
+    echo "#!/bin/bash"
+    echo "set +e"
+    printf 'cmd=('
+    printf '%q ' "$CHARMS_BIN" "$@"
+    echo ')'
+    echo 'printf "COMMAND:"'
+    echo 'printf " %q" "${cmd[@]}"'
+    echo 'printf "\n"'
+    printf '"${cmd[@]}" >%q 2>%q\n' "$stdout_file" "$stderr_file"
+    echo 'code=$?'
+    echo 'echo "EXIT:$code"'
+    echo 'echo "--- stdout ---"'
+    echo "cat $(printf '%q' "$stdout_file")"
+    echo 'echo "--- stderr ---"'
+    echo "cat $(printf '%q' "$stderr_file")"
+    echo 'echo "CHARMS_VERIFY_EXIT:$code"'
+  } >"$runner"
+  chmod +x "$runner"
+
+  echo "$session" >>"$STATE/sessions"
+  TMUX_ENV=()
+  local forwarded
+  for forwarded in CHARMS_PROVE_API_URL APP_SP1_PROVER SPELL_SP1_PROVER NETWORK_PRIVATE_KEY NETWORK_RPC_URL RUST_LOG RUST_LOGGER; do
+    append_forwarded_env "$forwarded"
+  done
+
+  "${TMUX[@]}" new-session -d "${TMUX_ENV[@]}" -s "$session" -c "$cwd" -- bash --noprofile --norc
+  "${TMUX[@]}" set-option -t "$session" remain-on-exit on
+  local pane="" ready_deadline=$((SECONDS + 10))
+  while (( SECONDS < ready_deadline )); do
+    pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -20 || true)
+    if [[ -n "$pane" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  "${TMUX[@]}" send-keys -t "$session" "bash $(printf '%q' "$runner")" C-m
+
+  local deadline=$((SECONDS + timeout))
+  pane=""
+  while (( SECONDS < deadline )); do
+    pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -32768 || true)
+    if [[ "$pane" == *"CHARMS_VERIFY_EXIT:"* ]]; then
+      break
+    fi
+    sleep 0.2
+  done
+
+  if [[ "$pane" != *"CHARMS_VERIFY_EXIT:"* ]]; then
+    {
+      echo "feature: ${feature:-unspecified}"
+      echo "run_id: $RUN_ID"
+      echo "binary: $CHARMS_BIN"
+      echo "timed_out: yes"
+      printf 'argv:'
+      printf ' %q' "$CHARMS_BIN" "$@"
+      echo
+      echo "$pane"
+    } >"$EVIDENCE/${evidence}.txt"
+    "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+    echo "control-charms: timed out after ${timeout}s; transcript $EVIDENCE/${evidence}.txt" >&2
+    return 1
+  fi
+
+  local code
+  code=$(printf '%s\n' "$pane" | sed -n 's/^CHARMS_VERIFY_EXIT://p' | tail -1)
+  {
+    echo "feature: ${feature:-unspecified}"
+    echo "run_id: $RUN_ID"
+    echo "binary: $CHARMS_BIN"
+    printf 'argv:'
+    printf ' %q' "$CHARMS_BIN" "$@"
+    echo
+    echo "exit: $code"
+    echo "--- stdout ---"
+    cat "$stdout_file"
+    echo "--- stderr ---"
+    cat "$stderr_file"
+  } >"$EVIDENCE/${evidence}.txt"
+  printf '%s\n' "$pane" >"$EVIDENCE/${evidence}.pane.txt"
+  cp "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+  cp "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+  printf '%s\n' "$code" >"$EVIDENCE/${evidence}.exit"
+
+  "${TMUX[@]}" kill-session -t "=$session" || true
+  return "$code"
+}
+
+cmd_cleanup() {
+  require_run_id
+  if [[ -f "$STATE/sessions" ]]; then
+    local session
+    while IFS= read -r session; do
+      [[ -n "$session" ]] || continue
+      "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+    done <"$STATE/sessions"
+  fi
+  if [[ -d "$WORK" ]]; then
+    rm -rf "$WORK"
+  fi
+  if [[ -d "$STATE" ]]; then
+    rm -rf "$STATE"
+  fi
+  if [[ -d "$EVIDENCE" ]]; then
+    echo "evidence kept at $EVIDENCE"
+  else
+    echo "no evidence directory at $EVIDENCE"
+  fi
+}
+
+usage() {
+  echo "usage: control-charms launch|doctor|cli|cleanup" >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+case "$1" in
+  launch) shift; cmd_launch "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  cli) shift; cmd_cli "$@" ;;
+  cleanup) shift; cmd_cleanup "$@" ;;
+  *) usage ;;
+esac
