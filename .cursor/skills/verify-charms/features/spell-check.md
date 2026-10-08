@@ -31,12 +31,12 @@ app_public_inputs: {}
 - Write `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/missing-ins.yaml` with `ins` removed and the same `outs`, `coins`, and `app_public_inputs`.
 
 - **Empty spell.** Check the empty spell. Run `control-charms cli --feature spell-check --evidence spell-check-empty -- spell check --spell /tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/empty.yaml --chain bitcoin`. Exit code `0`, stdout is empty, and stderr contains `cycles spent: []`.
-- **Missing inputs.** Check the spell with no `ins` key. Run `control-charms cli --feature spell-check --evidence spell-check-missing-ins -- spell check --spell /tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/missing-ins.yaml --chain bitcoin`. Exit code is non-zero and stderr contains `no tx.ins`.
-- **Proof.** `spell-check-empty.txt` records exit code `0` and `cycles spent: []`. `spell-check-missing-ins.txt` records the non-zero exit and `no tx.ins`. Neither transcript is a proof.
+- **Missing inputs.** Check the spell with no `ins` key. Run `control-charms cli --feature spell-check --evidence spell-check-missing-ins -- spell check --spell /tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/missing-ins.yaml --chain bitcoin`. Exit code is non-zero and stderr contains `Error: spell.tx.ins must be present`.
+- **Proof.** `spell-check-empty.txt` records exit code `0` and `cycles spent: []`. `spell-check-missing-ins.txt` records the non-zero exit and `Error: spell.tx.ins must be present`. Neither transcript is a proof.
 
 ## Gotchas
 
-- `tx.ins` must be present. An omitted key prints `no tx.ins` and fails. An empty list is present.
+- `tx.ins` must be present. An omitted key fails with `Error: spell.tx.ins must be present`. An empty list is present.
 - `tx.coins` must be present and the same length as `tx.outs`. A missing `coins` key fails with `coins must be present`.
 - The protocol version in the file must be `15`.
 - Apps that are not simple transfers need `--app-bins`. The failure names the apps and says `no app binaries provided`.

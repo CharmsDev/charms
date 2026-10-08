@@ -51,11 +51,10 @@ Run this before every drive, and again whenever a command looks wrong:
 .cursor/skills/verify-charms/scripts/control-charms doctor
 ```
 
-Doctor is read-only. It exits 0 only when all of these are true:
+Doctor is read-only. It uses the binary, work directory, and evidence directory recorded at launch. It does not read `CHARMS_BIN`. It exits 0 only when all of these are true:
 
-- state for `CHARMS_VERIFY_RUN_ID` exists and names this binary
-- `target/debug/charms` is executable
-- `target/debug/charms --version` prints `charms <version>` where `<version>` is `[workspace.package] version` in `Cargo.toml` (currently `16.0.0`)
+- state for `CHARMS_VERIFY_RUN_ID` exists
+- the recorded binary is executable and `--version` prints `charms <version>`, where `<version>` is `[workspace.package] version` in `Cargo.toml` (currently `16.0.0`)
 - the work directory exists, is the one launch created, and is not inside the repository
 - the evidence directory exists
 
@@ -83,9 +82,9 @@ Put the harness on `PATH` or call it by the path under `.cursor/skills/verify-ch
 control-charms cli --feature <feature-id> --evidence <name> -- <charms-args>
 ```
 
-The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs `target/debug/charms` with `<charms-args>`. It forwards only `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER` into that session when they are already set. It never writes `NETWORK_PRIVATE_KEY` into the evidence files.
+The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs the binary launch recorded with `<charms-args>`. Pass `--bin <path>` to drive a different binary for that command. `--bin` must resolve to an executable file under `<repo>/target/`; `charms-prover` is the network-proof binary. `--version` must print `charms <version>` or `charms-prover <version>`. Setting `CHARMS_BIN` on `doctor` or `cli` does not change the binary. The harness forwards only `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER` into that session when they are already set. It never writes `NETWORK_PRIVATE_KEY` into the evidence files.
 
-The harness exits with the charms process exit code after writing the transcript. A rejection check expects a non-zero exit; the transcript is still written. Default timeout is 60 seconds (`--timeout` seconds). `--cwd` must be the work directory or a subdirectory of it; `app build` uses it so the session is inside the app crate rather than the Charms repository.
+The harness exits with the charms process exit code after writing the transcript. A rejection check expects a non-zero exit; the transcript is still written. Default timeout is 60 seconds (`--timeout` seconds). On timeout the harness kills that session, then writes `<name>.txt`, `<name>.stdout`, `<name>.stderr`, `<name>.exit` (`timeout`), and `<name>.pane.txt` from the redirected output. `--cwd` must resolve to the work directory or a subdirectory of it; `app build` uses it so the session is inside the app crate rather than the Charms repository.
 
 Do not run the binary in the repository root. `charms app keygen` with no `--out` writes `.charms/app-key.json` in the current directory. The harness current directory is the work directory.
 
@@ -136,7 +135,7 @@ Proof standard:
 .cursor/skills/verify-charms/scripts/control-charms cleanup
 ```
 
-Cleanup kills only tmux sessions this run recorded (`charms-verify-$CHARMS_VERIFY_RUN_ID-*`). It then deletes the work directory and the state directory. It does not delete `/tmp/charms-verify-evidence/$CHARMS_VERIFY_RUN_ID/`. It does not kill by process name. Run it after a failed launch or drive as well, so a broken attempt does not leave a session or a work directory. After cleanup, the evidence path must still exist.
+Cleanup kills only tmux sessions this run recorded (`charms-verify-$CHARMS_VERIFY_RUN_ID-*`). It canonicalizes the work, state, and evidence paths, refuses any path that does not resolve under `/tmp/charms-verify-work/`, `/tmp/charms-verify-state/`, or `/tmp/charms-verify-evidence/`, then deletes the work directory and the state directory. It does not delete `/tmp/charms-verify-evidence/$CHARMS_VERIFY_RUN_ID/`. It does not kill by process name. Run it after a failed launch or drive as well, so a broken attempt does not leave a session or a work directory. After cleanup, the evidence path must still exist.
 
 ## Helpers
 
@@ -149,4 +148,4 @@ control-charms cli --feature dest --evidence dest-ethereum -- util dest --addr 0
 control-charms cleanup
 ```
 
-`cli` flags before `--` are `--feature`, `--evidence`, `--timeout`, and `--cwd`. `--cwd` must be the work directory or a subdirectory of it. Everything after `--` is the charms argv, without the binary name.
+`cli` flags before `--` are `--feature`, `--evidence`, `--timeout`, `--cwd`, and `--bin`. `--cwd` must resolve to the work directory or a subdirectory of it. `--bin` must resolve under the repository `target/` directory. Everything after `--` is the charms argv, without the binary name.

@@ -18,25 +18,31 @@ die() {
   exit 1
 }
 
+canonical_path() {
+  realpath -m -- "$1"
+}
+
+# Resolve the path, then require it to be a strict child of root.
+# Lexical prefixes accept `root/../../elsewhere`.
+require_contained() {
+  local path=$1 root=$2 label=$3
+  local canon root_canon
+  canon=$(canonical_path "$path")
+  root_canon=$(canonical_path "$root")
+  case "$canon" in
+    "$root_canon"/*) ;;
+    *) die "$label must stay under ${root_canon}/ (resolved to $canon)" ;;
+  esac
+  printf '%s\n' "$canon"
+}
+
 require_run_id() {
   [[ -n "${CHARMS_VERIFY_RUN_ID:-}" ]] || die "set CHARMS_VERIFY_RUN_ID before launch, doctor, cli, or cleanup"
   [[ "$CHARMS_VERIFY_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "CHARMS_VERIFY_RUN_ID must match [A-Za-z0-9._-]+"
   RUN_ID=$CHARMS_VERIFY_RUN_ID
-  WORK=${CHARMS_VERIFY_WORK:-"/tmp/charms-verify-work/$RUN_ID"}
-  EVIDENCE=${CHARMS_VERIFY_EVIDENCE:-"/tmp/charms-verify-evidence/$RUN_ID"}
-  STATE=${CHARMS_VERIFY_STATE:-"/tmp/charms-verify-state/$RUN_ID"}
-  case "$WORK" in
-    /tmp/charms-verify-work/*) ;;
-    *) die "CHARMS_VERIFY_WORK must stay under /tmp/charms-verify-work/" ;;
-  esac
-  case "$EVIDENCE" in
-    /tmp/charms-verify-evidence/*) ;;
-    *) die "CHARMS_VERIFY_EVIDENCE must stay under /tmp/charms-verify-evidence/" ;;
-  esac
-  case "$STATE" in
-    /tmp/charms-verify-state/*) ;;
-    *) die "CHARMS_VERIFY_STATE must stay under /tmp/charms-verify-state/" ;;
-  esac
+  WORK=$(require_contained "${CHARMS_VERIFY_WORK:-/tmp/charms-verify-work/$RUN_ID}" /tmp/charms-verify-work CHARMS_VERIFY_WORK)
+  EVIDENCE=$(require_contained "${CHARMS_VERIFY_EVIDENCE:-/tmp/charms-verify-evidence/$RUN_ID}" /tmp/charms-verify-evidence CHARMS_VERIFY_EVIDENCE)
+  STATE=$(require_contained "${CHARMS_VERIFY_STATE:-/tmp/charms-verify-state/$RUN_ID}" /tmp/charms-verify-state CHARMS_VERIFY_STATE)
 }
 
 workspace_version() {
@@ -54,16 +60,18 @@ workspace_version() {
 cmd_launch() {
   require_run_id
   cargo build --profile=test --bin charms --manifest-path "$REPO/Cargo.toml"
-  [[ -x "$CHARMS_BIN" ]] || die "build finished but $CHARMS_BIN is not executable"
+  local bin
+  bin=$(canonical_path "$CHARMS_BIN")
+  [[ -x "$bin" ]] || die "build finished but $bin is not executable"
   mkdir -p "$WORK/out" "$WORK/runners" "$EVIDENCE" "$STATE"
   cat >"$STATE/instance" <<EOF
 run_id=$RUN_ID
 repo=$REPO
-binary=$CHARMS_BIN
+binary=$bin
 work=$WORK
 evidence=$EVIDENCE
 EOF
-  echo "launched $CHARMS_BIN"
+  echo "launched $bin"
   echo "work $WORK"
   echo "evidence $EVIDENCE"
 }
@@ -74,14 +82,19 @@ state_field() {
 }
 
 cmd_doctor() {
+  local override=${1:-}
   require_run_id
   [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
-  local state_binary state_work state_evidence
+  local state_binary state_work state_evidence bin
   state_binary=$(state_field binary)
   state_work=$(state_field work)
   state_evidence=$(state_field evidence)
-  [[ "$state_binary" == "$CHARMS_BIN" ]] || die "state binary $state_binary does not match CHARMS_BIN $CHARMS_BIN"
-  [[ -x "$CHARMS_BIN" ]] || die "binary is missing: $CHARMS_BIN"
+  if [[ -n "$override" ]]; then
+    bin=$override
+  else
+    bin=$state_binary
+  fi
+  [[ -n "$bin" && -x "$bin" ]] || die "binary is missing: $bin"
   [[ "$state_work" == "$WORK" && -d "$WORK" ]] || die "work directory is missing: $WORK"
   [[ "$state_evidence" == "$EVIDENCE" && -d "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
   case "$WORK" in
@@ -90,11 +103,11 @@ cmd_doctor() {
   local expected actual
   expected=$(workspace_version)
   [[ -n "$expected" ]] || die "could not read [workspace.package] version from $REPO/Cargo.toml"
-  actual=$("$CHARMS_BIN" --version)
-  [[ "$actual" == "charms $expected" ]] || die "version mismatch: binary says '$actual', Cargo.toml says charms $expected"
+  actual=$("$bin" --version)
+  [[ "$actual" == "charms $expected" || "$actual" == "charms-prover $expected" ]] || die "version mismatch: binary says '$actual', Cargo.toml says $expected"
   echo "run_id: $RUN_ID"
   echo "repo: $REPO"
-  echo "binary: $CHARMS_BIN"
+  echo "binary: $bin"
   echo "version: $actual"
   echo "work: $WORK"
   echo "evidence: $EVIDENCE"
@@ -110,7 +123,7 @@ append_forwarded_env() {
 
 cmd_cli() {
   require_run_id
-  local feature="" evidence="cli" timeout=60 cwd=""
+  local feature="" evidence="cli" timeout=60 cwd="" bin_override=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --feature)
@@ -129,6 +142,10 @@ cmd_cli() {
         cwd=$2
         shift 2
         ;;
+      --bin)
+        bin_override=$2
+        shift 2
+        ;;
       --)
         shift
         break
@@ -141,15 +158,33 @@ cmd_cli() {
   [[ $# -ge 1 ]] || die "missing charms arguments after --"
   [[ "$evidence" =~ ^[A-Za-z0-9._-]+$ ]] || die "--evidence must match [A-Za-z0-9._-]+"
   [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a whole number of seconds"
+  local drive_bin
+  if [[ -n "$bin_override" ]]; then
+    drive_bin=$(canonical_path "$bin_override")
+    local repo_canon target_root
+    repo_canon=$(canonical_path "$REPO")
+    target_root="$repo_canon/target"
+    case "$drive_bin" in
+      "$target_root"/*) ;;
+      *) die "--bin must stay under $target_root (resolved to $drive_bin)" ;;
+    esac
+    [[ -f "$drive_bin" && -x "$drive_bin" ]] || die "--bin is not an executable file: $drive_bin"
+    cmd_doctor "$drive_bin" >/dev/null
+  else
+    cmd_doctor >/dev/null
+    drive_bin=$(state_field binary)
+    [[ -n "$drive_bin" && -x "$drive_bin" ]] || die "launch did not record an executable binary"
+  fi
   if [[ -z "$cwd" ]]; then
     cwd=$WORK
+  else
+    [[ -d "$cwd" ]] || die "--cwd is not a directory: $cwd"
+    cwd=$(canonical_path "$cwd")
+    case "$cwd" in
+      "$WORK"|"$WORK"/*) ;;
+      *) die "--cwd must stay inside $WORK (resolved to $cwd)" ;;
+    esac
   fi
-  case "$cwd" in
-    "$WORK"|"$WORK"/*) ;;
-    *) die "--cwd must stay inside $WORK" ;;
-  esac
-  [[ -d "$cwd" ]] || die "--cwd is not a directory: $cwd"
-  cmd_doctor >/dev/null
 
   local session="charms-verify-${RUN_ID}-${evidence}"
   local runner="$WORK/runners/${evidence}.sh"
@@ -161,7 +196,7 @@ cmd_cli() {
     echo "#!/bin/bash"
     echo "set +e"
     printf 'cmd=('
-    printf '%q ' "$CHARMS_BIN" "$@"
+    printf '%q ' "$drive_bin" "$@"
     echo ')'
     echo 'printf "COMMAND:"'
     echo 'printf " %q" "${cmd[@]}"'
@@ -207,17 +242,27 @@ cmd_cli() {
   done
 
   if [[ "$pane" != *"CHARMS_VERIFY_EXIT:"* ]]; then
+    "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+    [[ -f "$stdout_file" ]] || : >"$stdout_file"
+    [[ -f "$stderr_file" ]] || : >"$stderr_file"
     {
       echo "feature: ${feature:-unspecified}"
       echo "run_id: $RUN_ID"
-      echo "binary: $CHARMS_BIN"
+      echo "binary: $drive_bin"
       echo "timed_out: yes"
       printf 'argv:'
-      printf ' %q' "$CHARMS_BIN" "$@"
+      printf ' %q' "$drive_bin" "$@"
       echo
-      echo "$pane"
+      echo "exit: timeout"
+      echo "--- stdout ---"
+      cat "$stdout_file"
+      echo "--- stderr ---"
+      cat "$stderr_file"
     } >"$EVIDENCE/${evidence}.txt"
-    "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+    printf '%s\n' "$pane" >"$EVIDENCE/${evidence}.pane.txt"
+    cp "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+    cp "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+    printf '%s\n' timeout >"$EVIDENCE/${evidence}.exit"
     echo "control-charms: timed out after ${timeout}s; transcript $EVIDENCE/${evidence}.txt" >&2
     return 1
   fi
@@ -227,9 +272,9 @@ cmd_cli() {
   {
     echo "feature: ${feature:-unspecified}"
     echo "run_id: $RUN_ID"
-    echo "binary: $CHARMS_BIN"
+    echo "binary: $drive_bin"
     printf 'argv:'
-    printf ' %q' "$CHARMS_BIN" "$@"
+    printf ' %q' "$drive_bin" "$@"
     echo
     echo "exit: $code"
     echo "--- stdout ---"
