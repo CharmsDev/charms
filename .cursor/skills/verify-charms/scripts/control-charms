@@ -4,8 +4,16 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
-# Cargo writes the built-in `test` profile to target/debug, not target/test.
-CHARMS_BIN=${CHARMS_BIN:-"$REPO/target/debug/charms"}
+
+FORWARDED_ENV=(
+  CHARMS_PROVE_API_URL
+  APP_SP1_PROVER
+  SPELL_SP1_PROVER
+  NETWORK_PRIVATE_KEY
+  NETWORK_RPC_URL
+  RUST_LOG
+  RUST_LOGGER
+)
 
 if [[ -f /exec-daemon/tmux.portal.conf ]]; then
   TMUX=(tmux -f /exec-daemon/tmux.portal.conf)
@@ -45,6 +53,118 @@ require_run_id() {
   STATE=$(require_contained "${CHARMS_VERIFY_STATE:-/tmp/charms-verify-state/$RUN_ID}" /tmp/charms-verify-state CHARMS_VERIFY_STATE)
 }
 
+# A private directory is not a symlink, is owned by this user, and is not
+# writable by group or other. An existing directory that fails is rejected
+# rather than chmod'd.
+assert_private_dir() {
+  local path=$1 label=$2
+  if [[ -L "$path" ]]; then
+    die "$label is a symlink: $path"
+  fi
+  if [[ ! -d "$path" ]]; then
+    die "$label is not a directory: $path"
+  fi
+  local uid mode perm
+  uid=$(stat -c %u -- "$path")
+  mode=$(stat -c %a -- "$path")
+  [[ "$uid" == "$(id -u)" ]] || die "$label is not owned by this user: $path"
+  perm=$((8#$mode))
+  if (( (perm & 0022) != 0 )); then
+    die "$label is writable by group or other: $path (mode $mode)"
+  fi
+}
+
+ensure_private_dir() {
+  local path=$1 label=$2
+  if [[ -L "$path" || -e "$path" ]]; then
+    assert_private_dir "$path" "$label"
+    return
+  fi
+  mkdir -m 0700 -- "$path" || die "could not create $label: $path"
+  assert_private_dir "$path" "$label"
+}
+
+assert_existing_private() {
+  local path=$1 label=$2
+  if [[ -L "$path" || -e "$path" ]]; then
+    assert_private_dir "$path" "$label"
+  fi
+}
+
+private_roots() {
+  WORK_ROOT=$(canonical_path /tmp/charms-verify-work)
+  STATE_ROOT=$(canonical_path /tmp/charms-verify-state)
+  EVIDENCE_ROOT=$(canonical_path /tmp/charms-verify-evidence)
+}
+
+prepare_run_dirs() {
+  private_roots
+  ensure_private_dir "$WORK_ROOT" "work root"
+  ensure_private_dir "$STATE_ROOT" "state root"
+  ensure_private_dir "$EVIDENCE_ROOT" "evidence root"
+  ensure_private_dir "$WORK" "work directory"
+  ensure_private_dir "$STATE" "state directory"
+  ensure_private_dir "$EVIDENCE" "evidence directory"
+  ensure_private_dir "$WORK/out" "work output directory"
+  ensure_private_dir "$WORK/runners" "work runners directory"
+}
+
+# Create or replace a regular file. O_NOFOLLOW refuses a symlink final
+# component, so a precreated instance link cannot truncate its target.
+nofollow_write() {
+  local op=$1 path=$2 mode=$3
+  python3 -c '
+import os, sys
+op, path, mode_text = sys.argv[1], sys.argv[2], sys.argv[3]
+mode = int(mode_text, 8)
+flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+if op == "append":
+    flags |= os.O_APPEND
+else:
+    flags |= os.O_TRUNC
+data = sys.stdin.buffer.read()
+try:
+    fd = os.open(path, flags, mode)
+except OSError as exc:
+    sys.stderr.write("control-charms: refusing to write %s: %s\n" % (path, exc.strerror))
+    raise SystemExit(1)
+try:
+    os.fchmod(fd, mode)
+    view = data
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+finally:
+    os.close(fd)
+' "$op" "$path" "$mode"
+}
+
+write_nofollow() {
+  nofollow_write write "$1" "$2"
+}
+
+append_nofollow() {
+  nofollow_write append "$1" "$2"
+}
+
+read_regular() {
+  local path=$1
+  if [[ -L "$path" ]]; then
+    die "refusing to read a symlink: $path"
+  fi
+  if [[ -f "$path" ]]; then
+    cat -- "$path"
+  fi
+}
+
+copy_nofollow() {
+  local src=$1 dest=$2 mode=$3
+  if [[ -L "$src" || ! -f "$src" ]]; then
+    die "refusing to copy $src"
+  fi
+  write_nofollow "$dest" "$mode" <"$src"
+}
+
 workspace_version() {
   awk '
     $0 ~ /^\[workspace\.package\]/ { in_ws=1; next }
@@ -57,14 +177,19 @@ workspace_version() {
   ' "$REPO/Cargo.toml"
 }
 
+fixed_target_dir() {
+  canonical_path "$REPO/target"
+}
+
 cmd_launch() {
   require_run_id
-  cargo build --profile=test --bin charms --manifest-path "$REPO/Cargo.toml"
-  local bin
-  bin=$(canonical_path "$CHARMS_BIN")
-  [[ -x "$bin" ]] || die "build finished but $bin is not executable"
-  mkdir -p "$WORK/out" "$WORK/runners" "$EVIDENCE" "$STATE"
-  cat >"$STATE/instance" <<EOF
+  prepare_run_dirs
+  local target_dir bin
+  target_dir=$(fixed_target_dir)
+  CARGO_TARGET_DIR="$target_dir" cargo build --profile=test --bin charms --manifest-path "$REPO/Cargo.toml"
+  bin="$target_dir/debug/charms"
+  [[ -x "$bin" && ! -L "$bin" ]] || die "build finished but $bin is not an executable file"
+  write_nofollow "$STATE/instance" 0600 <<EOF
 run_id=$RUN_ID
 repo=$REPO
 binary=$bin
@@ -78,13 +203,17 @@ EOF
 
 state_field() {
   local key=$1
+  if [[ -L "$STATE/instance" ]]; then
+    die "state instance is a symlink: $STATE/instance"
+  fi
+  [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
   sed -n "s/^${key}=//p" "$STATE/instance"
 }
 
 cmd_doctor() {
   local override=${1:-}
   require_run_id
-  [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
+  [[ -f "$STATE/instance" && ! -L "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
   local state_binary state_work state_evidence bin
   state_binary=$(state_field binary)
   state_work=$(state_field work)
@@ -94,9 +223,9 @@ cmd_doctor() {
   else
     bin=$state_binary
   fi
-  [[ -n "$bin" && -x "$bin" ]] || die "binary is missing: $bin"
-  [[ "$state_work" == "$WORK" && -d "$WORK" ]] || die "work directory is missing: $WORK"
-  [[ "$state_evidence" == "$EVIDENCE" && -d "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
+  [[ -n "$bin" && -x "$bin" && ! -L "$bin" ]] || die "binary is missing: $bin"
+  [[ "$state_work" == "$WORK" && -d "$WORK" && ! -L "$WORK" ]] || die "work directory is missing: $WORK"
+  [[ "$state_evidence" == "$EVIDENCE" && -d "$EVIDENCE" && ! -L "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
   case "$WORK" in
     "$REPO"|"$REPO"/*) die "work directory is inside the repo: $WORK" ;;
   esac
@@ -114,10 +243,48 @@ cmd_doctor() {
   echo "ready: yes"
 }
 
-append_forwarded_env() {
-  local name="$1"
-  if [[ -n "${!name:-}" ]]; then
-    TMUX_ENV+=(-e "$name=${!name}")
+write_caller_env() {
+  local dest=$1
+  local name line env_text=""
+  for name in "${FORWARDED_ENV[@]}"; do
+    if [[ -v $name ]]; then
+      printf -v line 'export %s=%q\n' "$name" "${!name}"
+      env_text+="$line"
+    fi
+  done
+  printf '%s' "$env_text" | write_nofollow "$dest" 0600
+}
+
+write_transcript() {
+  local evidence=$1 feature=$2 drive_bin=$3 exit_label=$4 stdout_file=$5 stderr_file=$6
+  shift 6
+  {
+    echo "feature: ${feature:-unspecified}"
+    echo "run_id: $RUN_ID"
+    echo "binary: $drive_bin"
+    if [[ "$exit_label" == "timeout" ]]; then
+      echo "timed_out: yes"
+    fi
+    printf 'argv:'
+    printf ' %q' "$drive_bin" "$@"
+    echo
+    echo "exit: $exit_label"
+    echo "--- stdout ---"
+    read_regular "$stdout_file"
+    echo "--- stderr ---"
+    read_regular "$stderr_file"
+  } | write_nofollow "$EVIDENCE/${evidence}.txt" 0600
+}
+
+preserve_stream() {
+  local src=$1 dest=$2
+  if [[ -L "$src" ]]; then
+    die "refusing to read a symlink: $src"
+  fi
+  if [[ -f "$src" ]]; then
+    copy_nofollow "$src" "$dest" 0600
+  else
+    write_nofollow "$dest" 0600 </dev/null
   fi
 }
 
@@ -158,27 +325,27 @@ cmd_cli() {
   [[ $# -ge 1 ]] || die "missing charms arguments after --"
   [[ "$evidence" =~ ^[A-Za-z0-9._-]+$ ]] || die "--evidence must match [A-Za-z0-9._-]+"
   [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a whole number of seconds"
+  prepare_run_dirs
   local drive_bin
   if [[ -n "$bin_override" ]]; then
     drive_bin=$(canonical_path "$bin_override")
-    local repo_canon target_root
-    repo_canon=$(canonical_path "$REPO")
-    target_root="$repo_canon/target"
+    local target_root
+    target_root=$(fixed_target_dir)
     case "$drive_bin" in
       "$target_root"/*) ;;
       *) die "--bin must stay under $target_root (resolved to $drive_bin)" ;;
     esac
-    [[ -f "$drive_bin" && -x "$drive_bin" ]] || die "--bin is not an executable file: $drive_bin"
+    [[ -f "$drive_bin" && -x "$drive_bin" && ! -L "$drive_bin" ]] || die "--bin is not an executable file: $drive_bin"
     cmd_doctor "$drive_bin" >/dev/null
   else
     cmd_doctor >/dev/null
     drive_bin=$(state_field binary)
-    [[ -n "$drive_bin" && -x "$drive_bin" ]] || die "launch did not record an executable binary"
+    [[ -n "$drive_bin" && -x "$drive_bin" && ! -L "$drive_bin" ]] || die "launch did not record an executable binary"
   fi
   if [[ -z "$cwd" ]]; then
     cwd=$WORK
   else
-    [[ -d "$cwd" ]] || die "--cwd is not a directory: $cwd"
+    [[ -d "$cwd" && ! -L "$cwd" ]] || die "--cwd is not a directory: $cwd"
     cwd=$(canonical_path "$cwd")
     case "$cwd" in
       "$WORK"|"$WORK"/*) ;;
@@ -188,38 +355,81 @@ cmd_cli() {
 
   local session="charms-verify-${RUN_ID}-${evidence}"
   local runner="$WORK/runners/${evidence}.sh"
+  local env_file="$WORK/runners/${evidence}.env"
   local stdout_file="$WORK/out/${evidence}.stdout"
   local stderr_file="$WORK/out/${evidence}.stderr"
-  mkdir -p "$WORK/out" "$WORK/runners" "$EVIDENCE"
+  local exit_file="$WORK/out/${evidence}.code"
+
+  if [[ -e "$exit_file" || -L "$exit_file" ]]; then
+    die "exit file already exists: $exit_file"
+  fi
 
   {
     echo "#!/bin/bash"
     echo "set +e"
+    printf 'unset'
+    printf ' %q' "${FORWARDED_ENV[@]}"
+    echo
+    printf 'env_file=%q\n' "$env_file"
+    cat <<'EOS'
+if [[ -f "$env_file" && ! -L "$env_file" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file"
+  set +a
+fi
+EOS
     printf 'cmd=('
     printf '%q ' "$drive_bin" "$@"
     echo ')'
     echo 'printf "COMMAND:"'
     echo 'printf " %q" "${cmd[@]}"'
     echo 'printf "\n"'
-    printf '"${cmd[@]}" >%q 2>%q\n' "$stdout_file" "$stderr_file"
-    echo 'code=$?'
+    printf 'stdout_file=%q\n' "$stdout_file"
+    printf 'stderr_file=%q\n' "$stderr_file"
+    cat <<'EOS'
+python3 -c '
+import os, sys
+out_path, err_path = sys.argv[1], sys.argv[2]
+cmd = sys.argv[3:]
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+out_fd = os.open(out_path, flags, 0o600)
+err_fd = os.open(err_path, flags, 0o600)
+os.dup2(out_fd, 1)
+os.dup2(err_fd, 2)
+os.close(out_fd)
+os.close(err_fd)
+os.execv(cmd[0], cmd)
+' "$stdout_file" "$stderr_file" "${cmd[@]}"
+code=$?
+EOS
+    printf 'exit_file=%q\n' "$exit_file"
+    cat <<'EOS'
+python3 -c '
+import os, sys
+path = sys.argv[1]
+data = sys.stdin.buffer.read()
+partial = path + ".partial"
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+fd = os.open(partial, flags, 0o600)
+try:
+    os.fchmod(fd, 0o600)
+    os.write(fd, data)
+finally:
+    os.close(fd)
+os.rename(partial, path)
+' "$exit_file" <<<"$code"
+EOS
     echo 'echo "EXIT:$code"'
     echo 'echo "--- stdout ---"'
     echo "cat $(printf '%q' "$stdout_file")"
     echo 'echo "--- stderr ---"'
     echo "cat $(printf '%q' "$stderr_file")"
-    echo 'echo "CHARMS_VERIFY_EXIT:$code"'
-  } >"$runner"
-  chmod +x "$runner"
+  } | write_nofollow "$runner" 0700
+  write_caller_env "$env_file"
 
-  echo "$session" >>"$STATE/sessions"
-  TMUX_ENV=()
-  local forwarded
-  for forwarded in CHARMS_PROVE_API_URL APP_SP1_PROVER SPELL_SP1_PROVER NETWORK_PRIVATE_KEY NETWORK_RPC_URL RUST_LOG RUST_LOGGER; do
-    append_forwarded_env "$forwarded"
-  done
-
-  "${TMUX[@]}" new-session -d "${TMUX_ENV[@]}" -s "$session" -c "$cwd" -- bash --noprofile --norc
+  printf '%s\n' "$session" | append_nofollow "$STATE/sessions" 0600
+  "${TMUX[@]}" new-session -d -s "$session" -c "$cwd" -- bash --noprofile --norc
   "${TMUX[@]}" set-option -t "$session" remain-on-exit on
   local pane="" ready_deadline=$((SECONDS + 10))
   while (( SECONDS < ready_deadline )); do
@@ -232,81 +442,76 @@ cmd_cli() {
   "${TMUX[@]}" send-keys -t "$session" "bash $(printf '%q' "$runner")" C-m
 
   local deadline=$((SECONDS + timeout))
-  pane=""
-  while (( SECONDS < deadline )); do
-    pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -32768 || true)
-    if [[ "$pane" == *"CHARMS_VERIFY_EXIT:"* ]]; then
+  local timed_out=0
+  while true; do
+    if [[ -f "$exit_file" && ! -L "$exit_file" ]]; then
+      break
+    fi
+    if (( SECONDS >= deadline )); then
+      timed_out=1
       break
     fi
     sleep 0.2
   done
 
-  if [[ "$pane" != *"CHARMS_VERIFY_EXIT:"* ]]; then
+  pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -32768 || true)
+
+  if (( timed_out )); then
     "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
-    [[ -f "$stdout_file" ]] || : >"$stdout_file"
-    [[ -f "$stderr_file" ]] || : >"$stderr_file"
-    {
-      echo "feature: ${feature:-unspecified}"
-      echo "run_id: $RUN_ID"
-      echo "binary: $drive_bin"
-      echo "timed_out: yes"
-      printf 'argv:'
-      printf ' %q' "$drive_bin" "$@"
-      echo
-      echo "exit: timeout"
-      echo "--- stdout ---"
-      cat "$stdout_file"
-      echo "--- stderr ---"
-      cat "$stderr_file"
-    } >"$EVIDENCE/${evidence}.txt"
-    printf '%s\n' "$pane" >"$EVIDENCE/${evidence}.pane.txt"
-    cp "$stdout_file" "$EVIDENCE/${evidence}.stdout"
-    cp "$stderr_file" "$EVIDENCE/${evidence}.stderr"
-    printf '%s\n' timeout >"$EVIDENCE/${evidence}.exit"
+    write_transcript "$evidence" "$feature" "$drive_bin" timeout "$stdout_file" "$stderr_file" "$@"
+    printf '%s\n' "$pane" | write_nofollow "$EVIDENCE/${evidence}.pane.txt" 0600
+    preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+    preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+    printf '%s\n' timeout | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
     echo "control-charms: timed out after ${timeout}s; transcript $EVIDENCE/${evidence}.txt" >&2
     return 1
   fi
 
   local code
-  code=$(printf '%s\n' "$pane" | sed -n 's/^CHARMS_VERIFY_EXIT://p' | tail -1)
-  {
-    echo "feature: ${feature:-unspecified}"
-    echo "run_id: $RUN_ID"
-    echo "binary: $drive_bin"
-    printf 'argv:'
-    printf ' %q' "$drive_bin" "$@"
-    echo
-    echo "exit: $code"
-    echo "--- stdout ---"
-    cat "$stdout_file"
-    echo "--- stderr ---"
-    cat "$stderr_file"
-  } >"$EVIDENCE/${evidence}.txt"
-  printf '%s\n' "$pane" >"$EVIDENCE/${evidence}.pane.txt"
-  cp "$stdout_file" "$EVIDENCE/${evidence}.stdout"
-  cp "$stderr_file" "$EVIDENCE/${evidence}.stderr"
-  printf '%s\n' "$code" >"$EVIDENCE/${evidence}.exit"
+  code=$(read_regular "$exit_file")
+  code=${code//$'\n'/}
+  [[ "$code" =~ ^[0-9]+$ ]] || die "exit file is not a numeric code: $exit_file"
+  write_transcript "$evidence" "$feature" "$drive_bin" "$code" "$stdout_file" "$stderr_file" "$@"
+  printf '%s\n' "$pane" | write_nofollow "$EVIDENCE/${evidence}.pane.txt" 0600
+  preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+  preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+  printf '%s\n' "$code" | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
 
   "${TMUX[@]}" kill-session -t "=$session" || true
   return "$code"
 }
 
+remove_private_tree() {
+  local path=$1 label=$2
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return
+  fi
+  assert_private_dir "$path" "$label"
+  rm -rf -- "$path"
+}
+
 cmd_cleanup() {
   require_run_id
-  if [[ -f "$STATE/sessions" ]]; then
-    local session
-    while IFS= read -r session; do
-      [[ -n "$session" ]] || continue
-      "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
-    done <"$STATE/sessions"
+  private_roots
+  assert_existing_private "$WORK_ROOT" "work root"
+  assert_existing_private "$STATE_ROOT" "state root"
+  assert_existing_private "$STATE" "state directory"
+  if [[ -d "$STATE" && ! -L "$STATE" ]]; then
+    if [[ -L "$STATE/sessions" ]]; then
+      die "state sessions file is a symlink: $STATE/sessions"
+    fi
+    if [[ -f "$STATE/sessions" ]]; then
+      local session
+      while IFS= read -r session; do
+        [[ -n "$session" ]] || continue
+        "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+      done <"$STATE/sessions"
+    fi
   fi
-  if [[ -d "$WORK" ]]; then
-    rm -rf "$WORK"
-  fi
-  if [[ -d "$STATE" ]]; then
-    rm -rf "$STATE"
-  fi
-  if [[ -d "$EVIDENCE" ]]; then
+  assert_existing_private "$WORK" "work directory"
+  remove_private_tree "$WORK" "work directory"
+  remove_private_tree "$STATE" "state directory"
+  if [[ -d "$EVIDENCE" && ! -L "$EVIDENCE" ]]; then
     echo "evidence kept at $EVIDENCE"
   else
     echo "no evidence directory at $EVIDENCE"

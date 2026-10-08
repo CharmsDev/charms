@@ -21,19 +21,21 @@ export CHARMS_VERIFY_REPO="<repository-root>"
 
 `CHARMS_VERIFY_RUN_ID` must match `[A-Za-z0-9._-]+`. `protoc` must be on `PATH` before that build. `sp1-prover-types` compiles protobufs and fails with `Could not find protoc` when it is missing. The image workflow installs protoc 34.x; protoc 3.21 is enough for this crate. Check with `protoc --version`.
 
-Launch runs the repo build:
+Launch runs the repo build with `CARGO_TARGET_DIR` set to `<repository-root>/target`:
 
 ```bash
 cargo build --profile=test --bin charms
 ```
 
-That profile is the one in `Cargo.toml` (`opt-level = 3`, LTO off). Cargo still writes this built-in profile to `target/debug/charms`, not `target/test/charms`. Launch is finished when that command exits 0 and `target/debug/charms` is executable. There is no server to wait for.
+That profile is the one in `Cargo.toml` (`opt-level = 3`, LTO off). Cargo writes this built-in profile to `target/debug`, not `target/test`. The harness sets `CARGO_TARGET_DIR` on that command, so an ambient `CARGO_TARGET_DIR` cannot send the binary somewhere else. Launch records `<repository-root>/target/debug/charms` and ignores `CHARMS_BIN`. Launch is finished when that command exits 0 and that file is executable. There is no server to wait for.
 
 Launch also creates:
 
 - work: `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/`
 - evidence: `/tmp/charms-verify-evidence/$CHARMS_VERIFY_RUN_ID/`
 - state: `/tmp/charms-verify-state/$CHARMS_VERIFY_RUN_ID/instance`
+
+Those directories, and the parents `/tmp/charms-verify-work`, `/tmp/charms-verify-state`, and `/tmp/charms-verify-evidence`, are created mode `0700` and owned by the current user. If one of them already exists and is a symlink, is not owned by this user, or is writable by group or other, launch stops before it writes state, runners, or evidence. State, runners, and evidence files are created with `O_NOFOLLOW`, so a precreated `instance` symlink is not opened and its target is not truncated.
 
 Do not start a second `cargo build` against the same checkout at the same time. Two runs may share the already-built binary if they use different run ids, work directories, and tmux sessions.
 
@@ -82,9 +84,9 @@ Put the harness on `PATH` or call it by the path under `.cursor/skills/verify-ch
 control-charms cli --feature <feature-id> --evidence <name> -- <charms-args>
 ```
 
-The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs the binary launch recorded with `<charms-args>`. Pass `--bin <path>` to drive a different binary for that command. `--bin` must resolve to an executable file under `<repo>/target/`; `charms-prover` is the network-proof binary. `--version` must print `charms <version>` or `charms-prover <version>`. Setting `CHARMS_BIN` on `doctor` or `cli` does not change the binary. The harness forwards only `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER` into that session when they are already set. It never writes `NETWORK_PRIVATE_KEY` into the evidence files.
+The harness starts a tmux session named `charms-verify-$CHARMS_VERIFY_RUN_ID-<name>`, with working directory `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID`, and runs the binary launch recorded with `<charms-args>`. Pass `--bin <path>` to drive a different binary for that command. `--bin` must resolve to an executable file under `<repo>/target/`; `charms-prover` is the network-proof binary. `--version` must print `charms <version>` or `charms-prover <version>`. Setting `CHARMS_BIN` on `doctor` or `cli` does not change the binary. The runner unsets `CHARMS_PROVE_API_URL`, `APP_SP1_PROVER`, `SPELL_SP1_PROVER`, `NETWORK_PRIVATE_KEY`, `NETWORK_RPC_URL`, `RUST_LOG`, and `RUST_LOGGER`, then exports only the ones that are set in the caller. A value left on an existing tmux server is not kept when the caller left the variable unset. The harness never writes `NETWORK_PRIVATE_KEY` into the evidence files or the pane.
 
-The harness exits with the charms process exit code after writing the transcript. A rejection check expects a non-zero exit; the transcript is still written. Default timeout is 60 seconds (`--timeout` seconds). On timeout the harness kills that session, then writes `<name>.txt`, `<name>.stdout`, `<name>.stderr`, `<name>.exit` (`timeout`), and `<name>.pane.txt` from the redirected output. `--cwd` must resolve to the work directory or a subdirectory of it; `app build` uses it so the session is inside the app crate rather than the Charms repository.
+The runner writes the process exit code to a file in the work directory after the process exits. The harness waits for that regular file and reads the code from it. Text in the pane, including an argument that contains `CHARMS_VERIFY_EXIT:`, is not completion. The harness exits with the charms process exit code after writing the transcript. A rejection check expects a non-zero exit; the transcript is still written. Default timeout is 60 seconds (`--timeout` seconds). On timeout the harness kills that session, then writes `<name>.txt`, `<name>.stdout`, `<name>.stderr`, `<name>.exit` (`timeout`), and `<name>.pane.txt` from the redirected output. `--cwd` must resolve to the work directory or a subdirectory of it; `app build` uses it so the session is inside the app crate rather than the Charms repository.
 
 Do not run the binary in the repository root. `charms app keygen` with no `--out` writes `.charms/app-key.json` in the current directory. The harness current directory is the work directory.
 
@@ -135,7 +137,7 @@ Proof standard:
 .cursor/skills/verify-charms/scripts/control-charms cleanup
 ```
 
-Cleanup kills only tmux sessions this run recorded (`charms-verify-$CHARMS_VERIFY_RUN_ID-*`). It canonicalizes the work, state, and evidence paths, refuses any path that does not resolve under `/tmp/charms-verify-work/`, `/tmp/charms-verify-state/`, or `/tmp/charms-verify-evidence/`, then deletes the work directory and the state directory. It does not delete `/tmp/charms-verify-evidence/$CHARMS_VERIFY_RUN_ID/`. It does not kill by process name. Run it after a failed launch or drive as well, so a broken attempt does not leave a session or a work directory. After cleanup, the evidence path must still exist.
+Cleanup kills only tmux sessions this run recorded (`charms-verify-$CHARMS_VERIFY_RUN_ID-*`). It canonicalizes the work, state, and evidence paths, refuses any path that does not resolve under `/tmp/charms-verify-work/`, `/tmp/charms-verify-state/`, or `/tmp/charms-verify-evidence/`, then deletes the work directory and the state directory. It refuses to delete a work or state directory that is a symlink, is not owned by this user, or is writable by group or other. It does not delete `/tmp/charms-verify-evidence/$CHARMS_VERIFY_RUN_ID/`. It does not kill by process name. Run it after a failed launch or drive as well, so a broken attempt does not leave a session or a work directory. After cleanup, the evidence path must still exist.
 
 ## Helpers
 
