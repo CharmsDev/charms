@@ -1,0 +1,573 @@
+#!/usr/bin/env bash
+# Verification harness for the charms CLI. See ../SKILL.md.
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$SCRIPT_DIR/../../../.." && pwd)
+
+FORWARDED_ENV=(
+  CHARMS_PROVE_API_URL
+  APP_SP1_PROVER
+  SPELL_SP1_PROVER
+  NETWORK_PRIVATE_KEY
+  NETWORK_RPC_URL
+  RUST_LOG
+  RUST_LOGGER
+)
+
+if [[ -f /exec-daemon/tmux.portal.conf ]]; then
+  TMUX=(tmux -f /exec-daemon/tmux.portal.conf)
+else
+  TMUX=(tmux)
+fi
+
+die() {
+  echo "control-charms: $*" >&2
+  exit 1
+}
+
+canonical_path() {
+  realpath -m -- "$1"
+}
+
+# Resolve the path, then require it to be a strict child of root.
+# Lexical prefixes accept `root/../../elsewhere`.
+require_contained() {
+  local path=$1 root=$2 label=$3
+  local canon root_canon
+  canon=$(canonical_path "$path")
+  root_canon=$(canonical_path "$root")
+  case "$canon" in
+    "$root_canon"/*) ;;
+    *) die "$label must stay under ${root_canon}/ (resolved to $canon)" ;;
+  esac
+  printf '%s\n' "$canon"
+}
+
+require_run_id() {
+  [[ -n "${CHARMS_VERIFY_RUN_ID:-}" ]] || die "set CHARMS_VERIFY_RUN_ID before launch, doctor, cli, or cleanup"
+  [[ "$CHARMS_VERIFY_RUN_ID" =~ ^[A-Za-z0-9._-]+$ ]] || die "CHARMS_VERIFY_RUN_ID must match [A-Za-z0-9._-]+"
+  RUN_ID=$CHARMS_VERIFY_RUN_ID
+  WORK=$(require_contained "${CHARMS_VERIFY_WORK:-/tmp/charms-verify-work/$RUN_ID}" /tmp/charms-verify-work CHARMS_VERIFY_WORK)
+  EVIDENCE=$(require_contained "${CHARMS_VERIFY_EVIDENCE:-/tmp/charms-verify-evidence/$RUN_ID}" /tmp/charms-verify-evidence CHARMS_VERIFY_EVIDENCE)
+  STATE=$(require_contained "${CHARMS_VERIFY_STATE:-/tmp/charms-verify-state/$RUN_ID}" /tmp/charms-verify-state CHARMS_VERIFY_STATE)
+}
+
+# A private directory is not a symlink, is owned by this user, and is not
+# writable by group or other. An existing directory that fails is rejected
+# rather than chmod'd.
+assert_private_dir() {
+  local path=$1 label=$2
+  if [[ -L "$path" ]]; then
+    die "$label is a symlink: $path"
+  fi
+  if [[ ! -d "$path" ]]; then
+    die "$label is not a directory: $path"
+  fi
+  local uid mode perm
+  uid=$(stat -c %u -- "$path")
+  mode=$(stat -c %a -- "$path")
+  [[ "$uid" == "$(id -u)" ]] || die "$label is not owned by this user: $path"
+  perm=$((8#$mode))
+  if (( (perm & 0022) != 0 )); then
+    die "$label is writable by group or other: $path (mode $mode)"
+  fi
+}
+
+ensure_private_dir() {
+  local path=$1 label=$2
+  if [[ -L "$path" || -e "$path" ]]; then
+    assert_private_dir "$path" "$label"
+    return
+  fi
+  mkdir -m 0700 -- "$path" || die "could not create $label: $path"
+  assert_private_dir "$path" "$label"
+}
+
+assert_existing_private() {
+  local path=$1 label=$2
+  if [[ -L "$path" || -e "$path" ]]; then
+    assert_private_dir "$path" "$label"
+  fi
+}
+
+private_roots() {
+  WORK_ROOT=$(canonical_path /tmp/charms-verify-work)
+  STATE_ROOT=$(canonical_path /tmp/charms-verify-state)
+  EVIDENCE_ROOT=$(canonical_path /tmp/charms-verify-evidence)
+}
+
+# Walk from the trusted root to path. mkdir -p would skip the private-directory
+# check on the missing parents between them.
+ensure_under_root() {
+  local root=$1 path=$2 label=$3 create=$4
+  if [[ "$create" == yes ]]; then
+    ensure_private_dir "$root" "$label"
+  else
+    assert_existing_private "$root" "$label"
+  fi
+  [[ "$path" == "$root" ]] && return 0
+  local rel="${path#"$root"/}"
+  local prefix=$root part old_ifs=$IFS
+  local -a parts=()
+  IFS=/
+  read -r -a parts <<< "$rel"
+  IFS=$old_ifs
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != . && "$part" != .. ]] || die "$label has an unsafe component: $path"
+    prefix="${prefix}/${part}"
+    if [[ "$create" == yes ]]; then
+      ensure_private_dir "$prefix" "$label"
+    else
+      assert_existing_private "$prefix" "$label"
+    fi
+  done
+}
+
+prepare_run_dirs() {
+  private_roots
+  ensure_under_root "$WORK_ROOT" "$WORK" "work directory" yes
+  ensure_under_root "$STATE_ROOT" "$STATE" "state directory" yes
+  ensure_under_root "$EVIDENCE_ROOT" "$EVIDENCE" "evidence directory" yes
+  ensure_private_dir "$WORK/out" "work output directory"
+  ensure_private_dir "$WORK/runners" "work runners directory"
+}
+
+capture_pane() {
+  local session=$1
+  "${TMUX[@]}" capture-pane -pJt "$session" -S -32768 2>/dev/null \
+    || "${TMUX[@]}" capture-pane -pt "$session" -S -32768 \
+    || true
+}
+
+remove_regular_file() {
+  rm -f -- "$1"
+}
+
+# Create or replace a regular file. O_NOFOLLOW refuses a symlink final
+# component, so a precreated instance link cannot truncate its target.
+nofollow_write() {
+  local op=$1 path=$2 mode=$3
+  python3 -c '
+import os, sys
+op, path, mode_text = sys.argv[1], sys.argv[2], sys.argv[3]
+mode = int(mode_text, 8)
+flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
+if op == "append":
+    flags |= os.O_APPEND
+else:
+    flags |= os.O_TRUNC
+data = sys.stdin.buffer.read()
+try:
+    fd = os.open(path, flags, mode)
+except OSError as exc:
+    sys.stderr.write("control-charms: refusing to write %s: %s\n" % (path, exc.strerror))
+    raise SystemExit(1)
+try:
+    os.fchmod(fd, mode)
+    view = data
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+finally:
+    os.close(fd)
+' "$op" "$path" "$mode"
+}
+
+write_nofollow() {
+  nofollow_write write "$1" "$2"
+}
+
+append_nofollow() {
+  nofollow_write append "$1" "$2"
+}
+
+read_regular() {
+  local path=$1
+  if [[ -L "$path" ]]; then
+    die "refusing to read a symlink: $path"
+  fi
+  if [[ -f "$path" ]]; then
+    cat -- "$path"
+  fi
+}
+
+copy_nofollow() {
+  local src=$1 dest=$2 mode=$3
+  if [[ -L "$src" || ! -f "$src" ]]; then
+    die "refusing to copy $src"
+  fi
+  write_nofollow "$dest" "$mode" <"$src"
+}
+
+workspace_version() {
+  awk '
+    $0 ~ /^\[workspace\.package\]/ { in_ws=1; next }
+    in_ws && $0 ~ /^\[/ { in_ws=0 }
+    in_ws && $0 ~ /^version[[:space:]]*=/ {
+      gsub(/"/, "", $3)
+      print $3
+      exit
+    }
+  ' "$REPO/Cargo.toml"
+}
+
+fixed_target_dir() {
+  canonical_path "$REPO/target"
+}
+
+cmd_launch() {
+  require_run_id
+  prepare_run_dirs
+  local target_dir bin
+  target_dir=$(fixed_target_dir)
+  CARGO_TARGET_DIR="$target_dir" cargo build --profile=test --bin charms --manifest-path "$REPO/Cargo.toml"
+  bin="$target_dir/debug/charms"
+  [[ -x "$bin" && ! -L "$bin" ]] || die "build finished but $bin is not an executable file"
+  write_nofollow "$STATE/instance" 0600 <<EOF
+run_id=$RUN_ID
+repo=$REPO
+binary=$bin
+work=$WORK
+evidence=$EVIDENCE
+EOF
+  echo "launched $bin"
+  echo "work $WORK"
+  echo "evidence $EVIDENCE"
+}
+
+state_field() {
+  local key=$1
+  if [[ -L "$STATE/instance" ]]; then
+    die "state instance is a symlink: $STATE/instance"
+  fi
+  [[ -f "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
+  sed -n "s/^${key}=//p" "$STATE/instance"
+}
+
+cmd_doctor() {
+  local override=${1:-}
+  require_run_id
+  [[ -f "$STATE/instance" && ! -L "$STATE/instance" ]] || die "no instance for $RUN_ID; run launch first"
+  local state_binary state_work state_evidence bin
+  state_binary=$(state_field binary)
+  state_work=$(state_field work)
+  state_evidence=$(state_field evidence)
+  if [[ -n "$override" ]]; then
+    bin=$override
+  else
+    bin=$state_binary
+  fi
+  [[ -n "$bin" && -x "$bin" && ! -L "$bin" ]] || die "binary is missing: $bin"
+  [[ "$state_work" == "$WORK" && -d "$WORK" && ! -L "$WORK" ]] || die "work directory is missing: $WORK"
+  [[ "$state_evidence" == "$EVIDENCE" && -d "$EVIDENCE" && ! -L "$EVIDENCE" ]] || die "evidence directory is missing: $EVIDENCE"
+  case "$WORK" in
+    "$REPO"|"$REPO"/*) die "work directory is inside the repo: $WORK" ;;
+  esac
+  local expected actual
+  expected=$(workspace_version)
+  [[ -n "$expected" ]] || die "could not read [workspace.package] version from $REPO/Cargo.toml"
+  actual=$("$bin" --version)
+  [[ "$actual" == "charms $expected" || "$actual" == "charms-prover $expected" ]] || die "version mismatch: binary says '$actual', Cargo.toml says $expected"
+  echo "run_id: $RUN_ID"
+  echo "repo: $REPO"
+  echo "binary: $bin"
+  echo "version: $actual"
+  echo "work: $WORK"
+  echo "evidence: $EVIDENCE"
+  echo "ready: yes"
+}
+
+write_caller_env() {
+  local dest=$1
+  local name line env_text=""
+  for name in "${FORWARDED_ENV[@]}"; do
+    if [[ -v $name ]]; then
+      printf -v line 'export %s=%q\n' "$name" "${!name}"
+      env_text+="$line"
+    fi
+  done
+  printf '%s' "$env_text" | write_nofollow "$dest" 0600
+}
+
+write_transcript() {
+  local evidence=$1 feature=$2 drive_bin=$3 exit_label=$4 stdout_file=$5 stderr_file=$6
+  shift 6
+  {
+    echo "feature: ${feature:-unspecified}"
+    echo "run_id: $RUN_ID"
+    echo "binary: $drive_bin"
+    if [[ "$exit_label" == "timeout" ]]; then
+      echo "timed_out: yes"
+    fi
+    printf 'argv:'
+    printf ' %q' "$drive_bin" "$@"
+    echo
+    echo "exit: $exit_label"
+    echo "--- stdout ---"
+    read_regular "$stdout_file"
+    echo "--- stderr ---"
+    read_regular "$stderr_file"
+  } | write_nofollow "$EVIDENCE/${evidence}.txt" 0600
+}
+
+preserve_stream() {
+  local src=$1 dest=$2
+  if [[ -L "$src" ]]; then
+    die "refusing to read a symlink: $src"
+  fi
+  if [[ -f "$src" ]]; then
+    copy_nofollow "$src" "$dest" 0600
+  else
+    write_nofollow "$dest" 0600 </dev/null
+  fi
+}
+
+cmd_cli() {
+  require_run_id
+  local feature="" evidence="cli" timeout=60 cwd="" bin_override=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --feature)
+        feature=$2
+        shift 2
+        ;;
+      --evidence)
+        evidence=$2
+        shift 2
+        ;;
+      --timeout)
+        timeout=$2
+        shift 2
+        ;;
+      --cwd)
+        cwd=$2
+        shift 2
+        ;;
+      --bin)
+        bin_override=$2
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        die "unknown flag $1 (use -- before the charms arguments)"
+        ;;
+    esac
+  done
+  [[ $# -ge 1 ]] || die "missing charms arguments after --"
+  [[ "$evidence" =~ ^[A-Za-z0-9._-]+$ ]] || die "--evidence must match [A-Za-z0-9._-]+"
+  [[ "$timeout" =~ ^[0-9]+$ ]] || die "--timeout must be a whole number of seconds"
+  prepare_run_dirs
+  local drive_bin
+  if [[ -n "$bin_override" ]]; then
+    drive_bin=$(canonical_path "$bin_override")
+    local target_root
+    target_root=$(fixed_target_dir)
+    case "$drive_bin" in
+      "$target_root"/*) ;;
+      *) die "--bin must stay under $target_root (resolved to $drive_bin)" ;;
+    esac
+    [[ -f "$drive_bin" && -x "$drive_bin" && ! -L "$drive_bin" ]] || die "--bin is not an executable file: $drive_bin"
+    cmd_doctor "$drive_bin" >/dev/null
+  else
+    cmd_doctor >/dev/null
+    drive_bin=$(state_field binary)
+    [[ -n "$drive_bin" && -x "$drive_bin" && ! -L "$drive_bin" ]] || die "launch did not record an executable binary"
+  fi
+  if [[ -z "$cwd" ]]; then
+    cwd=$WORK
+  else
+    [[ -d "$cwd" && ! -L "$cwd" ]] || die "--cwd is not a directory: $cwd"
+    cwd=$(canonical_path "$cwd")
+    case "$cwd" in
+      "$WORK"|"$WORK"/*) ;;
+      *) die "--cwd must stay inside $WORK (resolved to $cwd)" ;;
+    esac
+  fi
+
+  local session="charms-verify-${RUN_ID}-${evidence}"
+  local runner="$WORK/runners/${evidence}.sh"
+  local env_file="$WORK/runners/${evidence}.env"
+  local stdout_file="$WORK/out/${evidence}.stdout"
+  local stderr_file="$WORK/out/${evidence}.stderr"
+  local pane_token exit_file
+  pane_token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+  exit_file="$WORK/out/${evidence}.$(python3 -c 'import secrets; print(secrets.token_hex(8))').code"
+
+  {
+    echo "#!/bin/bash"
+    echo "set +e"
+    printf 'unset'
+    printf ' %q' "${FORWARDED_ENV[@]}"
+    echo
+    printf 'env_file=%q\n' "$env_file"
+    cat <<'EOS'
+if [[ -f "$env_file" && ! -L "$env_file" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$env_file"
+  set +a
+fi
+EOS
+    printf 'cmd=('
+    printf '%q ' "$drive_bin" "$@"
+    echo ')'
+    echo 'printf "COMMAND:"'
+    echo 'printf " %q" "${cmd[@]}"'
+    echo 'printf "\n"'
+    printf 'stdout_file=%q\n' "$stdout_file"
+    printf 'stderr_file=%q\n' "$stderr_file"
+    cat <<'EOS'
+python3 -c '
+import os, sys
+out_path, err_path = sys.argv[1], sys.argv[2]
+cmd = sys.argv[3:]
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+out_fd = os.open(out_path, flags, 0o600)
+err_fd = os.open(err_path, flags, 0o600)
+os.dup2(out_fd, 1)
+os.dup2(err_fd, 2)
+os.close(out_fd)
+os.close(err_fd)
+os.execv(cmd[0], cmd)
+' "$stdout_file" "$stderr_file" "${cmd[@]}"
+code=$?
+EOS
+    printf 'exit_file=%q\n' "$exit_file"
+    cat <<'EOS'
+python3 -c '
+import os, sys
+path = sys.argv[1]
+data = sys.stdin.buffer.read()
+partial = path + ".partial"
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+fd = os.open(partial, flags, 0o600)
+try:
+    os.fchmod(fd, 0o600)
+    os.write(fd, data)
+finally:
+    os.close(fd)
+os.rename(partial, path)
+' "$exit_file" <<<"$code"
+EOS
+    echo 'echo "EXIT:$code"'
+    echo 'echo "--- stdout ---"'
+    echo "cat $(printf '%q' "$stdout_file")"
+    echo 'echo "--- stderr ---"'
+    echo "cat $(printf '%q' "$stderr_file")"
+    echo "echo CHARMS_VERIFY_PANE_DONE:${pane_token}"
+  } | write_nofollow "$runner" 0700
+  write_caller_env "$env_file"
+
+  printf '%s\n' "$session" | append_nofollow "$STATE/sessions" 0600
+  "${TMUX[@]}" new-session -d -s "$session" -c "$cwd" -- bash --noprofile --norc
+  "${TMUX[@]}" set-option -t "$session" remain-on-exit on
+  local pane="" ready_deadline=$((SECONDS + 10))
+  while (( SECONDS < ready_deadline )); do
+    pane=$("${TMUX[@]}" capture-pane -pt "$session" -S -20 || true)
+    if [[ -n "$pane" ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  "${TMUX[@]}" send-keys -t "$session" "bash $(printf '%q' "$runner")" C-m
+
+  local deadline=$((SECONDS + timeout))
+  local timed_out=0
+  local pane_marker="CHARMS_VERIFY_PANE_DONE:${pane_token}"
+  pane=""
+  while true; do
+    if [[ -f "$exit_file" && ! -L "$exit_file" ]]; then
+      pane=$(capture_pane "$session")
+      if [[ "$pane" == *"$pane_marker"* ]]; then
+        break
+      fi
+    fi
+    if (( SECONDS >= deadline )); then
+      timed_out=1
+      pane=$(capture_pane "$session")
+      break
+    fi
+    sleep 0.2
+  done
+
+  if (( timed_out )); then
+    "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+    write_transcript "$evidence" "$feature" "$drive_bin" timeout "$stdout_file" "$stderr_file" "$@"
+    printf '%s\n' "$pane" | write_nofollow "$EVIDENCE/${evidence}.pane.txt" 0600
+    preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+    preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+    printf '%s\n' timeout | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
+    remove_regular_file "$exit_file"
+    remove_regular_file "${exit_file}.partial"
+    echo "control-charms: timed out after ${timeout}s; transcript $EVIDENCE/${evidence}.txt" >&2
+    return 1
+  fi
+
+  local code
+  code=$(read_regular "$exit_file")
+  code=${code//$'\n'/}
+  [[ "$code" =~ ^[0-9]+$ ]] || die "exit file is not a numeric code: $exit_file"
+  write_transcript "$evidence" "$feature" "$drive_bin" "$code" "$stdout_file" "$stderr_file" "$@"
+  printf '%s\n' "$pane" | write_nofollow "$EVIDENCE/${evidence}.pane.txt" 0600
+  preserve_stream "$stdout_file" "$EVIDENCE/${evidence}.stdout"
+  preserve_stream "$stderr_file" "$EVIDENCE/${evidence}.stderr"
+  printf '%s\n' "$code" | write_nofollow "$EVIDENCE/${evidence}.exit" 0600
+  remove_regular_file "$exit_file"
+  remove_regular_file "${exit_file}.partial"
+
+  "${TMUX[@]}" kill-session -t "=$session" || true
+  return "$code"
+}
+
+remove_private_tree() {
+  local path=$1 label=$2
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return
+  fi
+  assert_private_dir "$path" "$label"
+  rm -rf -- "$path"
+}
+
+cmd_cleanup() {
+  require_run_id
+  private_roots
+  ensure_under_root "$WORK_ROOT" "$WORK" "work directory" no
+  ensure_under_root "$STATE_ROOT" "$STATE" "state directory" no
+  if [[ -d "$STATE" && ! -L "$STATE" ]]; then
+    if [[ -L "$STATE/sessions" ]]; then
+      die "state sessions file is a symlink: $STATE/sessions"
+    fi
+    if [[ -f "$STATE/sessions" ]]; then
+      local session
+      while IFS= read -r session; do
+        [[ -n "$session" ]] || continue
+        "${TMUX[@]}" kill-session -t "=$session" 2>/dev/null || true
+      done <"$STATE/sessions"
+    fi
+  fi
+  remove_private_tree "$WORK" "work directory"
+  remove_private_tree "$STATE" "state directory"
+  if [[ -d "$EVIDENCE" && ! -L "$EVIDENCE" ]]; then
+    echo "evidence kept at $EVIDENCE"
+  else
+    echo "no evidence directory at $EVIDENCE"
+  fi
+}
+
+usage() {
+  echo "usage: control-charms launch|doctor|cli|cleanup" >&2
+  exit 2
+}
+
+[[ $# -ge 1 ]] || usage
+case "$1" in
+  launch) shift; cmd_launch "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  cli) shift; cmd_cli "$@" ;;
+  cleanup) shift; cmd_cleanup "$@" ;;
+  *) usage ;;
+esac
