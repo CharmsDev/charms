@@ -4,7 +4,6 @@ use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::Serialize;
 use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
 use sha3::{Digest, Keccak256};
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 pub const ENVELOPE_PREFIX: &[u8] = b"CHET";
@@ -65,35 +64,7 @@ pub struct PlaceholderPlan {
 
 impl EthereumTx {
     pub fn eth_tx_id(&self) -> [u8; 32] {
-        eth_tx_id(
-            self.chain_id,
-            &self.charms,
-            self.anchor,
-            self.spell_in_id().as_ref(),
-        )
-    }
-
-    fn spell_in_id(&self) -> Cow<'_, [u8]> {
-        let Ok(mut spell) = self.decode() else {
-            return Cow::Borrowed(&self.spell);
-        };
-        let Some(beams) = &spell.tx.beamed_outs else {
-            return Cow::Borrowed(&self.spell);
-        };
-        let Some(coins) = &spell.tx.coins else {
-            return Cow::Borrowed(&self.spell);
-        };
-        let source_hashes = !beams.is_empty()
-            && beams.keys().all(|index| {
-                coins
-                    .get(*index as usize)
-                    .is_some_and(|coin| coin.dest.iter().any(|byte| *byte != 0))
-            });
-        if !source_hashes {
-            return Cow::Borrowed(&self.spell);
-        }
-        spell.tx.beamed_outs = None;
-        Cow::Owned(util::write(&spell).expect("spell CBOR"))
+        eth_tx_id(self.chain_id, &self.charms, self.anchor, &self.spell)
     }
 
     pub fn decode(&self) -> anyhow::Result<NormalizedSpell> {
@@ -115,19 +86,11 @@ impl EnchantedTx for EthereumTx {
             self.proof.is_empty(),
             "ethereum placeholder proof must be empty"
         );
-        let mut spell = self.decode()?;
+        let spell = self.decode()?;
         if !mock {
             ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
         }
-        let beams = spell.tx.beamed_outs.take();
-        let (mut committed, _) = committed_placeholder(&spell)?;
-        if let Some(beams) = beams {
-            ensure!(
-                beams.keys().copied().eq(0..committed.tx.outs.len() as u32),
-                "beamed_outs must name every placeholder output"
-            );
-            committed.tx.beamed_outs = Some(beams);
-        }
+        let (committed, _) = committed_placeholder(&spell)?;
         let canonical = util::write(&committed)?;
         ensure!(
             self.spell == canonical,
@@ -225,13 +188,14 @@ pub fn plan_placeholder(
     spell: &NormalizedSpell,
     request: &PlaceholderRequest,
 ) -> anyhow::Result<PlaceholderPlan> {
-    let (executed, owners) = committed_placeholder(spell)?;
+    let (committed, owners) = committed_placeholder(spell)?;
+    let spell_cbor = util::write(&committed)?;
     let anchor = placeholder_anchor(request.caller, request.salt);
     let record = EthereumTx {
         chain_id: request.chain_id,
         charms: request.charms,
         anchor: Some(anchor),
-        spell: util::write(&executed)?,
+        spell: spell_cbor,
         proof: Vec::new(),
         caller: Some(request.caller),
         salt: Some(request.salt),
@@ -239,23 +203,13 @@ pub fn plan_placeholder(
     let tx_id = record.tx_id();
     let mut utxo_ids = Vec::with_capacity(owners.len());
     let mut beamed_outs = BTreeMap::new();
-    let mut beams = BTreeMap::new();
     for (index, _) in owners.iter().enumerate() {
         let utxo_id = UtxoId(tx_id, index as u32);
         let hash = utxo_id_hash_with_nonce(&utxo_id, request.nonce);
         beamed_outs.insert(index.to_string(), hex::encode(hash.0));
-        beams.insert(index as u32, hash);
         utxo_ids.push(utxo_id.to_string());
     }
-    let mut recorded = executed;
-    if request.nonce.is_some() {
-        recorded.tx.beamed_outs = Some(beams);
-    }
-    let record = EthereumTx {
-        spell: util::write(&recorded)?,
-        ..record
-    };
-    let data = transact_calldata(recorded.version, &owners, request.salt);
+    let data = transact_calldata(committed.version, &owners, request.salt);
     Ok(PlaceholderPlan {
         tx_id: tx_id.to_string(),
         utxo_ids,
@@ -537,25 +491,11 @@ mod tests {
     }
 
     #[test]
-    fn nonce_is_written_into_the_spell() {
+    fn nonce_changes_only_the_beam_hash() {
         let plan = plan_placeholder(&spell(1), &request(Some(1))).unwrap();
         assert_eq!(plan.tx_id, TX_ID);
-        assert_eq!(plan.record.tx_id().to_string(), TX_ID);
         assert_eq!(plan.beamed_outs["0"], BEAM_NONCE_1);
         assert_ne!(plan.beamed_outs["0"], BEAM);
-        assert_ne!(hex::encode(&plan.record.spell), CBOR);
-        assert_eq!(plan.call.data, CALL);
-        let decoded = plan.record.decode().unwrap();
-        let beams = decoded.tx.beamed_outs.unwrap();
-        assert_eq!(hex::encode(beams[&0].0), BEAM_NONCE_1);
-        let shown = plan
-            .record
-            .extract_and_verify_spell(&[0u8; 32], false)
-            .unwrap();
-        assert_eq!(
-            hex::encode(shown.tx.beamed_outs.unwrap()[&0].0),
-            BEAM_NONCE_1
-        );
     }
 
     #[test]

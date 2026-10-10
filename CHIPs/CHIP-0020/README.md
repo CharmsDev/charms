@@ -98,8 +98,6 @@ The record carries `chain_id`, `charms`, `anchor`, `spell`, and `proof`. It also
 
 `charms tx build --chain ethereum` takes that `tx` and no other spell input. It constructs the signable `transact` call. That call is what gets executed. The wallet adds the account nonce, the gas fields, and the signature.
 
-`--nonce` is optional on that prove command. When it is set, the spell inside `tx` gains `beamed_outs`. The value at output `i` is SHA-256 of that output's `UtxoId` with the nonce appended as a little-endian u64. Omit the flag when the source beam has no nonce. The outputs stay owned empty UTXOs, so the map is not a beamed output. Phase 1 reverts on `beamedOuts`. `eth_tx_id` hashes the spell with that map removed, and `tx build` removes it before encoding `transact`. The executed spell is the one in the id. `tx` is still the only input.
-
 The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`, and the Bitcoin or Cardano claim is an ordinary spell.
 
 ## Contracts
@@ -486,9 +484,7 @@ Charms byte order, which Cardano already follows in `cardano_tx::tx_id`:
 | Display / `FromStr` | `hex(ethTxId):index`, because `Display` reverses `TxId.0` again. |
 | Beam hash | `SHA256(to_bytes() \|\| optional nonce as u64 little-endian)`. Unchanged. `beamed_outs[i]` is that hash. `BeamSource` is unchanged. |
 
-`ethTxId` is fixed once the spell CBOR, the caller, the salt, the chain id, and the proxy address are fixed. That is before the Ethereum transaction is mined. Signers hash that preimage locally. `Transaction.txId` in the log is the same `ethTxId`, published when the transaction is mined. The source chain puts the beam hash of that id into its own `beamed_outs`. `transact` recomputes the id and checks EIP-712 `Spend` signatures against it.
-
-`spell prove --chain ethereum --nonce` also writes those hashes into the placeholder spell. The id preimage drops that `beamed_outs` map, because every output still has an owner. The hashes are of the id that remains. `tx build` drops the same map, so the spell the contract encodes is the preimage.
+`ethTxId` is fixed once the spell CBOR, the caller, the salt, the chain id, and the proxy address are fixed. That is before the Ethereum transaction is mined. Signers hash that preimage locally. `Transaction.txId` in the log is the same `ethTxId`, published when the transaction is mined. The source chain puts the beam hash of that id into `beamed_outs`. `transact` recomputes the id and checks EIP-712 `Spend` signatures against it.
 
 `Spend` uses its own EIP-712 domain. It is not the token's `permit` domain, and `CharmToken.DOMAIN_SEPARATOR` is only for `permit`.
 
@@ -771,7 +767,7 @@ One new guard in `is_correct`, beside `beaming_txs_have_finality_proofs`. Every 
 | `fee_rate` | Ignored. The wallet prices gas. |
 | `collateral_utxo` | Absent. |
 
-An empty UTXO has no apps. It mints nothing and burns nothing. `spell prove` builds that record locally, takes no `--prev-txs`, and does not call the prover. `proof` stays empty. Optional `--nonce` writes each output's beam hash into the spell's `beamed_outs`. The id and the executed spell omit that map. The printed `tx` is the only spell input `tx build` needs. `tx build` constructs the signable `transact` call, and that call is what gets executed.
+An empty UTXO has no apps. It mints nothing and burns nothing. `spell prove` builds that record locally, takes no `--prev-txs`, and does not call the prover. `proof` stays empty. The printed `tx` is the only spell input `tx build` needs. `tx build` constructs the signable `transact` call, and that call is what gets executed.
 
 The CLI decides the native path for any other spell too. If the spell is `t` and `n` only, sums and NFT sets match, public inputs are null, there is no `--beamed-from`, and pins are unchanged, it builds the record locally and leaves `proof` empty. Otherwise it calls `POST /spells/prove`. The response is `vec![Tx::Ethereum(Simple(...))]`, with the proof filled in when the spell is not native.
 
@@ -781,8 +777,8 @@ CLI:
 
 | Command | Behavior |
 |---|---|
-| `spell prove --chain ethereum` | For an empty UTXO, prints JSON whose only field is `tx`. No `--prev-txs`. Nothing is minted or burned, so the prover is not called. `tx` is the Charms record. It is enough for `tx build` to construct the signable `transact` call. `--caller` and `--salt` are required when `ins` is empty. Optional `--nonce` writes each output's beam hash into the spell's `beamed_outs`. `--change-address` stays required for Bitcoin and Cardano only. |
-| `tx build --chain ethereum` | Takes that `tx` and constructs the signable `transact` call. It drops `beamed_outs` entries whose outputs still have owners, then encodes `transact`. That call is what gets executed. |
+| `spell prove --chain ethereum` | For an empty UTXO, prints JSON whose only field is `tx`. No `--prev-txs`. Nothing is minted or burned, so the prover is not called. `tx` is the Charms record. It is enough for `tx build` to construct the signable `transact` call. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
+| `tx build --chain ethereum` | Takes that `tx` and constructs the signable `transact` call. That call is what gets executed. |
 | `spell check --chain ethereum` | Runs `is_correct` once the guest knows Ethereum prev txs. Before that, it runs the native predicate and refuses a spell that would need a proof. |
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |
