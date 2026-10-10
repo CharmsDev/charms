@@ -79,7 +79,6 @@ A vault app does not follow the clone path above. `tokenAddress` and `ensureToke
 Beaming uses the fields that already exist.
 
 ```bash
-# Placeholder on Ethereum. No proof. The id is known before submission.
 charms spell prove --chain ethereum --spell placeholder.yaml \
   --caller 0xAlice --salt 0x… > ph.json
 charms tx build --chain ethereum --tx "$(jq -c .tx ph.json)"

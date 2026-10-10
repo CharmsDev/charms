@@ -217,12 +217,6 @@ pub struct SpellProveParams {
     #[arg(long)]
     charms: Option<String>,
 
-    /// Beam nonce for an Ethereum placeholder. Requires `--chain ethereum`.
-    /// The printed record does not include it. The source spell appends this
-    /// little-endian u64 when it hashes the destination UTXO id.
-    #[arg(long)]
-    nonce: Option<u64>,
-
     /// Use mock mode (skip proof generation).
     #[arg(long, default_value = "false", hide_env = true)]
     mock: bool,
@@ -325,13 +319,13 @@ pub enum SpellCommands {
     /// Check spell correctness by running app contracts locally (no proof generation).
     #[command(after_long_help = SPELL_DATA_HELP)]
     Check(#[command(flatten)] SpellCheckParams),
-    /// Prove spell correctness and build a chain transaction.
+    /// Prove a spell and print the chain result.
     ///
     /// Bitcoin prints a JSON array of hex-encoded transactions.
     /// Cardano prints a Ledger CDDL JSON envelope.
-    /// Ethereum prints JSON with one field, `tx`. That value is the Charms record.
-    /// It is not a signable contract call. An empty UTXO does not call the prover
-    /// and does not take `--prev-txs`.
+    /// Ethereum prints the Charms record as JSON with one field, `tx`.
+    /// That record is not a signable contract call. The command does not
+    /// call the prover and does not take `--prev-txs`.
     #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
     /// Print the current protocol version and spell verification key (VK) as JSON to stdout.
@@ -753,46 +747,6 @@ app_public_inputs: {}
     }
 
     #[test]
-    fn ethereum_prove_nonce_leaves_the_record_unchanged() {
-        let path = spell_file("nonce", placeholder_spell());
-        let cli = Cli::try_parse_from([
-            "charms",
-            "spell",
-            "prove",
-            "--chain",
-            "ethereum",
-            "--spell",
-            path.to_str().unwrap(),
-            "--caller",
-            "1111111111111111111111111111111111111111",
-            "--salt",
-            "0000000000000000000000000000000000000000000000000000000000000007",
-            "--chain-id",
-            "1",
-            "--charms",
-            "3333333333333333333333333333333333333333",
-            "--nonce",
-            "1",
-        ])
-        .unwrap();
-        let Commands::Spell {
-            command: SpellCommands::Prove(params),
-        } = cli.command
-        else {
-            panic!("spell prove");
-        };
-        let json: serde_json::Value =
-            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
-        assert_eq!(
-            json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["tx"]
-        );
-        let tx: charms_client::tx::Tx = serde_json::from_value(json["tx"].clone()).unwrap();
-        assert_eq!(tx.tx_id().to_string(), TX_ID);
-        let _ = fs::remove_file(path);
-    }
-
-    #[test]
     fn ethereum_prove_for_an_empty_utxo_takes_no_prev_txs() {
         let path = spell_file("prev", placeholder_spell());
         let cli = Cli::try_parse_from([
@@ -864,7 +818,6 @@ app_public_inputs: {}
     #[tokio::test]
     async fn bitcoin_and_cardano_prove_reject_ethereum_options() {
         let cases = [
-            ("--nonce", "1", "--nonce requires --chain ethereum"),
             ("--caller", "11", "--caller requires --chain ethereum"),
             ("--salt", "00", "--salt requires --chain ethereum"),
             ("--chain-id", "1", "--chain-id requires --chain ethereum"),

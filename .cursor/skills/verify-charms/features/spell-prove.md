@@ -13,7 +13,7 @@
 
 - Run `charms spell vk [--mock]`.
 - Run `charms spell prove --spell <file> --change-address <address> [--chain bitcoin|cardano] [--payload] [--fee-rate <sats/vB>]`.
-- Run `charms spell prove --chain ethereum --spell <file> --caller <address> --salt <32-byte-hex> --chain-id <id> --charms <proxy> [--nonce <u64>]`.
+- Run `charms spell prove --chain ethereum --spell <file> --caller <address> --salt <32-byte-hex> --chain-id <id> --charms <proxy>`.
 - For a real proof, run `charms-prover spell prove` as documented under **Network proof** below.
 
 ## Driving it with control-charms
@@ -47,7 +47,7 @@ app_public_inputs: {}
 - The launch binary prints `"prover":false`. `charms-prover` prints `"prover":true`. A mismatch means the wrong binary was driven. Select the prover with `--bin`, not with `CHARMS_BIN`. Doctor keeps using the binary launch recorded unless `--bin` is set.
 - `spell vk` prefixes the key with `0x`. `app vk` does not.
 - `--payload` still requires `--change-address` on Bitcoin and Cardano. It returns before any HTTP call. A dead `CHARMS_PROVE_API_URL` must not fail this entry. The same URL must fail a prove that omits `--payload`, and that failure is not a generated proof.
-- Ethereum placeholders reject `--mock`, `--payload`, `--change-address`, `--prev-txs`, `--beamed-from`, `--app-bins`, `--private-inputs`, `--app-signatures`, and `--collateral-utxo`. Bitcoin and Cardano reject `--caller`, `--salt`, `--chain-id`, `--charms`, and `--nonce`.
+- Ethereum placeholders reject `--mock`, `--payload`, `--change-address`, `--prev-txs`, `--beamed-from`, `--app-bins`, `--private-inputs`, `--app-signatures`, and `--collateral-utxo`. Bitcoin and Cardano reject `--caller`, `--salt`, `--chain-id`, and `--charms`.
 - A short `--salt` fails with `expected 32 bytes`.
 - `--fee-rate` must be at least `1.0` for Bitcoin and Cardano. The default is `2.0`.
 - `SPELL_SP1_PROVER` must be `network` or `app` on the prover binary. Any other value, including unset, panics. `APP_SP1_PROVER` for a network proof is `network`. `cuda` is unimplemented.

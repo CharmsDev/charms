@@ -14,8 +14,7 @@ pub const TRANSACT_SIGNATURE: &str = "transact((uint32,(uint32,bytes32,bytes32)[
 
 /// One Ethereum Charms record. The id is `keccak256` of the CHIP-0020 preimage, not the
 /// Ethereum transaction hash. `anchor` is set only when `ins` is empty. `caller` and `salt`
-/// are that anchor's preimage when it is set. They are not part of the id. `proof` is empty
-/// on the native path and is not part of the id.
+/// are not part of the id. `proof` is empty on the native path and is not part of the id.
 #[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct EthereumTx {
