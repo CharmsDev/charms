@@ -325,7 +325,6 @@ fn reject_ethereum_only_options(params: &SpellProveParams) -> Result<()> {
         params.charms.is_none(),
         "--charms requires --chain ethereum"
     );
-    ensure!(params.nonce.is_none(), "--nonce requires --chain ethereum");
     Ok(())
 }
 
@@ -393,16 +392,11 @@ pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<Str
             charms,
             caller,
             salt,
-            nonce: params.nonce,
+            nonce: None,
         },
     )?;
     let body = json!({
         "tx": Tx::Ethereum(plan.record),
-        "tx_id": plan.tx_id,
-        "utxo_ids": plan.utxo_ids,
-        "beamed_outs": plan.beamed_outs,
-        "nonce": plan.nonce,
-        "call": plan.call,
     });
     Ok(serde_json::to_string(&body)?)
 }
