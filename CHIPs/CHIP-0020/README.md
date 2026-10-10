@@ -96,7 +96,7 @@ charms spell prove --chain ethereum --spell claim.yaml \
 
 The record carries `chain_id`, `charms`, `anchor`, `spell`, and `proof`. It also carries `caller` and `salt`, the preimage of `anchor`. `eth_tx_id` does not hash `caller` or `salt`. A wallet cannot sign the record.
 
-`charms tx build --chain ethereum` takes that `tx` and no other spell input. It constructs the signable `transact` call. That call is what gets executed. The wallet adds the account nonce, the gas fields, and the signature.
+`charms tx build --chain ethereum` takes that `tx` and no other spell input. It encodes the committed spell inside that record as `transact` calldata. It prints one JSON object with `from`, `to`, `data`, and `value`. `data` is the calldata. `from` is the caller that must send the call. `to` is the Charms proxy. `value` is `0`. That call is what gets executed. The wallet adds the account nonce, the gas fields, and the signature.
 
 The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`, and the Bitcoin or Cardano claim is an ordinary spell.
 
@@ -778,7 +778,7 @@ CLI:
 | Command | Behavior |
 |---|---|
 | `spell prove --chain ethereum` | For an empty UTXO, prints JSON whose only field is `tx`. No `--prev-txs`. Nothing is minted or burned, so the prover is not called. `tx` is the Charms record. It is enough for `tx build` to construct the signable `transact` call. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
-| `tx build --chain ethereum` | Takes that `tx` and constructs the signable `transact` call. That call is what gets executed. |
+| `tx build --chain ethereum` | Takes that `tx` and prints `{from, to, data, value}`. `data` is `transact` calldata for the spell inside the record. That call is what gets executed. |
 | `spell check --chain ethereum` | Runs `is_correct` once the guest knows Ethereum prev txs. Before that, it runs the native predicate and refuses a spell that would need a proof. |
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |

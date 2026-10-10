@@ -93,7 +93,7 @@ Do not run the binary in the repository root. `charms app keygen` with no `--out
 Stable command handles, not tab order:
 
 - `charms spell check`, `charms spell prove`, `charms spell vk`
-- `charms tx show-spell`
+- `charms tx show-spell`, `charms tx build`
 - `charms app new`, `charms app build`, `charms app vk`, `charms app keygen`, `charms app sign`, `charms app verify`
 - `charms util dest`
 
