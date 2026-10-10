@@ -79,18 +79,25 @@ A vault app does not follow the clone path above. `tokenAddress` and `ensureToke
 Beaming uses the fields that already exist.
 
 ```bash
-# Placeholder on Ethereum. No proof. The id is known before the transaction is sent.
+# Placeholder on Ethereum. No proof. The id is known before submission.
 charms spell prove --chain ethereum --spell placeholder.yaml \
   --caller 0xAlice --salt 0x… > ph.json
-cast send "$CHARMS" "$(jq -r .call.data ph.json)"
+charms tx build --chain ethereum --tx "$(jq -c .tx ph.json)"
 
 # Bitcoin beams to sha256(UtxoId::to_bytes() of that id), as it does today.
 # After Bitcoin finality, claim on Ethereum.
 # A claim is not a local simple transfer, so it has a proof.
 charms spell prove --chain ethereum --spell claim.yaml \
   --beamed-from '{0: ["<btc-txid>:<vout>"]}' \
-  --prev-txs "$(jq -c .tx ph.json)" --prev-txs btc-with-block-proof.json > claim.json
+  --prev-txs "$(jq -c .tx ph.json)" \
+  --prev-txs btc-with-block-proof.json > claim.json
 ```
+
+`ph.json` has one field, `tx`. That value is the Charms record for an empty UTXO. `spell prove` takes no `--prev-txs`. The spell mints nothing and burns nothing, so the command does not call the prover.
+
+The record carries `chain_id`, `charms`, `anchor`, `spell`, and `proof`. It also carries `caller` and `salt`, the preimage of `anchor`. `eth_tx_id` does not hash `caller` or `salt`. A wallet cannot sign the record.
+
+`charms tx build --chain ethereum` takes that `tx` and no other spell input. It constructs the signable `transact` call. That call is what gets executed. The wallet adds the account nonce, the gas fields, and the signature.
 
 The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`, and the Bitcoin or Cardano claim is an ordinary spell.
 
@@ -162,8 +169,8 @@ interface ICharmsLedger {
     /// @notice Move `amount` of `app` from `from` to `to` by spending whole UTXOs and
     /// creating change.
     /// @dev `app.tag` must be `t`, and `app` must not be a vault. Only the CREATE2
-    /// `CharmToken` for that app may call this. The token has already checked `msg.sender`
-    /// and the allowance. A vault charm moves through `transact`.
+    /// `CharmToken` for that app may call this. The token has already checked
+    /// `msg.sender` and the allowance. A vault charm moves through `transact`.
     function tokenTransfer(
         ICharmsTypes.App calldata app,
         address from,
@@ -306,9 +313,9 @@ interface ICharmTokenHooks {
     function emitTransfer(address from, address to, uint256 amount) external;
 }
 
-/// @notice User-facing ERC-20 for one non-vault fungible charm, tag `t`. Wallets, routers,
-/// and DeFi call this. One per such app. A vault app has no clone. NFT, Scroll, custom-tag,
-/// and empty UTXOs are not this interface.
+/// @notice User-facing ERC-20 for one non-vault fungible charm, tag `t`.
+/// Wallets, routers, and DeFi call this. One per such app. A vault app has
+/// no clone. NFT, Scroll, custom-tag, and empty UTXOs are not this interface.
 /// @dev The deployed bytecode forwards calldata plus the packed `App` and a `uint16`
 /// length, then `delegatecall`s a shared implementation.
 /// Implements IERC-20, IERC-20 metadata, and EIP-2612. Allowances and permit nonces live
@@ -729,9 +736,11 @@ pub enum EthereumTx {
 pub struct EthTransact {
     pub chain_id: u64,
     pub charms: [u8; 20],
-    pub anchor: Option<[u8; 32]>, // present only for zero-input transactions
-    pub spell: Vec<u8>,           // committed CBOR, the exact preimage bytes
-    pub proof: Vec<u8>,           // empty on the native path; not part of the id
+    pub anchor: Option<[u8; 32]>, // set only when ins is empty
+    pub spell: Vec<u8>,           // committed CBOR, the id preimage
+    pub proof: Vec<u8>,           // empty on the native path; not in the id
+    pub caller: Option<[u8; 20]>, // anchor preimage; not in the id
+    pub salt: Option<[u8; 32]>,   // anchor preimage; not in the id
 }
 ```
 
@@ -759,7 +768,9 @@ One new guard in `is_correct`, beside `beaming_txs_have_finality_proofs`. Every 
 | `fee_rate` | Ignored. The wallet prices gas. |
 | `collateral_utxo` | Absent. |
 
-The response is `vec![Tx::Ethereum(Simple(...))]` with the proof filled in when the spell is not native. The CLI, not the server, decides the native path: if the spell is `t`/`n` only, sums and NFT sets match, public inputs are null, there is no `--beamed-from`, and pins are unchanged, it builds the record locally and leaves `proof` empty. Otherwise it calls `POST /spells/prove` as it does today.
+An empty UTXO has no apps. It mints nothing and burns nothing. `spell prove` builds that record locally, takes no `--prev-txs`, and does not call the prover. `proof` stays empty. The printed `tx` is the only spell input `tx build` needs. `tx build` constructs the signable `transact` call, and that call is what gets executed.
+
+The CLI decides the native path for any other spell too. If the spell is `t` and `n` only, sums and NFT sets match, public inputs are null, there is no `--beamed-from`, and pins are unchanged, it builds the record locally and leaves `proof` empty. Otherwise it calls `POST /spells/prove`. The response is `vec![Tx::Ethereum(Simple(...))]`, with the proof filled in when the spell is not native.
 
 `CharmsFee.fee_rate` and `fee_base` stay in sats, as in `charms-client/src/request.rs`. Ethereum does not reuse those fields as wei, and this design does not add a wei field to `CharmsFee`. `transact` does not charge a Charms fee. The wallet pays Ethereum gas. `ProveRequest.fee_rate` is ignored for `chain = ethereum`.
 
@@ -767,7 +778,8 @@ CLI:
 
 | Command | Behavior |
 |---|---|
-| `spell prove --chain ethereum` | Prints JSON `{tx, tx_id, utxo_ids, call: {to, data, value}}`. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
+| `spell prove --chain ethereum` | For an empty UTXO, prints JSON whose only field is `tx`. No `--prev-txs`. Nothing is minted or burned, so the prover is not called. `tx` is the Charms record. It is enough for `tx build` to construct the signable `transact` call. `--caller` and `--salt` are required when `ins` is empty. `--change-address` stays required for Bitcoin and Cardano only. |
+| `tx build --chain ethereum` | Takes that `tx` and constructs the signable `transact` call. That call is what gets executed. |
 | `spell check --chain ethereum` | Runs `is_correct` once the guest knows Ethereum prev txs. Before that, it runs the native predicate and refuses a spell that would need a proof. |
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
 | `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |

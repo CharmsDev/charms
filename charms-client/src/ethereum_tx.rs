@@ -12,9 +12,10 @@ const MAX_OUTPUTS: usize = 64;
 
 pub const TRANSACT_SIGNATURE: &str = "transact((uint32,(uint32,bytes32,bytes32)[],bytes[],(bytes32,uint32,bytes32)[],((bytes32,uint32),(uint32,uint64,bytes)[],(bytes32,uint32,bytes32)[])[],(bytes32,uint32)[],(address,(uint32,uint64,bytes)[])[],(uint32,bytes32)[],uint32[]),bytes32,bytes,bytes[])";
 
-/// One Ethereum Charms transaction. The id is `keccak256` of the CHIP-0020 preimage, not the
-/// Ethereum transaction hash. `anchor` is set only when `ins` is empty. `proof` is empty on the
-/// native path and is not part of the id.
+/// One Ethereum Charms record. The id is `keccak256` of the CHIP-0020 preimage, not the
+/// Ethereum transaction hash. `anchor` is set only when `ins` is empty. `caller` and `salt`
+/// are that anchor's preimage when it is set. They are not part of the id. `proof` is empty
+/// on the native path and is not part of the id.
 #[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct EthereumTx {
@@ -28,6 +29,12 @@ pub struct EthereumTx {
     pub spell: Vec<u8>,
     #[serde_as(as = "IfIsHumanReadable<Hex>")]
     pub proof: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<IfIsHumanReadable<Hex>>")]
+    pub caller: Option<[u8; 20]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<IfIsHumanReadable<Hex>>")]
+    pub salt: Option<[u8; 32]>,
 }
 
 pub struct PlaceholderRequest {
@@ -191,6 +198,8 @@ pub fn plan_placeholder(
         anchor: Some(anchor),
         spell: spell_cbor,
         proof: Vec::new(),
+        caller: Some(request.caller),
+        salt: Some(request.salt),
     };
     let tx_id = record.tx_id();
     let mut utxo_ids = Vec::with_capacity(owners.len());
@@ -447,6 +456,12 @@ mod tests {
         assert_eq!(plan.call.from, "0x1111111111111111111111111111111111111111");
         assert_eq!(plan.call.to, "0x3333333333333333333333333333333333333333");
         assert_eq!(plan.call.value, "0");
+        assert_eq!(plan.record.caller, Some(request(None).caller));
+        assert_eq!(plan.record.salt, Some(request(None).salt));
+        assert_eq!(
+            plan.record.anchor,
+            Some(placeholder_anchor(request(None).caller, request(None).salt))
+        );
         assert!(plan.record.proof.is_empty());
         assert!(!plan.record.proven_final());
 
@@ -547,6 +562,8 @@ app_public_inputs: {}
             anchor: Some([7u8; 32]),
             spell: util::write(&carried).unwrap(),
             proof: Vec::new(),
+            caller: None,
+            salt: None,
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)
@@ -562,6 +579,8 @@ app_public_inputs: {}
             anchor: Some([7u8; 32]),
             spell: util::write(&charm_only).unwrap(),
             proof: Vec::new(),
+            caller: None,
+            salt: None,
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)

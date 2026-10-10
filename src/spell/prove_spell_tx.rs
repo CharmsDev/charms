@@ -390,6 +390,8 @@ mod tests {
                 anchor: Some([1; 32]),
                 spell: Vec::new(),
                 proof: Vec::new(),
+                caller: None,
+                salt: None,
             })],
             change_address: "addr".to_string(),
             fee_rate: 1.0,
