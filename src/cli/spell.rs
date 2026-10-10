@@ -325,6 +325,7 @@ fn reject_ethereum_only_options(params: &SpellProveParams) -> Result<()> {
         params.charms.is_none(),
         "--charms requires --chain ethereum"
     );
+    ensure!(params.nonce.is_none(), "--nonce requires --chain ethereum");
     Ok(())
 }
 
@@ -392,7 +393,7 @@ pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<Str
             charms,
             caller,
             salt,
-            nonce: None,
+            nonce: params.nonce,
         },
     )?;
     let body = json!({
