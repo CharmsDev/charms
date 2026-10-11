@@ -4321,6 +4321,7 @@ dependencies = [
 name = "spell-checker-vk"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "sp1-sdk",
 ]
 
