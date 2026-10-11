@@ -1,4 +1,3 @@
-#[cfg(feature = "ethereum")]
 use crate::ethereum_tx::EthereumTx;
 use crate::{
     CURRENT_VERSION, MOCK_SPELL_VK, NormalizedSpell, V0, V0_SPELL_VK, V1, V1_SPELL_VK, V2,
@@ -61,7 +60,6 @@ pub trait EnchantedTx {
 pub enum Tx {
     Bitcoin(BitcoinTx),
     Cardano(CardanoTx),
-    #[cfg(feature = "ethereum")]
     Ethereum(EthereumTx),
 }
 
@@ -69,7 +67,6 @@ impl TryFrom<&str> for Tx {
     type Error = anyhow::Error;
 
     fn try_from(hex: &str) -> Result<Self, Self::Error> {
-        #[cfg(feature = "ethereum")]
         if let Some(tx) = crate::ethereum_tx::from_envelope_hex(hex)? {
             return Ok(Self::Ethereum(tx));
         }
@@ -92,7 +89,6 @@ impl Tx {
         match self {
             Tx::Bitcoin(tx) => tx.hex(),
             Tx::Cardano(tx) => tx.hex(),
-            #[cfg(feature = "ethereum")]
             Tx::Ethereum(tx) => tx.hex(),
         }
     }

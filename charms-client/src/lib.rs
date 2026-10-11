@@ -19,7 +19,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod ark;
 pub mod bitcoin_tx;
 pub mod cardano_tx;
-#[cfg(feature = "ethereum")]
 pub mod ethereum_tx;
 pub mod request;
 pub mod sorted_app_map;
@@ -443,6 +442,10 @@ pub fn is_correct(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
+    ensure!(
+        prev_txs.iter().all(|tx| !matches!(tx, Tx::Ethereum(_))),
+        "this build cannot verify an Ethereum transaction"
+    );
     ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
         tx_ins_beamed_source_utxos
@@ -1075,6 +1078,52 @@ mod test {
 
     #[test]
     fn dummy() {}
+
+    #[test]
+    fn an_ethereum_prev_tx_is_not_a_verified_spell() {
+        let mut salt = [0u8; 32];
+        salt[31] = 7;
+        let carried: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 15
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let plan = crate::ethereum_tx::plan_placeholder(
+            &carried,
+            &crate::ethereum_tx::PlaceholderRequest {
+                chain_id: 1,
+                charms: [0x33; 20],
+                caller: [0x11; 20],
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        plan.record
+            .extract_and_verify_spell(&[0; 32], false)
+            .unwrap();
+        let err = is_correct(
+            &carried,
+            &vec![crate::tx::Tx::Ethereum(plan.record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "this build cannot verify an Ethereum transaction"
+        );
+    }
 
     fn b32(hex: &str) -> B32 {
         B32::from_str(hex).unwrap()

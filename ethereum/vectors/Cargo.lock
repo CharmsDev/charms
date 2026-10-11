@@ -613,6 +613,7 @@ dependencies = [
  "serde",
  "serde_with",
  "sha2 0.10.9",
+ "sha3",
  "sp1-primitives",
  "sp1-verifier",
  "strum 0.28.0",
