@@ -1,15 +1,16 @@
 # Toolchain for reproducible RISC-V builds of the zkVM guests.
 #
-# Published for linux/amd64 and linux/arm64 on pushes to the guest-builder branch:
-#   ghcr.io/charmsdev/charms/guest-builder
+# Published for linux/amd64 and linux/arm64 on pushes to the guest-builder branch.
+# The tag is that push's full commit:
+#   ghcr.io/charmsdev/guest-builder:<commit>
 #
 # SP1 6.8.1 matches sp1-zkvm. Ubuntu's clang and the RISC-V gcc from
 # `sp1up --c-toolchain` compile blst and secp256k1 for the spell checker.
 #
 # Build locally (Docker picks the host architecture):
-#   docker build -f charms-spell-checker/guest-builder.Dockerfile -t ghcr.io/charmsdev/charms/guest-builder .
+#   docker build -f charms-spell-checker/guest-builder.Dockerfile -t ghcr.io/charmsdev/guest-builder .
 # Pass that name to the guest Dockerfile as GUEST_BUILDER. A published image is
-# passed by digest instead; `latest` changes when this image is rebuilt.
+# passed by its commit tag.
 
 FROM ubuntu:24.04
 

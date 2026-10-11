@@ -1,11 +1,10 @@
 # Reproducible RISC-V builds of the charms-spell-checker and charms-proof-wrapper guests.
 #
 # GUEST_BUILDER is the toolchain image, published for linux/amd64 and linux/arm64.
-# Pass it by digest. The `latest` and `sha-<commit>` tags move when that image is
-# rebuilt, which changes the guest ELFs and the protocol verification keys.
+# The tag is the full commit of the guest-builder branch that published it.
 #
 #   docker build -f charms-spell-checker/Dockerfile \
-#     --build-arg GUEST_BUILDER=ghcr.io/charmsdev/charms/guest-builder@sha256:<digest> \
+#     --build-arg GUEST_BUILDER=ghcr.io/charmsdev/guest-builder:<commit> \
 #     -t charms-guests .
 
 ARG GUEST_BUILDER

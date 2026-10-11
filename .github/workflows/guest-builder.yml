@@ -32,7 +32,7 @@ jobs:
 
       - name: Image name
         run: |
-          echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/guest-builder" >> "$GITHUB_ENV"
+          echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/guest-builder" >> "$GITHUB_ENV"
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
 
@@ -83,7 +83,7 @@ jobs:
     needs: build
     steps:
       - name: Image name
-        run: echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/guest-builder" >> "$GITHUB_ENV"
+        run: echo "REGISTRY_IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/guest-builder" >> "$GITHUB_ENV"
 
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -108,8 +108,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=raw,value=latest
-            type=sha,format=long,prefix=sha-
+            type=raw,value=${{ github.sha }}
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
@@ -118,4 +117,4 @@ jobs:
             $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
 
       - name: Inspect image
-        run: docker buildx imagetools inspect "${{ env.REGISTRY_IMAGE }}:latest"
+        run: docker buildx imagetools inspect "${{ env.REGISTRY_IMAGE }}:${{ github.sha }}"

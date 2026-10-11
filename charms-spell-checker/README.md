@@ -5,18 +5,18 @@ specifies what charms are created in the transaction outputs.
 
 ### Building
 
-The zkVM toolchain is a separate image, `ghcr.io/charmsdev/charms/guest-builder`.
+The zkVM toolchain is a separate image, `ghcr.io/charmsdev/guest-builder`.
 It carries Rust 1.96, SP1 6.8.1, and the RISC-V C compiler for `blst` and `secp256k1`.
 Pushes to the `guest-builder` branch publish `linux/amd64` and `linux/arm64`, so Docker
 on Apple Silicon pulls a native image.
 
-Build both guest ELFs from the repository root. `GUEST_BUILDER` is required. Pass a published
-image by digest — `docker buildx imagetools inspect ghcr.io/charmsdev/charms/guest-builder:latest`
-prints the current one — so a later toolchain rebuild keeps these ELFs and verification keys stable:
+Build both guest ELFs from the repository root. `GUEST_BUILDER` is required. The tag is the
+full commit of the `guest-builder` branch that published the image, so a later toolchain
+rebuild keeps these ELFs and verification keys stable:
 
 ```sh
 docker build -f charms-spell-checker/Dockerfile \
-  --build-arg GUEST_BUILDER=ghcr.io/charmsdev/charms/guest-builder@sha256:<digest> \
+  --build-arg GUEST_BUILDER=ghcr.io/charmsdev/guest-builder:<commit> \
   -t charms-guests .
 ```
 
