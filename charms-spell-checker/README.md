@@ -5,7 +5,12 @@ specifies what charms are created in the transaction outputs.
 
 ### Building
 
-From the repository root, build both guest ELFs in Linux:
+The zkVM toolchain is a separate image, `ghcr.io/charmsdev/charms/guest-builder`.
+It carries Rust 1.96, SP1 6.8.1, and the RISC-V C compiler for `blst` and `secp256k1`.
+Pushes to the `guest-builder` branch publish `linux/amd64` and `linux/arm64`, so Docker
+on Apple Silicon pulls a native image.
+
+From the repository root, build both guest ELFs:
 
 ```sh
 docker build -f charms-spell-checker/Dockerfile -t charms-guests .
