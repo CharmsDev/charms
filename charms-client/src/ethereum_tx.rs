@@ -488,6 +488,38 @@ mod tests {
     }
 
     #[test]
+    fn a_record_without_its_salt_is_not_signable() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record.salt = None;
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(err.to_string(), "ethereum placeholder is missing a salt");
+    }
+
+    #[test]
+    fn a_changed_caller_does_not_encode_transact() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record.caller = Some([0x22; 20]);
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ethereum placeholder anchor does not match the caller and salt"
+        );
+    }
+
+    #[test]
+    fn a_changed_salt_does_not_encode_transact() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        let mut salt = plan.record.salt.unwrap();
+        salt[31] = salt[31].wrapping_add(1);
+        plan.record.salt = Some(salt);
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ethereum placeholder anchor does not match the caller and salt"
+        );
+    }
+
+    #[test]
     fn placeholder_names_the_beam_target() {
         let plan = plan_placeholder(&spell(1), &request(None)).unwrap();
         assert_eq!(hex::encode(&plan.record.spell), CBOR);
