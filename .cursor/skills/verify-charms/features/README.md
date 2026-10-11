@@ -49,3 +49,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Check a spell](./spell-check.md) covers a local contract check with no proof, and a spell that is missing inputs.
 - [Prove a spell](./spell-prove.md) covers the spell verification key, a payload that does not call the API, an Ethereum placeholder with an empty proof, and a later SP1 network proof.
 - [Show a spell](./show-spell.md) covers extracting a spell from a Bitcoin transaction and the no-spell result.
+- [Build an Ethereum transaction](./tx-build.md) covers turning the Ethereum record from `spell prove` into the signable `transact` call.

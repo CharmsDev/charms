@@ -209,19 +209,37 @@ pub fn plan_placeholder(
         beamed_outs.insert(index.to_string(), hex::encode(hash.0));
         utxo_ids.push(utxo_id.to_string());
     }
-    let data = transact_calldata(committed.version, &owners, request.salt);
+    let call = transact_call(&record)?;
     Ok(PlaceholderPlan {
         tx_id: tx_id.to_string(),
         utxo_ids,
         beamed_outs,
         nonce: request.nonce,
-        call: EthCall {
-            from: format!("0x{}", hex::encode(request.caller)),
-            to: format!("0x{}", hex::encode(request.charms)),
-            data: format!("0x{}", hex::encode(data)),
-            value: "0".to_string(),
-        },
+        call,
         record,
+    })
+}
+
+/// `transact` calldata for the committed spell stored on `record`.
+pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
+    let spell = record.extract_and_verify_spell(&[0u8; 32], false)?;
+    let caller = record
+        .caller
+        .context("ethereum placeholder is missing a caller")?;
+    let salt = record
+        .salt
+        .context("ethereum placeholder is missing a salt")?;
+    ensure!(
+        record.anchor == Some(placeholder_anchor(caller, salt)),
+        "ethereum placeholder anchor does not match the caller and salt"
+    );
+    let (_, owners) = committed_placeholder(&spell)?;
+    let data = transact_calldata(spell.version, &owners, salt);
+    Ok(EthCall {
+        from: format!("0x{}", hex::encode(caller)),
+        to: format!("0x{}", hex::encode(record.charms)),
+        data: format!("0x{}", hex::encode(data)),
+        value: "0".to_string(),
     })
 }
 
@@ -442,6 +460,63 @@ mod tests {
             "version: 15\ntx:\n  outs:\n{outputs}  coins:\n{coins}app_public_inputs: {{}}\n"
         );
         serde_yaml::from_str(&yaml).unwrap()
+    }
+
+    #[test]
+    fn the_printed_record_encodes_transact() {
+        let plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        let spell = plan.record.decode().unwrap();
+        assert!(spell.tx.beamed_outs.is_none());
+        let json = serde_json::to_string(&Tx::Ethereum(plan.record)).unwrap();
+        let Tx::Ethereum(parsed) = serde_json::from_str::<Tx>(&json).unwrap() else {
+            panic!("ethereum record");
+        };
+        let call = transact_call(&parsed).unwrap();
+        assert_eq!(call.data, CALL);
+        assert_eq!(call.from, "0x1111111111111111111111111111111111111111");
+        assert_eq!(call.to, "0x3333333333333333333333333333333333333333");
+        assert_eq!(call.value, "0");
+        assert!(!call.data.contains(BEAM));
+    }
+
+    #[test]
+    fn a_record_without_its_caller_is_not_signable() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record.caller = None;
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(err.to_string(), "ethereum placeholder is missing a caller");
+    }
+
+    #[test]
+    fn a_record_without_its_salt_is_not_signable() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record.salt = None;
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(err.to_string(), "ethereum placeholder is missing a salt");
+    }
+
+    #[test]
+    fn a_changed_caller_does_not_encode_transact() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        plan.record.caller = Some([0x22; 20]);
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ethereum placeholder anchor does not match the caller and salt"
+        );
+    }
+
+    #[test]
+    fn a_changed_salt_does_not_encode_transact() {
+        let mut plan = plan_placeholder(&spell(1), &request(None)).unwrap();
+        let mut salt = plan.record.salt.unwrap();
+        salt[31] = salt[31].wrapping_add(1);
+        plan.record.salt = Some(salt);
+        let err = transact_call(&plan.record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ethereum placeholder anchor does not match the caller and salt"
+        );
     }
 
     #[test]

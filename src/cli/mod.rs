@@ -324,8 +324,8 @@ pub enum SpellCommands {
     /// Bitcoin prints a JSON array of hex-encoded transactions.
     /// Cardano prints a Ledger CDDL JSON envelope.
     /// Ethereum prints the Charms record as JSON with one field, `tx`.
-    /// That record is not a signable contract call. The command does not
-    /// call the prover and does not take `--prev-txs`.
+    /// That record is not a signable contract call. `tx build` encodes it.
+    /// The command does not call the prover and does not take `--prev-txs`.
     #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
     /// Print the current protocol version and spell verification key (VK) as JSON to stdout.
@@ -351,12 +351,30 @@ pub struct ShowSpellParams {
     mock: bool,
 }
 
+#[derive(Args)]
+pub struct TxBuildParams {
+    /// Target chain.
+    #[arg(long, default_value = "bitcoin")]
+    chain: Chain,
+
+    /// JSON `tx` object printed by `spell prove --chain ethereum`.
+    #[arg(long)]
+    tx: String,
+}
+
 #[derive(Subcommand)]
 pub enum TxCommands {
     /// Extract and display the spell from a transaction.
     ///
     /// Prints the spell as YAML (default) or JSON if the transaction contains a valid proof.
     ShowSpell(#[command(flatten)] ShowSpellParams),
+
+    /// Encode a Charms record as the signable contract call.
+    ///
+    /// Ethereum reads the `tx` object from `spell prove` and prints
+    /// `{from, to, data, value}`. `data` is `transact` calldata. The wallet
+    /// adds the account nonce, the gas fields, and the signature.
+    Build(#[command(flatten)] TxBuildParams),
 }
 
 #[derive(Subcommand)]
@@ -508,6 +526,7 @@ pub async fn run() -> anyhow::Result<()> {
         }
         Commands::Tx { command } => match command {
             TxCommands::ShowSpell(params) => tx::tx_show_spell(params),
+            TxCommands::Build(params) => tx::tx_build(params),
         },
         Commands::App { command } => match command {
             AppCommands::New { name } => app::new(&name),
@@ -743,6 +762,138 @@ app_public_inputs: {}
             mock: false,
         })
         .unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ethereum_tx_build_encodes_the_printed_tx() {
+        let path = spell_file("build", placeholder_spell());
+        let cli = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "0x1111111111111111111111111111111111111111",
+            "--salt",
+            "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "0x3333333333333333333333333333333333333333",
+        ])
+        .unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let proved: serde_json::Value =
+            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
+        let tx_json = serde_json::to_string(&proved["tx"]).unwrap();
+        let built: serde_json::Value =
+            serde_json::from_str(&tx::ethereum_transact_json(&tx_json).unwrap()).unwrap();
+        assert_eq!(
+            built.as_object().unwrap().keys().collect::<Vec<_>>(),
+            vec!["data", "from", "to", "value"]
+        );
+        assert_eq!(built["from"], "0x1111111111111111111111111111111111111111");
+        assert_eq!(built["to"], "0x3333333333333333333333333333333333333333");
+        assert_eq!(built["value"], "0");
+        assert!(built["data"].as_str().unwrap().starts_with("0x27485a93"));
+
+        let parsed = Cli::try_parse_from([
+            "charms",
+            "tx",
+            "build",
+            "--chain",
+            "ethereum",
+            "--tx",
+            tx_json.as_str(),
+        ])
+        .unwrap();
+        let Commands::Tx {
+            command: TxCommands::Build(build),
+        } = parsed.command
+        else {
+            panic!("tx build");
+        };
+        assert_eq!(build.chain, Chain::Ethereum);
+        let err = tx::tx_build(TxBuildParams {
+            chain: Chain::Bitcoin,
+            tx: tx_json,
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "tx build is implemented for ethereum");
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn ethereum_tx_build_does_not_print_a_call_for_a_broken_record() {
+        let path = spell_file("reject", placeholder_spell());
+        let cli = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "0x1111111111111111111111111111111111111111",
+            "--salt",
+            "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "0x3333333333333333333333333333333333333333",
+        ])
+        .unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        let proved: serde_json::Value =
+            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
+        let mut missing_salt = proved["tx"].clone();
+        missing_salt["ethereum"]
+            .as_object_mut()
+            .unwrap()
+            .remove("salt");
+        let mut changed_caller = proved["tx"].clone();
+        changed_caller["ethereum"]["caller"] =
+            serde_json::json!("2222222222222222222222222222222222222222");
+        let mut changed_salt = proved["tx"].clone();
+        changed_salt["ethereum"]["salt"] =
+            serde_json::json!("0000000000000000000000000000000000000000000000000000000000000008");
+        let cases = [
+            (missing_salt, "ethereum placeholder is missing a salt"),
+            (
+                changed_caller,
+                "ethereum placeholder anchor does not match the caller and salt",
+            ),
+            (
+                changed_salt,
+                "ethereum placeholder anchor does not match the caller and salt",
+            ),
+        ];
+        for (record, message) in cases {
+            let tx_json = serde_json::to_string(&record).unwrap();
+            let err = tx::ethereum_transact_json(&tx_json).unwrap_err();
+            assert_eq!(err.to_string(), message);
+            let err = tx::tx_build(TxBuildParams {
+                chain: Chain::Ethereum,
+                tx: tx_json,
+            })
+            .unwrap_err();
+            assert_eq!(err.to_string(), message);
+        }
         let _ = fs::remove_file(path);
     }
 
