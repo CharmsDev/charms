@@ -3,7 +3,7 @@ use crate::{
     cli::{ShowSpellParams, TxBuildParams},
     tx,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use charms_client::{
     bitcoin_tx::BitcoinTx,
     cardano_tx::CardanoTx,
@@ -45,10 +45,9 @@ pub fn tx_build(params: TxBuildParams) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn ethereum_transact_json(tx_json: &str) -> Result<String> {
-    let tx: Tx = serde_json::from_str(tx_json).context("expected the JSON tx object")?;
-    let Tx::Ethereum(record) = tx else {
-        bail!("tx build expects an Ethereum record");
+pub(crate) fn ethereum_transact_json(tx_hex: &str) -> Result<String> {
+    let Some(record) = charms_client::ethereum_tx::from_envelope_hex(tx_hex)? else {
+        bail!("expected the Ethereum record hex");
     };
     let call = charms_client::ethereum_tx::transact_call(&record)?;
     Ok(serde_json::to_string(&call)?)

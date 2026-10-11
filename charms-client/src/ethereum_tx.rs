@@ -541,7 +541,9 @@ mod tests {
 
         let tx = Tx::Ethereum(plan.record.clone());
         assert_eq!(tx.tx_id().to_string(), TX_ID);
-        assert_eq!(from_envelope_hex(&tx.hex()).unwrap().unwrap(), plan.record);
+        let parsed = from_envelope_hex(&tx.hex()).unwrap().unwrap();
+        assert_eq!(parsed, plan.record);
+        assert_eq!(transact_call(&parsed).unwrap().data, CALL);
         assert_eq!(
             UtxoId::from_str(&plan.utxo_ids[0]).unwrap().to_string(),
             format!("{TX_ID}:0")

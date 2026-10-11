@@ -395,10 +395,8 @@ pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<Str
             nonce: None,
         },
     )?;
-    let body = json!({
-        "tx": Tx::Ethereum(plan.record),
-    });
-    Ok(serde_json::to_string(&body)?)
+    let hex = Tx::Ethereum(plan.record).hex();
+    Ok(serde_json::to_string(&vec![hex])?)
 }
 
 fn parse_fixed<const N: usize>(text: &str) -> Result<[u8; N]> {

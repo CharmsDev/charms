@@ -323,8 +323,8 @@ pub enum SpellCommands {
     ///
     /// Bitcoin prints a JSON array of hex-encoded transactions.
     /// Cardano prints a Ledger CDDL JSON envelope.
-    /// Ethereum prints the Charms record as JSON with one field, `tx`.
-    /// That record is not a signable contract call. `tx build` encodes it.
+    /// Ethereum prints a JSON array of one hex string. The hex is the Charms
+    /// record. `tx build` encodes that hex into the signable call.
     /// The command does not call the prover and does not take `--prev-txs`.
     #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
@@ -357,7 +357,8 @@ pub struct TxBuildParams {
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
 
-    /// JSON `tx` object printed by `spell prove --chain ethereum`.
+    /// Hex-encoded Charms record from `spell prove --chain ethereum`.
+    /// One element of that JSON array. This hex is not a signable transaction.
     #[arg(long)]
     tx: String,
 }
@@ -371,7 +372,7 @@ pub enum TxCommands {
 
     /// Encode a Charms record as the signable contract call.
     ///
-    /// Ethereum reads the `tx` object from `spell prove` and prints
+    /// Ethereum reads the record hex from `spell prove` and prints
     /// `{from, to, data, value}`. `data` is `transact` calldata. The wallet
     /// adds the account nonce, the gas fields, and the signature.
     Build(#[command(flatten)] TxBuildParams),
@@ -684,7 +685,9 @@ fn print_output<T: Serialize>(output: &T, json: bool) -> anyhow::Result<()> {
 mod test {
     use super::*;
     use crate::cli::spell::ethereum_placeholder_json;
+    use charms_client::ethereum_tx::from_envelope_hex;
     use charms_client::tx::EnchantedTx;
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::PathBuf;
 
@@ -716,7 +719,7 @@ app_public_inputs: {}
     }
 
     #[test]
-    fn ethereum_prove_prints_only_the_record() {
+    fn ethereum_prove_prints_one_record_hex() {
         let path = spell_file("beam", placeholder_spell());
         let cli = Cli::try_parse_from([
             "charms",
@@ -742,22 +745,21 @@ app_public_inputs: {}
         else {
             panic!("spell prove");
         };
-        let json: serde_json::Value =
-            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
-        assert_eq!(
-            json.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["tx"]
-        );
-        assert_eq!(json["tx"]["ethereum"]["chain_id"], 1);
-        assert_eq!(json["tx"]["ethereum"]["charms"], CHARMS);
-        assert_eq!(json["tx"]["ethereum"]["caller"], CALLER);
-        assert_eq!(json["tx"]["ethereum"]["salt"], SALT);
-        assert_eq!(json["tx"]["ethereum"]["proof"], "");
-        let tx: charms_client::tx::Tx = serde_json::from_value(json["tx"].clone()).unwrap();
-        assert_eq!(tx.tx_id().to_string(), TX_ID);
+        let printed = ethereum_placeholder_json(&params).unwrap();
+        let hexes: Vec<String> = serde_json::from_str(&printed).unwrap();
+        assert_eq!(hexes.len(), 1);
+        assert_eq!(printed, format!("[\"{}\"]", hexes[0]));
+        assert!(hexes[0].starts_with("43484554"));
+        let record = from_envelope_hex(&hexes[0]).unwrap().unwrap();
+        assert_eq!(record.chain_id, 1);
+        assert_eq!(hex::encode(record.charms), CHARMS);
+        assert_eq!(hex::encode(record.caller.unwrap()), CALLER);
+        assert_eq!(hex::encode(record.salt.unwrap()), SALT);
+        assert!(record.proof.is_empty());
+        assert_eq!(record.tx_id().to_string(), TX_ID);
         tx::tx_show_spell(ShowSpellParams {
             chain: Chain::Ethereum,
-            tx: tx.hex(),
+            tx: hexes[0].clone(),
             json: true,
             mock: false,
         })
@@ -792,19 +794,28 @@ app_public_inputs: {}
         else {
             panic!("spell prove");
         };
-        let proved: serde_json::Value =
-            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
-        let tx_json = serde_json::to_string(&proved["tx"]).unwrap();
-        let built: serde_json::Value =
-            serde_json::from_str(&tx::ethereum_transact_json(&tx_json).unwrap()).unwrap();
+        let printed = ethereum_placeholder_json(&params).unwrap();
+        let hexes: Vec<String> = serde_json::from_str(&printed).unwrap();
+        let built_json = tx::ethereum_transact_json(&hexes[0]).unwrap();
+        let built: serde_json::Value = serde_json::from_str(&built_json).unwrap();
         assert_eq!(
             built.as_object().unwrap().keys().collect::<Vec<_>>(),
             vec!["data", "from", "to", "value"]
         );
+        assert!(built_json.starts_with("{\"from\":"));
         assert_eq!(built["from"], "0x1111111111111111111111111111111111111111");
         assert_eq!(built["to"], "0x3333333333333333333333333333333333333333");
         assert_eq!(built["value"], "0");
-        assert!(built["data"].as_str().unwrap().starts_with("0x27485a93"));
+        let data = built["data"].as_str().unwrap();
+        assert_eq!(data.len(), 1738);
+        assert!(data.starts_with("0x27485a93"));
+        assert_eq!(
+            hex::encode(Sha256::digest(data.as_bytes())),
+            "16ab3c7888645532ae655427625c47245f53d99a5ce5cb31572086ed66aa1cb0",
+            "sha256 of the empty-UTXO transact calldata"
+        );
+        let err = tx::ethereum_transact_json(&printed).unwrap_err();
+        assert_eq!(err.to_string(), "expected the Ethereum record hex");
 
         let parsed = Cli::try_parse_from([
             "charms",
@@ -813,7 +824,7 @@ app_public_inputs: {}
             "--chain",
             "ethereum",
             "--tx",
-            tx_json.as_str(),
+            hexes[0].as_str(),
         ])
         .unwrap();
         let Commands::Tx {
@@ -825,7 +836,7 @@ app_public_inputs: {}
         assert_eq!(build.chain, Chain::Ethereum);
         let err = tx::tx_build(TxBuildParams {
             chain: Chain::Bitcoin,
-            tx: tx_json,
+            tx: hexes[0].clone(),
         })
         .unwrap_err();
         assert_eq!(err.to_string(), "tx build is implemented for ethereum");
@@ -859,37 +870,34 @@ app_public_inputs: {}
         else {
             panic!("spell prove");
         };
-        let proved: serde_json::Value =
-            serde_json::from_str(&ethereum_placeholder_json(&params).unwrap()).unwrap();
-        let mut missing_salt = proved["tx"].clone();
-        missing_salt["ethereum"]
-            .as_object_mut()
-            .unwrap()
-            .remove("salt");
-        let mut changed_caller = proved["tx"].clone();
-        changed_caller["ethereum"]["caller"] =
-            serde_json::json!("2222222222222222222222222222222222222222");
-        let mut changed_salt = proved["tx"].clone();
-        changed_salt["ethereum"]["salt"] =
-            serde_json::json!("0000000000000000000000000000000000000000000000000000000000000008");
+        let printed = ethereum_placeholder_json(&params).unwrap();
+        let hexes: Vec<String> = serde_json::from_str(&printed).unwrap();
+        let record = from_envelope_hex(&hexes[0]).unwrap().unwrap();
+        let mut missing_salt = record.clone();
+        missing_salt.salt = None;
+        let mut changed_caller = record.clone();
+        changed_caller.caller = Some([0x22; 20]);
+        let mut changed_salt = record;
+        let mut salt = changed_salt.salt.unwrap();
+        salt[31] = salt[31].wrapping_add(1);
+        changed_salt.salt = Some(salt);
         let cases = [
-            (missing_salt, "ethereum placeholder is missing a salt"),
+            (missing_salt.hex(), "ethereum placeholder is missing a salt"),
             (
-                changed_caller,
+                changed_caller.hex(),
                 "ethereum placeholder anchor does not match the caller and salt",
             ),
             (
-                changed_salt,
+                changed_salt.hex(),
                 "ethereum placeholder anchor does not match the caller and salt",
             ),
         ];
-        for (record, message) in cases {
-            let tx_json = serde_json::to_string(&record).unwrap();
-            let err = tx::ethereum_transact_json(&tx_json).unwrap_err();
+        for (tx_hex, message) in cases {
+            let err = tx::ethereum_transact_json(&tx_hex).unwrap_err();
             assert_eq!(err.to_string(), message);
             let err = tx::tx_build(TxBuildParams {
                 chain: Chain::Ethereum,
-                tx: tx_json,
+                tx: tx_hex,
             })
             .unwrap_err();
             assert_eq!(err.to_string(), message);
