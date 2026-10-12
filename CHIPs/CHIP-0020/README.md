@@ -716,7 +716,13 @@ service : {
 
 The canister stores a trusted bootstrap checkpoint, the current sync committee, the next sync committee, and the latest verified finalized beacon header with its execution payload header. The execution payload header is where the execution `state_root` and the execution block number come from.
 
-A sync-committee period is 256 epochs. An epoch is 32 slots of 12 seconds, so a period is 98,304 seconds (27.3 hours). The canister verifies at most one `LightClientUpdate` in a message. A daily ICP timer fetches `GET /eth/v1/beacon/light_client/updates?start_period=<stored period>&count=1` with `Accept: application/octet-stream` and verifies that object. A tick that finds the period has not changed does nothing. If the timer misses several periods, each later tick advances one period.
+A sync-committee period is 256 epochs. An epoch is 32 slots of 12 seconds, so a period is 98,304 seconds (27.3 hours). The canister verifies at most one `LightClientUpdate` in a message. The stored period is the period of the latest verified finalized header.
+
+The daily timer does not request that stored period on every tick. An update for period P names the committee for period P+1, and its finalized header stays in period P. In `helios-consensus-core` 0.11.1, `apply_update_no_quorum_check` rotates the current committee only when the update's finalized header is in the next period. Fetching period P again never supplies that header, so the store would sit on P until the weak-subjectivity window expired.
+
+When `next_sync_committee` is missing, the timer fetches `GET /eth/v1/beacon/light_client/updates?start_period=<stored period>&count=1` with `Accept: application/octet-stream`. Applying that update records the next committee and does not rotate. When the next committee is already stored, the timer fetches `start_period` equal to the stored period plus one. The next committee signs that object. The canister applies it when its finalized header is in that next period, which rotates the current committee and stores the committee after that. If the beacon API has no such update yet, the tick leaves the store unchanged.
+
+A tick applies at most one update. After several missed periods, each later tick that finds a finalized header in the next period advances one period. `certify_final` uses this same choice when it fetches an update.
 
 Those responses are untrusted input. The canister verifies them. The beacon API is not a source of truth.
 
@@ -747,7 +753,7 @@ Agreement among EVM RPC providers at block tag `finalized` is not a check on thi
 
 ### Beacon forks and the guest key
 
-Generalized indices and the execution payload's SSZ type change at forks. Electra is the change the consensus specs already describe. The finalized-checkpoint root moves from generalized index 105 to 169, the current sync committee from 54 to 86, and the next sync committee from 55 to 87. Deneb and Electra also extended the execution payload header, which changes its tree hash. The fork table (epochs, indices, and payload type) lives in the wasm. A fork that changes any of them needs a wasm upgrade before the fork epoch. If the upgrade is late, `certify_final` fails closed and does not accept an update it cannot verify.
+Generalized indices and the execution payload's SSZ type change at forks. Electra is the change the consensus specs already describe. The finalized-checkpoint root moves from generalized index 105 to 169, the current sync committee from 54 to 86, and the next sync committee from 55 to 87. Capella and Deneb also extended the execution payload header, which changes its tree hash. Capella adds `withdrawals_root`. Deneb adds `blob_gas_used` and `excess_blob_gas`. Electra keeps that Deneb header. The fork table (epochs, indices, and payload type) lives in the wasm. A fork that changes any of them needs a wasm upgrade before the fork epoch. If the upgrade is late, `certify_final` fails closed and does not accept an update it cannot verify.
 
 Blackholing would freeze that table. The next incompatible fork would stop certification, and the only recovery would be a new canister. A new canister rotates `ETHEREUM_FINALITY_VKEY` and forces a spell-checker rebuild. Keeping one upgradeable canister is how the guest constant survives a fork. The cost is the controller. A wasm upgrade can sign a header that did not finalize. That is the same capability as the finality key. The controller is a governance principal, not an individual's day-to-day key.
 
@@ -782,7 +788,7 @@ Cycle prices below are from the [Internet Computer cycle-cost reference](https:/
 
 The signature is the certificate. It costs more than ten times the aggregate verification, and the outcall is smaller than either. A certificate that also applies one `LightClientUpdate` verifies two aggregates, about 4.6 billion wasm operators in the measurement below. The [resource limits](https://docs.internetcomputer.org/references/resource-limits/) put 40 billion instructions on one update message and 4 billion on one round of one execution thread. A message may continue on a later round. Two aggregates sit near that round boundary and under the message cap.
 
-The daily timer pays for one aggregate verification and one outcall. That is under one cent a day on a 13-node subnet at the rate above. The timer does not call `sign_with_schnorr`. The signature is charged only when `certify_final` signs.
+The daily timer pays for at most one aggregate verification and one outcall. That is under one cent a day on a 13-node subnet at the rate above. The timer does not call `sign_with_schnorr`. The signature is charged only when `certify_final` signs.
 
 HTTPS outcalls must use pricing version 2. Version 1 is still the default and prices the reserved response size. If `max_response_bytes` is left at its 2,000,000-byte default, version 1 costs 20.8 billion cycles on a 13-node subnet for the response term alone (`800 * 2,000,000 * 13`), which is the same order as the signature. The canister also sets `max_response_bytes` to a cap that fits a sync committee (24,576 bytes of pubkeys, plus the header and the branches). 128 KiB is enough. The outcall dollar figure applies the version 2 formula to that cap. This spike did not time a live outcall.
 
