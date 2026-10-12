@@ -25,7 +25,7 @@ const DOMAIN: &[u8] = b"charms/ethereum/finality/v1";
 
 pub type Store = LightClientStore<MainnetConsensusSpec>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Chain {
     pub beacon_api: String,
     pub execution_api: String,
@@ -41,6 +41,16 @@ pub struct SignatureRecord {
     pub eth_tx_id: [u8; 32],
     pub header: [u8; 32],
     pub signature: Vec<u8>,
+}
+
+pub(crate) struct StoredSignature {
+    pub eth_tx_id: [u8; 32],
+    pub signature: Vec<u8>,
+}
+
+pub(crate) struct CurrentSignatures {
+    pub header: [u8; 32],
+    pub entries: Vec<StoredSignature>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,6 +112,37 @@ impl SignatureCache {
         self.retain_current(Some(*current));
         if signed_header == current {
             self.by_tx.insert(eth_tx_id, signature);
+        }
+    }
+
+    pub(crate) fn export_current(&self) -> Option<CurrentSignatures> {
+        let header = self.header?;
+        if self.by_tx.is_empty() {
+            return None;
+        }
+        let entries = self
+            .by_tx
+            .iter()
+            .map(|(eth_tx_id, signature)| StoredSignature {
+                eth_tx_id: *eth_tx_id,
+                signature: signature.clone(),
+            })
+            .collect();
+        Some(CurrentSignatures { header, entries })
+    }
+
+    pub(crate) fn import_current(exported: Option<CurrentSignatures>) -> Self {
+        let Some(exported) = exported else {
+            return Self::empty();
+        };
+        let mut by_tx = BTreeMap::new();
+        for entry in exported.entries {
+            by_tx.insert(entry.eth_tx_id, entry.signature);
+        }
+        Self {
+            header: Some(exported.header),
+            by_tx,
+            pending: Vec::new(),
         }
     }
 

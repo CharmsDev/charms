@@ -744,6 +744,27 @@ Those responses are untrusted input. The canister verifies them. The beacon API 
 
 The current slot is ICP time converted to seconds, minus mainnet beacon genesis `1606824023`, divided by 12. The canister does not ask a beacon node for the time.
 
+### Stable records
+
+Chain config, the Schnorr public key, each light-client record, and the signatures for the current finalized beacon header are written to stable memory during ordinary calls. A wasm upgrade reads those records. `post_upgrade` loads them, applies `opt DeployConfig` when the argument is present, and starts the daily timer again. An empty public-key record starts another key fetch. A canister whose stable memory is still the older length-prefixed JSON blob is loaded once and rewritten as records.
+
+The light-client records are the finalized header, the optimistic header, the current sync committee, the next sync committee, the participant counters, and the best update. A call writes a record when that record's bytes changed. A signature cache hit writes nothing. A new signature rewrites the current-header signature record. A finality update writes the header records and the participant counters that changed. The committee records stay in place until a period update changes one of them.
+
+For one fixture state, the older length-prefixed JSON snapshot is 108,542 bytes. That state holds two sync committees, two Electra light-client headers, the chain config, the public key, and one signature. Later calls write the records below. The counts are bytes copied into stable memory, including a 24-byte slot header for each record that changed. `certify_writes_changed_records_not_the_snapshot` locks the write counts. `electra_header_json_is_much_smaller_than_one_committee` locks the JSON sizes. Both are one deterministic serde run. A committee is 51,845 bytes because its 512 public keys are hex strings. A header is 1,935 bytes of JSON. A shorter encoding would be a different byte count. The snapshot stays large because it contains both committees.
+
+| Change | Stable bytes |
+|---|---|
+| No record changed, including a signature cache hit | 0 |
+| One new signature on an empty cache | 156 |
+| Finalized header | 1,959 |
+| Optimistic header | 1,959 |
+| Participant counters | 40 |
+| Both headers and the participant counters | 3,958 |
+| Next sync committee | 51,869 |
+| Older length-prefixed JSON snapshot | 108,542 |
+
+156 is a 132-byte signature record plus the 24-byte slot header. The record is the 32-byte header root, a 4-byte count, a 32-byte transaction id, and a 64-byte signature. 1,959 is the 1,935-byte header JSON plus the slot header. 40 is 16 counter bytes plus the slot header. 51,869 is the 51,845-byte committee JSON plus the slot header. When the finalized header changes and the cache already holds signatures, those signature bytes are overwritten with zeros. A signature returned for the retired header is left out of the new record.
+
 ### certify_final
 
 `certify_final(ethTxId, proofs)` signs only after the checks below succeed. When `proofs` is absent, the canister fetches the same bytes with HTTPS outcalls and runs the same checks. A fetched byte string is not trusted because it arrived from the network. Caller-supplied bytes and fetched bytes are one kind of input.
@@ -761,7 +782,7 @@ The checks run in this order.
 5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout. v1 stores `beamSources` at slot 7, and `DeployConfig.beam_source_slot` records that index. The storage slot is `keccak256(abi.encode(ethTxId, uint256(slot)))`. That 32-byte value is the EIP-1186 logical key, and the proof's `key` is those bytes. The canister recomputes the slot from `ethTxId` and the recorded index and requires the key to equal it. The secure-trie path is `keccak256(storage_proof.key)`. The canister walks the proof along that path. It does not accept a caller-supplied path hash in place of the slot. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`, where `block_number` is the finalized execution block number from step 3.
 6. A storage proof that the ERC-1967 implementation slot equals the implementation address the canister expects. The logical key is the 32-byte ERC-1967 slot. The trie path is `keccak256` of that slot, same as step 5. A `Charms` upgrade that moves the mapping fails this check until a canister upgrade records the new implementation and the new slot.
 
-The canister then signs with `sign_with_schnorr` (Ed25519) under the derivation path above, unless it already stored a signature for this `ethTxId` and the current finalized beacon header. That pair is the cache key. A hit returns the stored 64 bytes and does not sign. A miss prices `sign_with_schnorr` and accepts that amount from the caller before signing, including when the caller supplied the proofs. The accepted cycles fund the management-canister signature call. When the finalized header changes, the pair is new and the caller pays again. A repeat while the header is unchanged does not. The cache holds signatures only for the current finalized beacon header. When that header changes, including when a signature call returns after the change, signatures for the previous header are dropped and are not written to stable memory.
+The canister then signs with `sign_with_schnorr` (Ed25519) under the derivation path above, unless it already stored a signature for this `ethTxId` and the current finalized beacon header. That pair is the cache key. A hit returns the stored 64 bytes and does not sign. A miss prices `sign_with_schnorr` and accepts that amount from the caller before signing, including when the caller supplied the proofs. The accepted cycles fund the management-canister signature call. When the finalized header changes, the pair is new and the caller pays again. A repeat while the header is unchanged does not. The cache holds signatures only for the current finalized beacon header. The canister writes that set to stable memory when the set changes. When the header changes, including when a signature call returns after the change, signatures for the previous header are dropped and left out of the stable record.
 
 The message is `SHA-256("charms/ethereum/finality/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ ethTxId)`. The signature is 64 bytes. The guest does not receive the spell from the canister. It already has the spell bytes in the `EthereumTx` record, and `ethTxId` is the hash of those bytes. The signature says the canonical contract accepted that id in a beacon-finalized execution state.
 

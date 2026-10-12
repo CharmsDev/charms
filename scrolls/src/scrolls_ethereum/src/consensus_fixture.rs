@@ -158,6 +158,21 @@ fn electra_update_verifies_a_signature_and_rotates_committees() {
     assert!(err.contains("invalid next sync committee proof"), "{err}");
 }
 
+pub(crate) fn electra_light_header(slot: u64) -> helios_consensus_core::types::LightClientHeader {
+    use helios_consensus_core::types::LightClientHeader;
+
+    let execution = execution_payload(B256::from([2u8; 32]), slot, B256::from([3u8; 32]));
+    let (_, bytes) = light_header(slot, B256::from([4u8; 32]), &execution);
+    LightClientHeader::from_ssz_bytes(&bytes).expect("light client header")
+}
+
+#[test]
+fn electra_header_json_is_much_smaller_than_one_committee() {
+    let header_json = serde_json::to_vec(&electra_light_header(99)).unwrap().len();
+    let committee_json = serde_json::to_vec(&committee(1)).unwrap().len();
+    assert_eq!((header_json, committee_json), (1_935, 51_845));
+}
+
 #[derive(Clone, Copy)]
 struct PeriodUpdate<'a> {
     next: &'a Committee,

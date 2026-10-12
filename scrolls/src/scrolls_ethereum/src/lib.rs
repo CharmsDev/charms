@@ -1,4 +1,5 @@
 mod light;
+mod stable;
 mod trie;
 
 #[cfg(test)]
@@ -6,7 +7,6 @@ mod consensus_fixture;
 
 use candid::{CandidType, Deserialize};
 use getrandom::register_custom_getrandom;
-use ic_cdk::stable::{stable_grow, stable_read, stable_size, stable_write};
 use ic_cdk_management_canister::{
     HttpMethod, HttpRequest, HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId,
     SignWithSchnorrArgs, TransformArgs, cost_sign_with_schnorr, schnorr_public_key,
@@ -79,31 +79,31 @@ struct FinalityStatus {
 fn init(config: DeployConfig) {
     let chain = parse_config(config).unwrap_or_else(|e| ic_cdk::trap(&e));
     STATE.with(|state| state.borrow_mut().chain = chain);
+    let state = snapshot();
+    stable::save_all(&state, &mut stable::IcStable).unwrap_or_else(|e| ic_cdk::trap(&e));
     schedule_key(Duration::ZERO);
     schedule_daily();
 }
 
-#[ic_cdk::pre_upgrade]
-fn pre_upgrade() {
-    STATE.with(|state| align_signatures(&mut state.borrow_mut()));
-    let bytes = STATE
-        .with(|state| serde_json::to_vec(&*state.borrow()))
-        .unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
-    write_stable(&bytes);
-}
-
 #[ic_cdk::post_upgrade]
 fn post_upgrade(config: Option<DeployConfig>) {
-    let bytes = read_stable().unwrap_or_else(|e| ic_cdk::trap(&e));
-    let persisted: Persisted =
-        serde_json::from_slice(&bytes).unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
-    STATE.with(|state| *state.borrow_mut() = persisted);
+    let loaded = stable::load(&stable::IcStable).unwrap_or_else(|e| ic_cdk::trap(&e));
+    let legacy = loaded.is_legacy();
+    let mut persisted = loaded.into_persisted();
+    let before = persisted.clone();
     if let Some(config) = config {
-        let chain = parse_config(config).unwrap_or_else(|e| ic_cdk::trap(&e));
-        STATE.with(|state| state.borrow_mut().chain = chain);
+        persisted.chain = parse_config(config).unwrap_or_else(|e| ic_cdk::trap(&e));
     }
-    STATE.with(|state| align_signatures(&mut state.borrow_mut()));
-    if STATE.with(|state| state.borrow().public_key.is_none()) {
+    align_signatures(&mut persisted);
+    if legacy {
+        stable::save_all(&persisted, &mut stable::IcStable).unwrap_or_else(|e| ic_cdk::trap(&e));
+    } else {
+        stable::flush(&before, &persisted, &mut stable::IcStable)
+            .unwrap_or_else(|e| ic_cdk::trap(&e));
+    }
+    let missing_key = persisted.public_key.is_none();
+    STATE.with(|state| *state.borrow_mut() = persisted);
+    if missing_key {
         schedule_key(Duration::ZERO);
     }
     schedule_daily();
@@ -113,16 +113,18 @@ fn post_upgrade(config: Option<DeployConfig>) {
 fn reset_checkpoint(bootstrap: Vec<u8>) -> Result<(), String> {
     require_controller()?;
     let now = ic_now_secs();
-    STATE.with(|state| {
+    let before = snapshot();
+    let result = STATE.with(|state| {
         let state = &mut *state.borrow_mut();
         state.store = Some(light::reset_checkpoint(
             &bootstrap,
             now,
             state.chain.ws_period_epochs,
         )?);
-        align_signatures(state);
         Ok(())
-    })
+    });
+    commit(&before);
+    result
 }
 
 #[ic_cdk::update]
@@ -131,7 +133,9 @@ fn set_ws_period(epochs: u64) -> Result<(), String> {
     if epochs == 0 {
         return Err("Input error: ws_period_epochs must be non-zero".into());
     }
+    let before = snapshot();
     STATE.with(|state| state.borrow_mut().chain.ws_period_epochs = epochs);
+    commit(&before);
     Ok(())
 }
 
@@ -209,6 +213,7 @@ async fn certify_final(
             fetch_execution_proof(&eth_tx_id, block).await?
         }
     };
+    let before = snapshot();
     let message = STATE.with(|state| {
         let now = ic_now_secs();
         let state = &mut *state.borrow_mut();
@@ -221,8 +226,9 @@ async fn certify_final(
             &finality,
             &exec,
         )
-    })?;
-    issue_signature(eth_tx_id, message).await
+    });
+    commit(&before);
+    issue_signature(eth_tx_id, message?).await
 }
 
 #[ic_cdk::query]
@@ -311,7 +317,11 @@ fn schedule_daily() {
 fn schedule_key(delay: Duration) {
     ic_cdk_timers::set_timer(delay, async move {
         match fetch_public_key().await {
-            Ok(key) => STATE.with(|state| state.borrow_mut().public_key = Some(key)),
+            Ok(key) => {
+                let before = snapshot();
+                STATE.with(|state| state.borrow_mut().public_key = Some(key));
+                commit(&before);
+            }
             Err(e) => {
                 ic_cdk::println!("finality public key fetch failed: {e}");
                 let next = if delay.is_zero() {
@@ -355,18 +365,16 @@ async fn tick() -> Result<(), String> {
         return Ok(());
     };
     let now = ic_now_secs();
-    STATE.with(|state| {
+    let before = snapshot();
+    let applied = STATE.with(|state| {
         let state = &mut *state.borrow_mut();
-        let applied = {
-            let Some(store) = state.store.as_mut() else {
-                return Ok(());
-            };
-            light::apply_period_update(store, payload, now, state.chain.ws_period_epochs)
+        let Some(store) = state.store.as_mut() else {
+            return Ok(());
         };
-        applied?;
-        align_signatures(state);
-        Ok(())
-    })
+        light::apply_period_update(store, payload, now, state.chain.ws_period_epochs)
+    });
+    commit(&before);
+    applied
 }
 
 async fn fetch_update() -> Result<Vec<u8>, String> {
@@ -622,9 +630,11 @@ async fn fetch_public_key() -> Result<Vec<u8>, String> {
 async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u8>, String> {
     let header = STATE
         .with(|state| {
-            let state = &mut *state.borrow_mut();
-            align_signatures(state);
-            state.store.as_ref().map(light::finalized_beacon_root)
+            state
+                .borrow()
+                .store
+                .as_ref()
+                .map(light::finalized_beacon_root)
         })
         .ok_or_else(|| "Input error: checkpoint is not set".to_string())?;
     if let Some(signature) = STATE.with(|state| state.borrow().signatures.get(&eth_tx_id, &header))
@@ -638,6 +648,7 @@ async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u
         return Err("Input error: could not accept cycles for signing".into());
     }
     let signature = sign_message(&message).await?;
+    let before = snapshot();
     STATE.with(|state| {
         let state = &mut *state.borrow_mut();
         match state.store.as_ref().map(light::finalized_beacon_root) {
@@ -649,12 +660,25 @@ async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u
             None => state.signatures.retain_current(None),
         }
     });
+    commit(&before);
     Ok(signature)
 }
 
 fn align_signatures(state: &mut Persisted) {
     let header = state.store.as_ref().map(light::finalized_beacon_root);
     state.signatures.retain_current(header);
+}
+
+fn snapshot() -> Persisted {
+    STATE.with(|state| state.borrow().clone())
+}
+
+fn commit(before: &Persisted) {
+    STATE.with(|state| {
+        let state = &mut *state.borrow_mut();
+        align_signatures(state);
+        stable::flush(before, state, &mut stable::IcStable).unwrap_or_else(|e| ic_cdk::trap(&e));
+    });
 }
 
 fn signature_quote(message: &[u8; 32]) -> Result<u128, String> {
@@ -696,27 +720,6 @@ fn key_id() -> SchnorrKeyId {
     }
 }
 
-fn write_stable(bytes: &[u8]) {
-    let total = 8 + bytes.len() as u64;
-    let page = 65_536u64;
-    let have = stable_size() * page;
-    if have < total {
-        let grow = (total - have).div_ceil(page);
-        stable_grow(grow).unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
-    }
-    stable_write(0, &(bytes.len() as u64).to_le_bytes());
-    stable_write(8, bytes);
-}
-
-fn read_stable() -> Result<Vec<u8>, String> {
-    let mut len_bytes = [0u8; 8];
-    stable_read(0, &mut len_bytes);
-    let len = u64::from_le_bytes(len_bytes) as usize;
-    let mut bytes = vec![0u8; len];
-    stable_read(8, &mut bytes);
-    Ok(bytes)
-}
-
 register_custom_getrandom!(custom_getrandom);
 
 fn custom_getrandom(_dest: &mut [u8]) -> Result<(), getrandom::Error> {
@@ -732,5 +735,12 @@ mod candid_export {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/scrolls_ethereum.did");
         let on_disk = std::fs::read_to_string(path).unwrap();
         assert_eq!(on_disk, super::__export_service());
+    }
+
+    #[test]
+    fn upgrade_hook_is_absent() {
+        let src = include_str!("lib.rs");
+        let hook = ["pre", "_upgrade"].concat();
+        assert!(!src.contains(&hook), "upgrade hook is still present");
     }
 }
