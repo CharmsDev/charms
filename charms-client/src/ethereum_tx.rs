@@ -1,10 +1,10 @@
 use crate::{
-    CURRENT_VERSION, NormalizedSpell, V15,
+    CURRENT_VERSION, NormalizedCharms, NormalizedSpell, V15,
     tx::{self, EnchantedTx, Tx},
     utxo_id_hash_with_nonce,
 };
 use anyhow::{Context, ensure};
-use charms_data::{NativeOutput, TxId, UtxoId, util};
+use charms_data::{App, NativeOutput, TOKEN, TxId, UtxoId, util};
 use serde::Serialize;
 use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
 use sha3::{Digest, Keccak256};
@@ -329,8 +329,26 @@ pub fn plan_placeholder(
     })
 }
 
-/// `transact` calldata for the committed spell stored on `record`.
+/// `transact` calldata for `record`: a placeholder sent by its caller with its salt, or a
+/// proved spell sent by its first output owner with a zero salt.
 pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
+    let (spell, from, salt) = if record.proof.is_empty() {
+        placeholder_sender(record)?
+    } else {
+        proved_sender(record)?
+    };
+    let data = transact_calldata(&spell, salt, &record.proof)?;
+    Ok(EthCall {
+        from: format!("0x{}", hex::encode(from)),
+        to: format!("0x{}", hex::encode(record.charms)),
+        data: format!("0x{}", hex::encode(data)),
+        value: "0".to_string(),
+    })
+}
+
+fn placeholder_sender(
+    record: &EthereumTx,
+) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32])> {
     let spell = record.extract_and_verify_spell(&[0u8; 32], false)?;
     let caller = record
         .caller
@@ -342,14 +360,42 @@ pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
         record.anchor == Some(placeholder_anchor(caller, salt)),
         "ethereum placeholder anchor does not match the caller and salt"
     );
-    let (_, owners) = committed_placeholder(&spell)?;
-    let data = transact_calldata(spell.version, &owners, salt);
-    Ok(EthCall {
-        from: format!("0x{}", hex::encode(caller)),
-        to: format!("0x{}", hex::encode(record.charms)),
-        data: format!("0x{}", hex::encode(data)),
-        value: "0".to_string(),
-    })
+    Ok((spell, caller, salt))
+}
+
+/// The proof is not verified here: `transact` checks it against the spell it re-encodes.
+fn proved_sender(record: &EthereumTx) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32])> {
+    ensure!(
+        record.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
+        "a proved ethereum spell's anchor must be zero"
+    );
+    ensure!(
+        record.caller.is_none() && record.salt.is_none(),
+        "a proved ethereum record has no caller or salt"
+    );
+    let spell = record.decode()?;
+    ensure!(
+        spell.tx.ins.as_ref().is_some_and(|ins| !ins.is_empty()),
+        "a proved ethereum spell spends an input"
+    );
+    ensure_ethereum_output_coins(&spell)?;
+    let beamed = spell.tx.beamed_outs.as_ref();
+    for (index, coin) in spell.tx.coins.iter().flatten().enumerate() {
+        ensure!(
+            beamed.is_some_and(|outs| outs.contains_key(&(index as u32)))
+                == (coin.dest.as_slice() == [0u8; 20]),
+            "coins[{index}].dest must be the zero address exactly when output {index} is beamed"
+        );
+    }
+    let owner = spell
+        .tx
+        .coins
+        .iter()
+        .flatten()
+        .find(|coin| coin.dest.as_slice() != [0u8; 20])
+        .context("a proved ethereum spell needs an output owner to send it")?;
+    let from = owner.dest.as_slice().try_into()?;
+    Ok((spell, from, [0u8; 32]))
 }
 
 fn committed_placeholder(
@@ -447,63 +493,163 @@ fn committed_placeholder(
     Ok((committed, owners))
 }
 
-/// ABI encoding of `transact(spell, salt, "", [])` for a placeholder with empty charm outputs.
-pub fn transact_calldata(version: u32, owners: &[[u8; 20]], salt: [u8; 32]) -> Vec<u8> {
-    let spell = encode_spell(version, owners);
-    let proof = encode_bytes(&[]);
-    let signatures = word(0);
-    let spell_off = 4 * 32;
-    let proof_off = spell_off + spell.len();
-    let signatures_off = proof_off + proof.len();
-
-    let mut data = Vec::with_capacity(4 + signatures_off + 32);
-    data.extend(selector(TRANSACT_SIGNATURE));
-    data.extend(word(spell_off as u64));
-    data.extend(salt);
-    data.extend(word(proof_off as u64));
-    data.extend(word(signatures_off as u64));
-    data.extend(spell);
-    data.extend(proof);
-    data.extend(signatures);
-    data
+/// One ABI value. A dynamic value sits in its parent's tail, behind an offset in the head.
+enum Abi {
+    Static(Vec<u8>),
+    Dynamic(Vec<u8>),
 }
 
-fn encode_spell(version: u32, owners: &[[u8; 20]]) -> Vec<u8> {
-    let tails = [
-        word(0).to_vec(),
-        word(0).to_vec(),
-        word(0).to_vec(),
-        word(0).to_vec(),
-        word(0).to_vec(),
-        encode_outputs(owners),
-        word(0).to_vec(),
-        word(0).to_vec(),
-    ];
-    let mut offset = 9 * 32;
-    let mut encoded = word(version as u64).to_vec();
-    let mut body: Vec<u8> = Vec::new();
-    for tail in &tails {
-        encoded.extend(word(offset as u64));
-        offset += tail.len();
-        body.extend(tail);
-    }
-    encoded.extend(body);
-    encoded
+/// ABI encoding of `transact(spell, salt, proof, [])`.
+pub fn transact_calldata(
+    spell: &NormalizedSpell,
+    salt: [u8; 32],
+    proof: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let mut data = selector(TRANSACT_SIGNATURE).to_vec();
+    data.extend(tuple(vec![
+        encode_spell(spell)?,
+        Abi::Static(salt.to_vec()),
+        Abi::Dynamic(encode_bytes(proof)),
+        array(Vec::new()),
+    ]));
+    Ok(data)
 }
 
-fn encode_outputs(owners: &[[u8; 20]]) -> Vec<u8> {
-    let output_len = 96;
-    let heads = owners.len() * 32;
-    let mut encoded = word(owners.len() as u64).to_vec();
-    for index in 0..owners.len() {
-        encoded.extend(word((heads + index * output_len) as u64));
+/// Each input opens as an empty UTXO: a normalized spell does not carry the charms and pins
+/// the contract stored for it.
+fn encode_spell(spell: &NormalizedSpell) -> anyhow::Result<Abi> {
+    let tx = &spell.tx;
+    let apps: Vec<&App> = spell.app_public_inputs.keys().collect();
+    let app_heads = apps
+        .iter()
+        .map(|app| {
+            words(&[
+                word(u64::from(u32::from(app.tag))),
+                app.identity.0,
+                app.vk.0,
+            ])
+        })
+        .collect();
+    let public_inputs = spell
+        .app_public_inputs
+        .values()
+        .map(|input| Abi::Dynamic(encode_bytes(&input.bytes())))
+        .collect();
+    let pins = spell
+        .versioned_apps
+        .iter()
+        .map(|(vk, pin)| words(&[vk.0, word(pin.version.into()), pin.wasm_hash.0]))
+        .collect();
+    let ins = tx
+        .ins
+        .iter()
+        .flatten()
+        .map(|utxo| {
+            let opening = vec![utxo_ref(utxo), array(Vec::new()), array(Vec::new())];
+            Abi::Dynamic(tuple(opening))
+        })
+        .collect();
+    let refs = tx.refs.iter().flatten().map(utxo_ref).collect();
+    let outs = tx
+        .outs
+        .iter()
+        .zip(tx.coins.iter().flatten())
+        .map(|(charms, coin)| {
+            let owner = coin.dest.as_slice().try_into()?;
+            let output = vec![
+                Abi::Static(address_word(owner).to_vec()),
+                encode_charms(&apps, charms)?,
+            ];
+            Ok(Abi::Dynamic(tuple(output)))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let beamed_outs = tx
+        .beamed_outs
+        .iter()
+        .flatten()
+        .map(|(index, dest_hash)| words(&[word((*index).into()), dest_hash.0]))
+        .collect();
+    let scrolls = tx
+        .scrolls
+        .iter()
+        .flatten()
+        .map(|index| words(&[word((*index).into())]))
+        .collect();
+    Ok(Abi::Dynamic(tuple(vec![
+        words(&[word(spell.version.into())]),
+        array(app_heads),
+        array(public_inputs),
+        array(pins),
+        array(ins),
+        array(refs),
+        array(outs),
+        array(beamed_outs),
+        array(scrolls),
+    ])))
+}
+
+fn encode_charms(apps: &[&App], charms: &NormalizedCharms) -> anyhow::Result<Abi> {
+    let charms = charms
+        .iter()
+        .map(|(&index, data)| {
+            let app = apps
+                .get(index as usize)
+                .with_context(|| format!("charm app index {index} has no app"))?;
+            let (amount, bytes) = match app.tag {
+                TOKEN => (
+                    data.value::<u64>().context("a token charm must be a u64")?,
+                    Vec::new(),
+                ),
+                _ => (0, data.bytes()),
+            };
+            let charm = vec![
+                words(&[word(index.into()), word(amount)]),
+                Abi::Dynamic(encode_bytes(&bytes)),
+            ];
+            Ok(Abi::Dynamic(tuple(charm)))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(array(charms))
+}
+
+/// `UtxoRef.txId` is in keccak byte order, the reverse of `TxId`.
+fn utxo_ref(utxo: &UtxoId) -> Abi {
+    let mut tx_id = utxo.0.0;
+    tx_id.reverse();
+    words(&[tx_id, word(utxo.1.into())])
+}
+
+fn tuple(fields: Vec<Abi>) -> Vec<u8> {
+    let heads: usize = fields
+        .iter()
+        .map(|field| match field {
+            Abi::Static(bytes) => bytes.len(),
+            Abi::Dynamic(_) => 32,
+        })
+        .sum();
+    let mut head = Vec::with_capacity(heads);
+    let mut tail = Vec::new();
+    for field in fields {
+        match field {
+            Abi::Static(bytes) => head.extend(bytes),
+            Abi::Dynamic(bytes) => {
+                head.extend(word((heads + tail.len()) as u64));
+                tail.extend(bytes);
+            }
+        }
     }
-    for owner in owners {
-        encoded.extend(address_word(*owner));
-        encoded.extend(word(64));
-        encoded.extend(word(0));
-    }
-    encoded
+    head.extend(tail);
+    head
+}
+
+fn array(items: Vec<Abi>) -> Abi {
+    let mut encoded = word(items.len() as u64).to_vec();
+    encoded.extend(tuple(items));
+    Abi::Dynamic(encoded)
+}
+
+fn words(words: &[[u8; 32]]) -> Abi {
+    Abi::Static(words.concat())
 }
 
 fn encode_bytes(bytes: &[u8]) -> Vec<u8> {
@@ -547,7 +693,7 @@ mod tests {
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_snark::SNARK;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
-    use charms_data::{NativeOutput, UtxoId};
+    use charms_data::{B32, Data, NativeOutput, UtxoId};
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
 
@@ -860,6 +1006,68 @@ app_public_inputs: {}
             content: None,
         }]);
         claim
+    }
+
+    fn token_claim(source: &EthereumTx) -> NormalizedSpell {
+        let mut claim = claim_of(source, 0, vec![0x44; 20]);
+        let token = App {
+            tag: TOKEN,
+            identity: B32([1; 32]),
+            vk: B32([2; 32]),
+        };
+        claim.app_public_inputs.insert(token, Data::empty());
+        claim.tx.outs[0].insert(0, Data::from(&1000u64));
+        claim
+    }
+
+    #[test]
+    fn a_proved_claim_encodes_transact_with_a_zero_salt() {
+        let source = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        let proof: Vec<u8> = (1..=100).collect();
+        let claim = token_claim(&source);
+        let record = record_with_proof(&claim, proof.clone(), 1, [0x33; 20]).unwrap();
+        let call = transact_call(&record).unwrap();
+        let data = hex::decode(&call.data[2..]).unwrap();
+        assert_eq!(hex::encode(&data[..4]), "27485a93");
+        assert_eq!(data[36..68], [0u8; 32]);
+        assert!(call.data.contains(&hex::encode(&proof)));
+        assert!(call.data.contains(&hex::encode(source.eth_tx_id())));
+        assert_eq!(call.from, "0x4444444444444444444444444444444444444444");
+        assert_eq!(call.to, "0x3333333333333333333333333333333333333333");
+        assert_eq!(call.value, "0");
+
+        let placeholder = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        assert_eq!(transact_call(&placeholder).unwrap().data, CALL);
+    }
+
+    #[test]
+    fn a_proved_claim_the_contract_would_reject_is_not_encoded() {
+        let source = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        let claim = token_claim(&source);
+        let mut record = record_with_proof(&claim, vec![1], 1, [0x33; 20]).unwrap();
+        record.anchor = Some([0u8; 32]);
+        transact_call(&record).expect("a zero anchor is the contract's anchor");
+
+        record.anchor = Some([7u8; 32]);
+        let err = transact_call(&record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "a proved ethereum spell's anchor must be zero"
+        );
+
+        record.anchor = None;
+        record.proof = Vec::new();
+        let err = transact_call(&record).unwrap_err();
+        assert_eq!(err.to_string(), "a placeholder has no apps");
+
+        let mut beamed = claim.clone();
+        beamed.tx.beamed_outs = Some(BTreeMap::from([(0, B32([5; 32]))]));
+        let record = record_with_proof(&beamed, vec![1], 1, [0x33; 20]).unwrap();
+        let err = transact_call(&record).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "coins[0].dest must be the zero address exactly when output 0 is beamed"
+        );
     }
 
     #[test]
