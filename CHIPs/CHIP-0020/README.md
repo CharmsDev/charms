@@ -24,8 +24,9 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | ERC-20 facade | One `CharmToken` per non-vault tag-`t` app. A vault app has no `CharmToken`, and neither does any other tag. For a non-vault app, `tokenAddress` is the CREATE2 address and does not deploy, and `ensureToken` deploys the minimal-proxy clone. For a vault app, both return the underlying ERC-20 recorded for that vault, or `address(0)` for ETH, and `ensureToken` does not deploy. `balanceOf`, `transfer`, and `transferFrom` apply only to a non-vault clone. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. A vault charm moves through `transact`. The underlying token's `transfer` is unchanged. `_apply` does not deploy a clone. |
 | ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
-| Finality out of Ethereum | A new `scrolls_ethereum` canister signs the Charms tx id after the execution block is beacon-finalized. Same pattern as Cardano's `FINALITY_VKEY`. |
-| Guest | Unchanged for Ethereum-local use. Rebuilt once, as v16, when `Tx` gains an `Ethereum` arm. |
+| Finality out of Ethereum | `scrolls_ethereum` verifies a beacon light-client proof that the execution block is finalized, then signs the Charms tx id. The guest still checks that one Ed25519 signature, as it does for Cardano's `FINALITY_VKEY`. |
+| Guest | Unchanged for Ethereum-local use. Rebuilt once, as v16, when `Tx` gains an `Ethereum` arm. That rebuild hardcodes `ETHEREUM_FINALITY_VKEY`. Later beacon forks do not change the constant. |
+| `scrolls_ethereum` lifetime | Upgradeable, with one controller. Not blackholed. A beacon fork that changes a light-client index is a wasm upgrade of this canister. Bitcoin and Cardano Scrolls stay blackholed. |
 | Upgrade | ERC-1967 proxy. Every call `delegatecall`s. The upgrade function lives on the implementation (OpenZeppelin UUPS), so `transact` and `transfer` do not pay an admin check. The proxy address is the stable `Charms` address. |
 
 ## What a caller does
@@ -272,7 +273,6 @@ interface ICharms {
         returns (ICharmsTypes.App memory app, uint8 scale);
 
     /// @notice Block number of a beam-out, or 0 if that id did not beam.
-    /// `scrolls_ethereum` reads this at the `finalized` tag.
     function beamSourceAt(bytes32 txId) external view returns (uint256 blockNumber);
 }
 
@@ -682,24 +682,143 @@ A beam-in of an ordinary charm mints the ERC-20 representation and does not touc
 
 Spending a placeholder as an ordinary input before the claim consumes the id. The source chain has already beamed to that hash. The charms are not claimable anymore. The CLI warns on a native spend of an empty UTXO.
 
-**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. Token sums still balance, so the spell is native unless some other app makes it non-simple. Beamed outputs have no owner and create no UTXO. `beamSourceAt[ethTxId] = block.number`. After the execution block is beacon-finalized (the `finalized` tag, about two epochs), `scrolls_ethereum` attests it. The destination spell's prev tx is `EthereumTx::WithFinalityProof`. The guest checks that signature in `proven_final` and then runs the same beam checks it runs for Bitcoin and Cardano.
+**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. Token sums still balance, so the spell is native unless some other app makes it non-simple. Beamed outputs have no owner and create no UTXO. `beamSourceAt[ethTxId] = block.number`. After that execution block is beacon-finalized, `scrolls_ethereum` attests the id. The destination spell's prev tx is `EthereumTx::WithFinalityProof`. The guest checks that signature in `proven_final` and then runs the same beam checks it runs for Bitcoin and Cardano.
 
-The canister is a new member of `scrolls/`, deployed and then blackholed, like its siblings.
+The guest does not grow a beacon light client. `EthereumTx::WithFinalityProof` stays `{ tx: EthTransact, signature: [u8; 64] }`. `proven_final` is still one Ed25519 check.
+
+`scrolls_ethereum` is a new canister under `scrolls/`. It is not blackholed. It has one controller, chosen at deploy and not named here. `scrolls_bitcoin` and `scrolls_cardano` stay blackholed. This canister is the exception because a beacon fork can change a generalized index or the execution payload's SSZ layout, and the verifier has to change with it. A wasm upgrade keeps the canister id. `sign_with_schnorr` with key `key_1` and derivation path `["scrolls", "ethereum", "finality"]` keeps the same public key, so `ETHEREUM_FINALITY_VKEY` does not change. A new canister at each fork would be a new id, a new key, and another guest build. That is rejected.
 
 ```candid
+type storage_proof = record { key : blob; proof : vec blob };
+type certify_proofs = record {
+  updates : vec blob;
+  finality : blob;
+  account_proof : vec blob;
+  storage_proofs : vec storage_proof;
+};
+
 service : {
-  certify_final : (eth_tx_id : blob) -> (variant { Ok : blob; Err : text });
+  certify_final : (eth_tx_id : blob, proofs : opt certify_proofs) -> (variant { Ok : blob; Err : text });
   finality_public_key : () -> (blob) query;
+  finality_status : () -> (record {
+    finalized_slot : nat64;
+    finalized_epoch : nat64;
+    current_period : nat64;
+    implementation : blob;
+  }) query;
+  reset_checkpoint : (bootstrap : blob) -> (variant { Ok; Err : text });
 }
 ```
 
-The query is `finality_public_key`. Cardano's Rust constant for the same kind of key is `FINALITY_VKEY`. The canister method keeps its own name. `certify_final` calls `Charms.beamSourceAt(ethTxId)` through the ICP EVM RPC canister at block tag `finalized`, requiring the same answer from at least three providers. If the stored block number is non-zero, it signs with `sign_with_schnorr` (Ed25519) under the derivation path `["scrolls", "ethereum", "finality"]`.
+`updates` and `finality` are SSZ. `updates` runs from the oldest period. `account_proof` is the Merkle-Patricia nodes for the Charms proxy. Each `storage_proof` opens one slot. `finality_public_key` is the query. Cardano's Rust constant for the same kind of key is `FINALITY_VKEY`. The canister method keeps its own name. `reset_checkpoint` accepts a call only from the controller.
 
-The message is `SHA-256("charms/ethereum/finality/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ ethTxId)`. The signature is 64 bytes. The guest does not receive the spell from the canister. It already has the spell bytes in the `EthereumTx` record, and `ethTxId` is the hash of those bytes. The signature says the canonical contract accepted that id after finality.
+### The light-client store
+
+The canister stores a trusted bootstrap checkpoint, the current sync committee, the next sync committee, and the latest verified finalized beacon header with its execution payload header. The execution payload header is where the execution `state_root` and the execution block number come from.
+
+A sync-committee period is 256 epochs. An epoch is 32 slots of 12 seconds, so a period is 98,304 seconds (27.3 hours). The canister verifies at most one `LightClientUpdate` in a message. A daily ICP timer fetches `GET /eth/v1/beacon/light_client/updates?start_period=<stored period>&count=1` with `Accept: application/octet-stream` and verifies that object. A tick that finds the period has not changed does nothing. If the timer misses several periods, each later tick advances one period.
+
+Those responses are untrusted input. The canister verifies them. The beacon API is not a source of truth.
+
+The current slot is ICP time converted to seconds, minus mainnet beacon genesis `1606824023`, divided by 12. The canister does not ask a beacon node for the time.
+
+### certify_final
+
+`certify_final(ethTxId, proofs)` signs only after the checks below succeed. When `proofs` is absent, the canister fetches the same bytes with HTTPS outcalls and runs the same checks. A fetched byte string is not trusted because it arrived from the network. Caller-supplied bytes and fetched bytes are one kind of input.
+
+One message verifies at most one `LightClientUpdate` and one `LightClientFinalityUpdate`. If the stored committee cannot verify the finality update, the canister applies one update. If that is still not enough, it returns an error and does not sign. The caller retries. A message does not walk an open-ended backlog.
+
+The checks run in this order.
+
+1. The `LightClientFinalityUpdate` has a sync-committee aggregate signature whose participation satisfies `bits * 3 >= 512 * 2` (at least 342 of 512). The signature is BLS12-381 under the stored committee for that signature period, over the signing root the light-client spec defines for the attested header.
+2. The finality branch connects `finalized_header` to the attested beacon state's `state_root`.
+3. The execution-payload branch connects the execution payload header to the attested beacon `body_root`. The canister reads `state_root` and `block_number` from that header.
+4. An account proof for the Charms proxy, against that `state_root`. The canister recovers the account from the proof nodes. The code hash equals the deployed proxy bytecode. The proved account is the proxy. Delegatecall keeps the implementation's storage there. The implementation contract's own account is the wrong account.
+5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout, and it is a constant in the canister for one implementation. The trie key is `keccak256(abi.encode(ethTxId, slot))`. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`.
+6. A storage proof that the ERC-1967 implementation slot equals the implementation address the canister expects. A `Charms` upgrade that moves the mapping fails this check until a canister upgrade records the new implementation and the new slot.
+
+The canister then signs with `sign_with_schnorr` (Ed25519) under the derivation path above.
+
+The message is `SHA-256("charms/ethereum/finality/v1" ‖ chainId_be_u256 ‖ Charms_20 ‖ ethTxId)`. The signature is 64 bytes. The guest does not receive the spell from the canister. It already has the spell bytes in the `EthereumTx` record, and `ethTxId` is the hash of those bytes. The signature says the canonical contract accepted that id in a beacon-finalized execution state.
 
 `EthereumTx::proven_final` is true only when `chain_id` is 1, `charms` equals the deployed mainnet address, and the signature verifies under `ETHEREUM_FINALITY_VKEY`. A testnet guest build uses different constants and is not a mainnet proof.
 
-This split is deliberate. Inbound finality stays in the guest, which already knows how to check it. Outbound finality follows Cardano, because a beacon light client inside the spell-checker would have to be rebuilt on sync-committee and generalized-index changes. The trust added is the same class as Cardano's `FINALITY_VKEY`: the canister's key, plus the EVM RPC providers it requires to agree.
+Agreement among EVM RPC providers at block tag `finalized` is not a check on this path. The state root comes from the verified finality update, and the storage proof is checked against that root. Providers cannot repair a bad proof, and a requirement that they agree can reject a proof the canister has already checked. That is a stall, which is the failure this design is removing. Operators can compare `finality_status` with a beacon node they run. That comparison does not gate the signature.
+
+### Beacon forks and the guest key
+
+Generalized indices and the execution payload's SSZ type change at forks. Electra is the change the consensus specs already describe. The finalized-checkpoint root moves from generalized index 105 to 169, the current sync committee from 54 to 86, and the next sync committee from 55 to 87. Deneb and Electra also extended the execution payload header, which changes its tree hash. The fork table (epochs, indices, and payload type) lives in the wasm. A fork that changes any of them needs a wasm upgrade before the fork epoch. If the upgrade is late, `certify_final` fails closed and does not accept an update it cannot verify.
+
+Blackholing would freeze that table. The next incompatible fork would stop certification, and the only recovery would be a new canister. A new canister rotates `ETHEREUM_FINALITY_VKEY` and forces a spell-checker rebuild. Keeping one upgradeable canister is how the guest constant survives a fork. The cost is the controller. A wasm upgrade can sign a header that did not finalize. That is the same capability as the finality key. The controller is a governance principal, not an individual's day-to-day key.
+
+### Weak subjectivity
+
+A light client that is too far behind cannot tell the canonical chain from a conflicting history. Electra computes that window with `compute_weak_subjectivity_period` in the [weak subjectivity guide](https://ethereum.github.io/consensus-specs/electra/weak-subjectivity/). The spec's worked example caps the period at 3,532 epochs once total active balance is at least 16,777,216 ETH. 3,532 epochs is 3,532 * 32 * 12 = 1,356,288 seconds, which is 15.7 days. The canister does not hold a full beacon state, so it cannot recompute that function. It stores `ws_period_epochs`, which the controller sets. The initial value follows the spec period for stake at deploy. If the published period shrinks, the controller lowers the stored value. A stored period longer than the spec period would keep a checkpoint that is already too old.
+
+When the current epoch is past the stored finalized epoch plus `ws_period_epochs`, the canister rejects updates and refuses to sign. Recovery is `reset_checkpoint` with an SSZ `LightClientBootstrap` (header, current sync committee, and branch). The canister checks the branch against the header's `state_root`. The header being canonical is the controller's assertion. That is weak subjectivity, not a proof the canister can rerun. After the reset, the timer and `certify_final` catch up one period at a time. The Ed25519 key does not change. A dishonest reset can authorize a false beam. `finality_status` changes when it happens, and the call is on chain.
+
+### Trust
+
+The guest trusts one Ed25519 key, `ETHEREUM_FINALITY_VKEY`. That key is the canister's ICP threshold Schnorr key. The canister does not hold the seed. This is the same class of assumption as Cardano's `FINALITY_VKEY`.
+
+The canister trusts a supermajority of each sync committee it applies, using `bits * 3 >= 512 * 2`. The protocol does not slash a committee member for a light-client signature. A committee that signs a false finality update is not punished for that signature. Members are sampled from the active set and the sample rotates every 27.3 hours. The signature itself has no slashing condition.
+
+The canister also trusts its controller. An upgrade or a checkpoint reset changes what can be signed, and the guest key stays put.
+
+EVM RPC providers and beacon API hosts are not in that set. They supply bytes. The checks above accept or reject the bytes.
+
+Inbound finality stays in the guest. The guest already checks Bitcoin work and the Cardano finality signature. A beacon light client in the spell-checker would be rebuilt whenever an index changes, and that rebuild is a new guest. The light client lives in the canister so `ETHEREUM_FINALITY_VKEY` can stay.
+
+## Cost
+
+Cycle prices below are from the [Internet Computer cycle-cost reference](https://docs.internetcomputer.org/references/cycle-costs/). One trillion cycles is 1 XDR. The dollar figures use 1 XDR = $1.366430, the rate that page dated 22 May 2026. The signature price does not depend on the calling subnet. Instruction and outcall prices below are the 13-node application-subnet column. A 34-node subnet charges about 2.6 times as many cycles for those two.
+
+| Step | Cycles | About |
+|---|---|---|
+| `sign_with_schnorr`, Ed25519, key `key_1` | 26,153,846,153 | $0.036 |
+| One quorum aggregate verification | about 2.3 billion, if one wasm operator is one instruction | $0.003 |
+| One light-client HTTPS outcall, pricing version 2, response of a few tens of kilobytes | a few hundred million | under $0.001 |
+| Update-message base fee | 5,000,000 | negligible |
+
+The signature is the certificate. It costs more than ten times the aggregate verification, and the outcall is smaller than either. A certificate that also applies one `LightClientUpdate` verifies two aggregates, about 4.6 billion wasm operators in the measurement below. The [resource limits](https://docs.internetcomputer.org/references/resource-limits/) put 40 billion instructions on one update message and 4 billion on one round of one execution thread. A message may continue on a later round. Two aggregates sit near that round boundary and under the message cap.
+
+The daily timer pays for one aggregate verification and one outcall. That is under one cent a day on a 13-node subnet at the rate above. The timer does not call `sign_with_schnorr`. The signature is charged only when `certify_final` signs.
+
+HTTPS outcalls must use pricing version 2. Version 1 is still the default and prices the reserved response size. If `max_response_bytes` is left at its 2,000,000-byte default, version 1 costs 20.8 billion cycles on a 13-node subnet for the response term alone (`800 * 2,000,000 * 13`), which is the same order as the signature. The canister also sets `max_response_bytes` to a cap that fits a sync committee (24,576 bytes of pubkeys, plus the header and the branches). 128 KiB is enough. The outcall dollar figure applies the version 2 formula to that cap. This spike did not time a live outcall.
+
+A later option, not part of v16, is to sign one Merkle root of many `ethTxId`s and let the guest check a membership proof. That amortizes the 26 billion cycles. It also changes the guest, because `proven_final` today verifies one signature over one id. It earns a design only if certificate volume makes that signature the budget.
+
+## Light client library
+
+Use `helios-consensus-core` 0.11.1 from [a16z/helios](https://github.com/a16z/helios/tree/0.11.1/ethereum/consensus-core). [sp1-helios](https://github.com/succinctlabs/sp1-helios) pins that tag and verifies light-client updates with this crate inside SP1. The wasm32 build below is the check that matters for a canister. The BLS backend is `bls12_381` 0.8 with the `experimental` feature, the pure Rust zkcrypto implementation.
+
+The canister build is `wasm32-unknown-unknown`. This revision does not compile for that target unchanged. Its wasm32-only dependencies are `getrandom` with the `js` feature and `wasmtimer`. A dev build with Rust 1.96.1 does link, and the resulting module imports five wasm-bindgen symbols (`__wbindgen_placeholder__` and `__wbindgen_externref_xform__`). An ICP canister cannot provide those imports.
+
+Drop those two dependencies and use `std::time::SystemTime` for the slot helper. The canister passes ICP time in. It does not call `SystemTime::now`. `bls12_381` 0.8 still pulls `getrandom` 0.2 through `rand_core` 0.6, and that crate refuses `wasm32-unknown-unknown` unless `js` or `custom` is enabled. Enable `custom` and register a function that returns an error, as `scrolls_cardano` already does. Verification does not draw random bytes. The benchmark below returned success, so this path did not call the stub.
+
+After that patch, `cargo build --release --target wasm32-unknown-unknown` of a cdylib that calls the crate produces a module of 600,325 bytes with no import section. That file includes the benchmark exports, so a canister that only verifies updates is smaller. Rustc was 1.96.1. The release profile was opt-level 3, codegen-units 16, and no LTO.
+
+The measurement is one minimum-quorum check. 342 of 512 committee keys participate, which is the smallest bit count that satisfies `bits * 3 >= 512 * 2`. Helios then starts from the committee aggregate and subtracts the other 170 keys. Each subtraction decompresses a compressed G1 pubkey. The signature check is `Signature::verify` from the same crate (hash to G2, the crate's scalar-multiplication subgroup check, and one pairing).
+
+The host was a 4-vCPU Xeon under KVM. The run was single-threaded. Wasmtime was 34.0.2 with Cranelift speed optimization. Fuel counts wasm operators at one each, except `nop`, `drop`, and some control-flow operators, which cost nothing. The ICP instruction counter weights operators differently. The cycle row above treats one fuel unit as one instruction. A run under `ic0.performance_counter` on a replica can move that row. Wall times are the median of five calls after one warmup call. Every call returned success, including a reject of a signature over a different message during setup.
+
+| Piece | Wasmtime fuel | Median wall time |
+|---|---|---|
+| Decompress the 170 subtracted keys | 1,899,084,026 | 99.0 ms (98.6 to 99.4) |
+| Add those 170 points, already decompressed | 17,878,101 | 0.92 ms (0.91 to 0.92) |
+| Helios participating-key aggregate | 1,928,184,021 | 101 ms (100.4 to 101.1) |
+| `Signature::verify` | 367,867,991 | 18.7 ms (18.7 to 18.8) |
+| Aggregate and verify, the quorum check | 2,296,052,001 | 120 ms (119.2 to 122.2) |
+
+Decompression is 98.5 percent of the aggregate and 83 percent of the quorum check. Point addition is not the budget. The check cannot get twice as cheap without decoding fewer keys or a faster field square root. A committee with every bit set subtracts nothing, so the minimum legal quorum is the expensive case. The naive subgroup check inside `Signature::verify` is 117 million fuel. `G2Affine::is_torsion_free` on the same point is 12.6 million. The difference is about 100 million fuel, 4.5 percent of the quorum check. Swapping that check does not move a certificate whose large terms are the signature and the key decompression.
+
+A published SP1 measurement of Helios without BLS precompiles is 3.36 billion RISC-V cycles for a finality update and 3.37 billion for a period update, 6.73 billion combined ([Succinct Ships: Optimized bn254 & bls12-381 Precompiles in SP1](https://blog.succinct.xyz/succinctshipsprecompiles/), Uma Roy, 7 October 2024). Those counts are RISC-V cycles on SP1. The table above counts wasm operators. Both sit in the 1 to 10 billion band. ICP has no BLS12-381 precompile, so the column that applies is the one without precompiles. The precompile column is about 50 million cycles.
+
+`helios-consensus-core` 0.11.1 already switches proof indices at `forks.electra.epoch`. Finality is generalized index 105 before Electra and 169 after. The code stores `(index, depth)` as `(41, 6)` and then `(41, 7)`. The current sync committee is 54 and then 86. The next committee is 55 and then 87. Those generalized indices are the ones in the [Electra light-client sync protocol](https://ethereum.github.io/consensus-specs/electra/light-client/sync-protocol/). The execution payload branch is hardcoded at depth 4, index 9, against the beacon body root. A later fork that moves that field is a wasm change. `Forks` has a `fulu` version for the signing domain, and the proof functions in this revision do not branch on it.
+
+Two calls in this crate do not mean what the canister needs. `verify_finality_update` accepts any non-zero participation whose aggregate signature matches. The 2/3 check is in `apply_finality_update`, which returns `None` when the quorum fails instead of returning an error. `force_update` can apply an update that missed the quorum. The canister requires `bits * 3 >= 512 * 2` itself. It does not call `force_update`, and it does not call `apply_update_no_quorum_check`.
+
+`ethereum-consensus` (ralexstokes, commit `5031d31`, 18 July 2025) is not the crate to start from. A fresh resolve fails because `multihash` 0.16 depends on yanked `core2` 0.4.0, and that checkout has no `Cargo.lock`. Its BLS backend is `blst`, and the crate also depends on `c-kzg`. `blst` 0.3.17 by itself does compile and link for `wasm32-unknown-unknown` (a one-function crate, `cargo build --target wasm32-unknown-unknown`, Rust 1.96.1). A faster C backend is possible later. It does not include the light-client proofs or the fork indices. Lighthouse's `consensus/types` on the stable branch depends on `bls` (blst), `rayon`, `parking_lot`, `regex`, `tempfile`, and `rand`. That is a beacon-node crate. It was not built. The manifest is enough to reject it for a canister.
 
 ## Proofs
 
@@ -810,7 +929,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 - **u64.** A single output amount and the sum of a spell's inputs of one app must fit in `u64`, because the guest adds them as `u64`. Balances in storage are `uint256` so many UTXOs can sum past `u64`; the facade then needs more than one call, each under the cap.
 - **Weird tokens.** Fee-on-transfer reverts on `wrap`. On `unwrap`, only a fee taken out of the amount sent is accepted: the recipient's balance may end below what it was plus the amount unwrapped, and that shortfall does not revert. A fee charged on top of the amount is unsupported. It reverts when the vault holds exactly `locked`, and with surplus it can leave `held < locked` so later vault operations fail. Rebasing is unsupported. A token that blocklists `Charms` can freeze that vault and no other. The first `wrap` stores the canonical `scale`. A later `decimals()` that would change it reverts. The `App` stays the one identity above.
 - **Mixed pins.** After a versioned app bumps its version, one owner can hold UTXOs pinned to different versions. The facade reverts with `MixedVersions` when the inputs it would select do not share a pin. A proved `transact` runs the new binary, which is what `authorize_version_changes` already requires.
-- **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits for `finalized`.
+- **Reorgs.** A native transfer reorgs with Ethereum, like any ERC-20. A beam waits until the canister's finalized execution header covers the block in `beamSourceAt`.
 - **History.** `Transaction` carries the spell CBOR because `wrap`, `unwrap`, and the facade build it inside the contract, where it is not in calldata. Proving a later spend of a bundle needs that record. Native spends of plain UTXOs do not: `head` has the amount. Indexers archive the logs; EIP-4444 makes that an operator concern, not a consensus one.
 
 ## Build order
@@ -819,7 +938,7 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 
 **Phase 1. Ethereum-local, still v15.** `CharmsProxy`, `Charms`, the shared `CharmToken` implementation, and the per-app clones: native `transact`, the deque, EIP-712 and ERC-1271, the vault, events, and ERC-1967 upgrade under the admin. The phase-1 implementation accepts spell version 15 and rejects proofs and `beamed_outs`. The record type and `tx_id` compile on the host, in the CLI, and in the spell-checker crate. The committed guest ELF is unchanged and still has no Ethereum arm. A proof path that sees an Ethereum transaction returns an error and does not accept the spell. CLI for native spells, `util dest`, `util eth-token`, `util eth-vault`. Invariant tests for the supply, balance, and `locked` tables, plus a test that an upgrade keeps token addresses and existing `UtxoId`s. Audit, then the CREATE2 proxy deployment that fixes `ETHEREUM_CHARMS`. No beaming and no proofs.
 
-**Phase 2. v16.** Deploy and blackhole `scrolls_ethereum` before the guest build, because the guest hardcodes `ETHEREUM_FINALITY_VKEY`. Replace the proof-path error for an Ethereum transaction with the `is_correct` guards, then rebuild the spell-checker and the wrapper. Publish `programVKey` and compile it into a new `Charms` implementation. The admin calls `upgradeToAndCall` with empty `data`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
+**Phase 2. v16.** Deploy `scrolls_ethereum`, read `finality_public_key`, and compile that key in as `ETHEREUM_FINALITY_VKEY` before the guest build. Leave the canister upgradeable. Install the bootstrap with `reset_checkpoint` before the first beam. Replace the proof-path error for an Ethereum transaction with the `is_correct` guards, then rebuild the spell-checker and the wrapper. Publish `programVKey` and compile it into a new `Charms` implementation. The admin calls `upgradeToAndCall` with empty `data`. Wire the prover's Ethereum arm. Do the usual cross-chain version bump. End-to-end on testnets with a dev guest: Bitcoin to Ethereum and back, Cardano to Ethereum and back, a USDC vault round trip, and an ERC-20 `transfer` that splits a UTXO which also holds an NFT.
 
 **Phase 3. Can wait.** CHIP-0420 metadata on the facade, read once from the reference NFT `n/<identity>/<vk>` if that NFT is live on Ethereum. A TypeScript helper for EIP-712 and calldata. An ERC-721 facade for tag `n`. Any L2 deployment, which is a different `chain_id` and a different guest constant, not a flag on this contract.
 
@@ -836,7 +955,11 @@ The usual v16 chores ride along: Cardano's protocol-version NFT, `scrolls_bitcoi
 | Vault policy as an app wasm | Every wrap needs a prover. The wasm cannot see the ERC-20 transfer. A wasm that permits a mint permits it on Bitcoin. A beam-in that the guest treats as a simple transfer would skip that wasm and still look like an unlock if Solidity obeyed the public input. |
 | Prove every ERC-20 transfer | Matches Bitcoin, and makes `transfer` cost a Groth16 verification plus a prover round trip. The contract can check a simple transfer itself. That is the point of doing this on Ethereum. |
 | `balanceOf` counts only single-token UTXOs, and attributes bundles to `address(Charms)` | `balanceOf` would not be the total on that address's UTXOs. The requirement is the total. Custom-tag bundles stay in the balance and out of automatic selection instead. |
-| Beacon light client inside the guest | Finality would be trustless, and every beacon consensus change would be a guest rebuild. Cardano already chose a Scrolls signature for the same reason. |
+| Beacon light client inside the guest | An index change would rebuild the spell-checker. The light client sits in `scrolls_ethereum`, so `ETHEREUM_FINALITY_VKEY` stays across those forks. |
+| `eth_call` of `beamSourceAt` at tag `finalized`, from at least three EVM RPC providers | The previous check. Those providers are not the beacon chain. They can agree on a wrong block, or disagree and stall a beam whose output is already spent. |
+| The same provider agreement, plus the light client | The storage proof is checked against the light client's execution state root. The extra vote can only reject a proof that already verified. |
+| Blackhole `scrolls_ethereum` | The next fork that changes a generalized index or the execution payload SSZ stops certification. A new canister is the recovery, and it rotates `ETHEREUM_FINALITY_VKEY`. |
+| A new canister and key at each beacon fork | `sign_with_schnorr` follows the canister id. A new id is a new guest constant at every consensus fork. |
 | Bitcoin and Cardano light clients in Solidity | A second copy of `proven_final`. The proof is already that check. |
 | A new `Charms` deployment per protocol version | CREATE2 token addresses and the vault identity are functions of the proxy address. A new proxy splits liquidity and changes `ETHEREUM_CHARMS` in the guest. |
 | A transparent proxy | Every call would check `msg.sender` against an admin before delegating. UUPS keeps that check on `upgradeToAndCall` only, so `transact` and `transfer` pay one `delegatecall`. |
@@ -850,12 +973,16 @@ The vault makes a forged beam worth real tokens. A private Bitcoin fork deep eno
 
 A `SpellCodec` that diverges from `util::write` is a liveness failure: proofs do not verify and ids do not match. A codec that is not injective is a safety failure. The phase 0 vectors, including a blob that tries to swallow the next amount, are the mitigation.
 
-Outbound beams stall if the EVM RPC providers disagree or the canister is out of cycles. The attestation can be retried. The UTXO is already spent; the funds are not returned and not lost.
+Outbound beams stall when the light client is past its weak-subjectivity window, when a beacon fork lands before the wasm upgrade, or when the canister is out of cycles. `certify_final` can be retried after catch-up, after `reset_checkpoint`, or after the fork upgrade. The Ethereum output is already spent. The funds are not returned, and they are not lost.
+
+A sync committee that signs a false finality update for one period can cause a false beam. The protocol does not slash that signature. The vault cap bounds the loss, which is the same bound as a stolen finality key. A controller who upgrades the wasm or calls `reset_checkpoint` can do the same thing, and the guest key does not rotate to take that power away.
 
 The admin can call `upgradeToAndCall` immediately. That call can change the native path, the vault, and which proofs the contract accepts. There is no delay. The `programVKey` in the new implementation has to equal the reproducible `charms spell vk` output for that spell version. Watch the ERC-1967 implementation slot. An upgrade that changes `SpellCodec` or the `ethTxId` preimage without a protocol bump desynchronizes new spells from the guest.
 
 ## What is not decided here
 
-The admin address is chosen at deploy time. The design does not name it.
+The admin address, the `scrolls_ethereum` controller, the beacon API URL, and the execution API URL are chosen at deploy. The design does not name them.
+
+The bootstrap checkpoint, the `beamSourceAt` slot index, and the expected `Charms` implementation address are fixed when that implementation is deployed. `ws_period_epochs` starts from the Electra spec period for the stake at that time.
 
 v16 keeps `FINALITY_TARGET_BITS` at its current value. The vault cap is the bound on a forged beam.
