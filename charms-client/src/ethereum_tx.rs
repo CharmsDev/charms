@@ -110,28 +110,7 @@ impl EthereumTx {
             .as_ref()
             .context("ethereum spell is missing inputs")?;
         ensure!(!ins.is_empty(), "a proved ethereum spell spends an input");
-        let coins = spell
-            .tx
-            .coins
-            .as_ref()
-            .context("ethereum spell is missing coins")?;
-        ensure!(
-            coins.len() == spell.tx.outs.len(),
-            "coins length ({}) must match outs length ({})",
-            coins.len(),
-            spell.tx.outs.len()
-        );
-        for (index, coin) in coins.iter().enumerate() {
-            ensure!(coin.amount == 0, "coins[{index}].amount must be 0");
-            ensure!(
-                coin.content.is_none(),
-                "coins[{index}].content must be empty"
-            );
-            ensure!(
-                coin.dest.len() == 20,
-                "coins[{index}].dest must be a 20-byte address"
-            );
-        }
+        ensure_ethereum_output_coins(spell)?;
         let canonical = util::write(spell)?;
         ensure!(
             self.spell == canonical,
@@ -244,6 +223,35 @@ pub fn eth_tx_id(
     hasher.update(anchor.unwrap_or([0u8; 32]));
     hasher.update(spell_cbor);
     hasher.finalize().into()
+}
+
+/// Output coins of a spell whose transaction is `Tx::Ethereum`.
+///
+/// The record reader rejects any other shape, so the prover must too.
+pub fn ensure_ethereum_output_coins(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let coins = spell
+        .tx
+        .coins
+        .as_ref()
+        .context("ethereum spell is missing coins")?;
+    ensure!(
+        coins.len() == spell.tx.outs.len(),
+        "coins length ({}) must match outs length ({})",
+        coins.len(),
+        spell.tx.outs.len()
+    );
+    for (index, coin) in coins.iter().enumerate() {
+        ensure!(coin.amount == 0, "coins[{index}].amount must be 0");
+        ensure!(
+            coin.content.is_none(),
+            "coins[{index}].content must be empty"
+        );
+        ensure!(
+            coin.dest.len() == 20,
+            "coins[{index}].dest must be a 20-byte address"
+        );
+    }
+    Ok(())
 }
 
 pub fn is_placeholder(spell: &NormalizedSpell) -> bool {
@@ -840,6 +848,50 @@ app_public_inputs: {}
         );
     }
 
+    fn claim_of(source: &EthereumTx, amount: u64, dest: Vec<u8>) -> NormalizedSpell {
+        let mut claim = NormalizedSpell::default();
+        claim.tx.ins = Some(vec![UtxoId(source.tx_id(), 0)]);
+        claim.tx.outs = vec![NormalizedCharms::new()];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount,
+            dest,
+            content: None,
+        }]);
+        claim
+    }
+
+    #[test]
+    fn a_nonzero_amount_is_rejected_for_an_ethereum_spell() {
+        let source = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        let claim = claim_of(&source, 1, vec![1; 20]);
+        let err = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(source)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "coins[0].amount must be 0");
+    }
+
+    #[test]
+    fn a_short_destination_is_rejected_for_an_ethereum_spell() {
+        let source = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        let claim = claim_of(&source, 0, vec![1; 19]);
+        let err = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(source)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err.to_string(), "coins[0].dest must be a 20-byte address");
+    }
+
     fn proved_spell() -> NormalizedSpell {
         let mut spell = NormalizedSpell::default();
         spell.mock = true;
@@ -898,6 +950,7 @@ app_public_inputs: {}
         let mut claim = NormalizedSpell::default();
         claim.mock = true;
         claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        claim.tx.coins = Some(Vec::new());
         let ok = is_correct(
             &claim,
             &vec![Tx::Ethereum(record)],
@@ -942,6 +995,7 @@ app_public_inputs: {}
         let mut claim = NormalizedSpell::default();
         claim.mock = true;
         claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        claim.tx.coins = Some(Vec::new());
         let err = is_correct(
             &claim,
             &vec![Tx::Ethereum(record)],
@@ -963,6 +1017,7 @@ app_public_inputs: {}
                 .map(|record| UtxoId(record.tx_id(), 0))
                 .collect(),
         );
+        claim.tx.coins = Some(Vec::new());
         claim
     }
 

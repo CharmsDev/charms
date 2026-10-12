@@ -1,7 +1,7 @@
 use crate::{
     bitcoin_tx::SCROLLS_ADDRS_PUBKEY,
     ethereum_tx::EthereumTx,
-    tx::{EnchantedTx, Tx, by_txid, extended_normalized_spell},
+    tx::{Chain, EnchantedTx, Tx, by_txid, extended_normalized_spell},
 };
 use anyhow::{Context, anyhow, ensure};
 use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature};
@@ -449,6 +449,9 @@ pub fn is_correct(
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
     ensure_ethereum_prev_txs_admissible(spell, prev_txs)?;
+    if hosting_ethereum_record(spell, prev_txs).is_some() {
+        ethereum_tx::ensure_ethereum_output_coins(spell)?;
+    }
     ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
         tx_ins_beamed_source_utxos
@@ -967,6 +970,33 @@ pub fn ensure_ethereum_prev_txs_admissible(
             record.tx_id()
         );
     }
+    Ok(())
+}
+
+/// The transaction that created `spell.tx.ins[0]` is the spell's host.
+/// A request for a different chain cannot be built after proving.
+pub fn ensure_requested_chain_matches_host(
+    chain: Chain,
+    spell: &NormalizedSpell,
+    prev_txs: &[Tx],
+) -> anyhow::Result<()> {
+    let Some(first) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
+        return Ok(());
+    };
+    let Some(host) = prev_txs.iter().find(|tx| tx.tx_id() == first.0) else {
+        return Ok(());
+    };
+    let hosted = match host {
+        Tx::Bitcoin(_) => Chain::Bitcoin,
+        Tx::Cardano(_) => Chain::Cardano,
+        Tx::Ethereum(_) => Chain::Ethereum,
+    };
+    ensure!(
+        chain == hosted,
+        "spell is hosted on {} but the requested chain is {}",
+        hosted.as_ref(),
+        chain.as_ref()
+    );
     Ok(())
 }
 

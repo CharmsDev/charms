@@ -217,6 +217,76 @@ mod test {
         assert_eq!(committed_vk, SPELL_VK);
         assert_eq!(committed_spell, claim);
     }
+
+    fn ethereum_claim(amount: u64, dest: Vec<u8>) -> (NormalizedSpell, Tx) {
+        let mut salt = [0u8; 32];
+        salt[31] = 9;
+        let carried: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 16
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let plan = charms_client::ethereum_tx::plan_placeholder(
+            &carried,
+            &charms_client::ethereum_tx::PlaceholderRequest {
+                chain_id: 1,
+                charms: [0x33; 20],
+                caller: [0x11; 20],
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(plan.record.tx_id(), 0)]);
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![NativeOutput {
+            amount,
+            dest,
+            content: None,
+        }]);
+        (spell, Tx::Ethereum(plan.record))
+    }
+
+    async fn guest_runs_ethereum_claim(amount: u64, dest: Vec<u8>) -> (u64, usize) {
+        let (spell, prev) = ethereum_claim(amount, dest);
+        let input = SpellProverInput {
+            self_spell_vk: SPELL_VK,
+            prev_txs: vec![prev],
+            spell,
+            tx_ins_beamed_source_utxos: BTreeMap::new(),
+            app_input: None,
+            scroll_outputs: None,
+        };
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&input).unwrap());
+        let client = ProverClient::builder().light().build().await;
+        let (pv, report) = client
+            .execute(Elf::Static(SPELL_CHECKER_BINARY), stdin)
+            .await
+            .expect("guest execution returns a report");
+        (report.exit_code, pv.as_slice().len())
+    }
+
+    #[tokio::test]
+    async fn guest_rejects_an_ethereum_spell_with_a_bad_output() {
+        let (code, committed) = guest_runs_ethereum_claim(0, vec![1; 20]).await;
+        assert_eq!(code, 0);
+        assert!(committed > 0);
+        for (amount, dest) in [(1u64, vec![1; 20]), (0, vec![1; 19])] {
+            let (code, committed) = guest_runs_ethereum_claim(amount, dest).await;
+            assert_eq!(code, 1);
+            assert_eq!(committed, 0);
+        }
+    }
 }
 
 #[cfg(all(test, feature = "prover"))]

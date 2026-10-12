@@ -120,6 +120,10 @@ impl ProveSpellTxImpl {
         } = prove_request;
 
         charms_client::ensure_ethereum_prev_txs_admissible(&norm_spell, &prev_txs)?;
+        charms_client::ensure_requested_chain_matches_host(chain, &norm_spell, &prev_txs)?;
+        if chain == Chain::Ethereum {
+            charms_client::ethereum_tx::ensure_ethereum_output_coins(&norm_spell)?;
+        }
         let ethereum_host = if chain == Chain::Ethereum {
             Some(charms_client::ethereum_tx::hosting_chain(
                 &norm_spell,
@@ -428,5 +432,126 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), expected);
+    }
+
+    #[tokio::test]
+    async fn an_ethereum_hosted_spell_does_not_reach_a_cardano_prover() {
+        let mut salt = [0u8; 32];
+        salt[31] = 9;
+        let carried: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 16
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let plan = charms_client::ethereum_tx::plan_placeholder(
+            &carried,
+            &charms_client::ethereum_tx::PlaceholderRequest {
+                chain_id: 1,
+                charms: [0x33; 20],
+                caller: [0x11; 20],
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![charms_data::UtxoId(plan.record.tx_id(), 0)]);
+        spell.tx.outs = vec![charms_client::NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![charms_data::NativeOutput {
+            amount: 0,
+            dest: vec![1; 20],
+            content: None,
+        }]);
+        let prover = ProveSpellTxImpl::new(false);
+        let err = prover
+            .do_prove_spell_tx(
+                ProveRequest {
+                    spell,
+                    app_private_inputs: Default::default(),
+                    tx_ins_beamed_source_utxos: Default::default(),
+                    binaries: Default::default(),
+                    app_signatures: Default::default(),
+                    prev_txs: vec![Tx::Ethereum(plan.record)],
+                    change_address: "addr".to_string(),
+                    fee_rate: 1.0,
+                    chain: Chain::Cardano,
+                    collateral_utxo: None,
+                },
+                0,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "spell is hosted on ethereum but the requested chain is cardano"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bad_ethereum_output_does_not_reach_the_prover() {
+        let mut salt = [0u8; 32];
+        salt[31] = 9;
+        let carried: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 16
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let plan = charms_client::ethereum_tx::plan_placeholder(
+            &carried,
+            &charms_client::ethereum_tx::PlaceholderRequest {
+                chain_id: 1,
+                charms: [0x33; 20],
+                caller: [0x11; 20],
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![charms_data::UtxoId(plan.record.tx_id(), 0)]);
+        spell.tx.outs = vec![charms_client::NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![charms_data::NativeOutput {
+            amount: 1,
+            dest: vec![1; 20],
+            content: None,
+        }]);
+        let prover = ProveSpellTxImpl::new(false);
+        let err = prover
+            .do_prove_spell_tx(
+                ProveRequest {
+                    spell,
+                    app_private_inputs: Default::default(),
+                    tx_ins_beamed_source_utxos: Default::default(),
+                    binaries: Default::default(),
+                    app_signatures: Default::default(),
+                    prev_txs: vec![Tx::Ethereum(plan.record)],
+                    change_address: "addr".to_string(),
+                    fee_rate: 1.0,
+                    chain: Chain::Ethereum,
+                    collateral_utxo: None,
+                },
+                0,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "coins[0].amount must be 0");
     }
 }
