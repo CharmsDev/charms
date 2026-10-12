@@ -8,7 +8,6 @@ import {CharmsApply} from "../src/CharmsApply.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 
 /// @notice Upgrades a phase-1 proxy to spell version 16.
-/// `programVKey` is the 32 bytes `charms spell vk` prints.
 contract UpgradeToV16 is Script {
     function run(address proxy, address verifier, bytes32 programVKey)
         external
