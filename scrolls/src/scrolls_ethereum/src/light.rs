@@ -9,9 +9,10 @@ use helios_consensus_core::{
     },
     verify_bootstrap, verify_finality_update, verify_update,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use ssz::Decode;
+use std::collections::BTreeMap;
 use tree_hash::TreeHash;
 
 use crate::trie::{ExecProofs, check_storage};
@@ -42,13 +43,132 @@ pub struct SignatureRecord {
     pub signature: Vec<u8>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignatureCache {
+    header: Option<[u8; 32]>,
+    by_tx: BTreeMap<[u8; 32], Vec<u8>>,
+    pending: Vec<SignatureRecord>,
+}
+
+impl SignatureCache {
+    pub const fn empty() -> Self {
+        Self {
+            header: None,
+            by_tx: BTreeMap::new(),
+            pending: Vec::new(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.by_tx.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.by_tx.is_empty() && self.pending.is_empty()
+    }
+
+    pub fn get(&self, eth_tx_id: &[u8; 32], header: &[u8; 32]) -> Option<Vec<u8>> {
+        if self.header != Some(*header) {
+            return None;
+        }
+        self.by_tx.get(eth_tx_id).cloned()
+    }
+
+    pub fn retain_current(&mut self, header: Option<[u8; 32]>) {
+        let Some(header) = header else {
+            *self = Self::empty();
+            return;
+        };
+        if self.header != Some(header) {
+            self.by_tx.clear();
+            self.header = Some(header);
+        }
+        for record in self.pending.drain(..) {
+            if record.header == header {
+                self.by_tx.insert(record.eth_tx_id, record.signature);
+            }
+        }
+    }
+
+    pub fn remember(
+        &mut self,
+        current: &[u8; 32],
+        signed_header: &[u8; 32],
+        eth_tx_id: [u8; 32],
+        signature: Vec<u8>,
+    ) {
+        self.retain_current(Some(*current));
+        if signed_header == current {
+            self.by_tx.insert(eth_tx_id, signature);
+        }
+    }
+
+    fn from_records(records: Vec<SignatureRecord>) -> Self {
+        let Some(first) = records.first() else {
+            return Self::empty();
+        };
+        let header = first.header;
+        if records.iter().all(|record| record.header == header) {
+            let mut by_tx = BTreeMap::new();
+            for record in records {
+                by_tx.insert(record.eth_tx_id, record.signature);
+            }
+            return Self {
+                header: Some(header),
+                by_tx,
+                pending: Vec::new(),
+            };
+        }
+        Self {
+            header: None,
+            by_tx: BTreeMap::new(),
+            pending: records,
+        }
+    }
+}
+
+impl Default for SignatureCache {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl Serialize for SignatureCache {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut records = Vec::new();
+        if let Some(header) = self.header {
+            records.extend(
+                self.by_tx
+                    .iter()
+                    .map(|(eth_tx_id, signature)| SignatureRecord {
+                        eth_tx_id: *eth_tx_id,
+                        header,
+                        signature: signature.clone(),
+                    }),
+            );
+        }
+        records.extend(self.pending.iter().cloned());
+        records.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SignatureCache {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::from_records(Vec::<SignatureRecord>::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Persisted {
     pub chain: Chain,
     pub store: Option<Store>,
     pub public_key: Option<Vec<u8>>,
     #[serde(default)]
-    pub signatures: Vec<SignatureRecord>,
+    pub signatures: SignatureCache,
 }
 
 pub fn current_slot(now_secs: u64) -> u64 {
@@ -95,38 +215,6 @@ pub fn admit_public_fetch(
 
 pub fn finalized_beacon_root(store: &Store) -> [u8; 32] {
     store.finalized_header.beacon().tree_hash_root().0
-}
-
-pub fn cached_signature(
-    records: &[SignatureRecord],
-    eth_tx_id: &[u8; 32],
-    header: &[u8; 32],
-) -> Option<Vec<u8>> {
-    records.iter().find_map(|record| {
-        (record.eth_tx_id == *eth_tx_id && record.header == *header)
-            .then(|| record.signature.clone())
-    })
-}
-
-pub fn remember_signature(
-    records: &mut Vec<SignatureRecord>,
-    eth_tx_id: [u8; 32],
-    header: [u8; 32],
-    signature: Vec<u8>,
-) {
-    if let Some(record) = records
-        .iter_mut()
-        .find(|record| record.eth_tx_id == eth_tx_id)
-    {
-        record.header = header;
-        record.signature = signature;
-        return;
-    }
-    records.push(SignatureRecord {
-        eth_tx_id,
-        header,
-        signature,
-    });
 }
 
 pub fn admit_signature(cycles_available: u128, quote_cycles: u128) -> Result<u128, String> {
@@ -502,24 +590,25 @@ mod tests {
     }
 
     #[test]
-    fn signature_cache_is_keyed_by_tx_and_header() {
-        let mut records = Vec::new();
-        let tx = [1u8; 32];
-        let header = [2u8; 32];
-        assert!(cached_signature(&records, &tx, &header).is_none());
-        remember_signature(&mut records, tx, header, vec![9; 64]);
-        assert_eq!(
-            cached_signature(&records, &tx, &header).unwrap(),
-            vec![9; 64]
-        );
-        assert!(cached_signature(&records, &tx, &[3; 32]).is_none());
-        remember_signature(&mut records, tx, [3; 32], vec![8; 64]);
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            cached_signature(&records, &tx, &[3; 32]).unwrap(),
-            vec![8; 64]
-        );
-        assert!(cached_signature(&records, &tx, &header).is_none());
+    fn signature_cache_keeps_only_the_current_header() {
+        let mut cache = SignatureCache::empty();
+        let old = [2u8; 32];
+        let new = [3u8; 32];
+        cache.remember(&old, &old, [1; 32], vec![9; 64]);
+        cache.remember(&old, &old, [4; 32], vec![8; 64]);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(&[1; 32], &old).unwrap(), vec![9; 64]);
+
+        cache.remember(&new, &old, [1; 32], vec![7; 64]);
+        assert_eq!(cache.len(), 0);
+        assert!(cache.get(&[1; 32], &old).is_none());
+        assert!(cache.get(&[4; 32], &old).is_none());
+        assert!(cache.get(&[1; 32], &new).is_none());
+
+        cache.remember(&new, &new, [1; 32], vec![6; 64]);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get(&[1; 32], &new).unwrap(), vec![6; 64]);
+        assert!(cache.get(&[4; 32], &new).is_none());
     }
 
     #[test]
@@ -550,11 +639,11 @@ mod tests {
             },
             store: Some(store),
             public_key: Some(vec![4; 32]),
-            signatures: vec![SignatureRecord {
-                eth_tx_id: [5; 32],
-                header: [6; 32],
-                signature: vec![7; 64],
-            }],
+            signatures: {
+                let mut cache = SignatureCache::empty();
+                cache.remember(&[6; 32], &[6; 32], [5; 32], vec![7; 64]);
+                cache
+            },
         };
         let bytes = serde_json::to_vec(&persisted).unwrap();
         let back: Persisted = serde_json::from_slice(&bytes).unwrap();
@@ -566,5 +655,29 @@ mod tests {
         value.as_object_mut().unwrap().remove("signatures");
         let older: Persisted = serde_json::from_value(value).unwrap();
         assert!(older.signatures.is_empty());
+
+        let legacy = vec![
+            SignatureRecord {
+                eth_tx_id: [5; 32],
+                header: [6; 32],
+                signature: vec![7; 64],
+            },
+            SignatureRecord {
+                eth_tx_id: [8; 32],
+                header: [9; 32],
+                signature: vec![1; 64],
+            },
+        ];
+        let mut loaded: SignatureCache =
+            serde_json::from_slice(&serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert_eq!(loaded.len(), 0);
+        loaded.retain_current(Some([6; 32]));
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.get(&[5; 32], &[6; 32]).unwrap(), vec![7; 64]);
+        let kept: Vec<SignatureRecord> =
+            serde_json::from_slice(&serde_json::to_vec(&loaded).unwrap()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].header, [6; 32]);
+        assert_eq!(kept[0].eth_tx_id, [5; 32]);
     }
 }

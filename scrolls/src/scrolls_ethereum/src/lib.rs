@@ -37,7 +37,7 @@ thread_local! {
             },
             store: None,
             public_key: None,
-            signatures: Vec::new(),
+            signatures: light::SignatureCache::empty(),
         })
     };
 }
@@ -85,6 +85,7 @@ fn init(config: DeployConfig) {
 
 #[ic_cdk::pre_upgrade]
 fn pre_upgrade() {
+    STATE.with(|state| align_signatures(&mut state.borrow_mut()));
     let bytes = STATE
         .with(|state| serde_json::to_vec(&*state.borrow()))
         .unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
@@ -101,6 +102,7 @@ fn post_upgrade(config: Option<DeployConfig>) {
         let chain = parse_config(config).unwrap_or_else(|e| ic_cdk::trap(&e));
         STATE.with(|state| state.borrow_mut().chain = chain);
     }
+    STATE.with(|state| align_signatures(&mut state.borrow_mut()));
     if STATE.with(|state| state.borrow().public_key.is_none()) {
         schedule_key(Duration::ZERO);
     }
@@ -118,6 +120,7 @@ fn reset_checkpoint(bootstrap: Vec<u8>) -> Result<(), String> {
             now,
             state.chain.ws_period_epochs,
         )?);
+        align_signatures(state);
         Ok(())
     })
 }
@@ -354,10 +357,15 @@ async fn tick() -> Result<(), String> {
     let now = ic_now_secs();
     STATE.with(|state| {
         let state = &mut *state.borrow_mut();
-        let Some(store) = state.store.as_mut() else {
-            return Ok(());
+        let applied = {
+            let Some(store) = state.store.as_mut() else {
+                return Ok(());
+            };
+            light::apply_period_update(store, payload, now, state.chain.ws_period_epochs)
         };
-        light::apply_period_update(store, payload, now, state.chain.ws_period_epochs)
+        applied?;
+        align_signatures(state);
+        Ok(())
     })
 }
 
@@ -614,15 +622,12 @@ async fn fetch_public_key() -> Result<Vec<u8>, String> {
 async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u8>, String> {
     let header = STATE
         .with(|state| {
-            state
-                .borrow()
-                .store
-                .as_ref()
-                .map(light::finalized_beacon_root)
+            let state = &mut *state.borrow_mut();
+            align_signatures(state);
+            state.store.as_ref().map(light::finalized_beacon_root)
         })
         .ok_or_else(|| "Input error: checkpoint is not set".to_string())?;
-    if let Some(signature) =
-        STATE.with(|state| light::cached_signature(&state.borrow().signatures, &eth_tx_id, &header))
+    if let Some(signature) = STATE.with(|state| state.borrow().signatures.get(&eth_tx_id, &header))
     {
         return Ok(signature);
     }
@@ -634,14 +639,22 @@ async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u
     }
     let signature = sign_message(&message).await?;
     STATE.with(|state| {
-        light::remember_signature(
-            &mut state.borrow_mut().signatures,
-            eth_tx_id,
-            header,
-            signature.clone(),
-        );
+        let state = &mut *state.borrow_mut();
+        match state.store.as_ref().map(light::finalized_beacon_root) {
+            Some(current) => {
+                state
+                    .signatures
+                    .remember(&current, &header, eth_tx_id, signature.clone());
+            }
+            None => state.signatures.retain_current(None),
+        }
     });
     Ok(signature)
+}
+
+fn align_signatures(state: &mut Persisted) {
+    let header = state.store.as_ref().map(light::finalized_beacon_root);
+    state.signatures.retain_current(header);
 }
 
 fn signature_quote(message: &[u8; 32]) -> Result<u128, String> {
