@@ -442,10 +442,7 @@ pub fn is_correct(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
-    ensure!(
-        prev_txs.iter().all(|tx| !matches!(tx, Tx::Ethereum(_))),
-        "this build cannot verify an Ethereum transaction"
-    );
+    ensure_ethereum_prev_txs_admissible(spell, prev_txs)?;
     ensure!(beaming_txs_have_finality_proofs(
         prev_txs,
         tx_ins_beamed_source_utxos
@@ -915,6 +912,46 @@ fn apps_satisfied(
 /// can't just look at *any* `prev_txs` entry: beam-source txs are also in `prev_txs`
 /// and may live on a different chain than the hosting tx, so an `any(|t| Bitcoin)`
 /// would misfire on a Cardano spell with a Bitcoin beam source.
+fn hosting_chain_is_ethereum(spell: &NormalizedSpell, prev_txs: &[Tx]) -> bool {
+    let Some(first_in) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
+        return false;
+    };
+    prev_txs.iter().any(|tx| {
+        tx.tx_id() == first_in.0 && matches!(tx, Tx::Ethereum(_))
+    })
+}
+
+fn spell_input_and_ref_txids(spell: &NormalizedSpell) -> BTreeSet<TxId> {
+    spell
+        .tx
+        .ins
+        .iter()
+        .flatten()
+        .chain(spell.tx.refs.iter().flatten())
+        .map(|utxo| utxo.0)
+        .collect()
+}
+
+fn ensure_ethereum_prev_txs_admissible(
+    spell: &NormalizedSpell,
+    prev_txs: &[Tx],
+) -> anyhow::Result<()> {
+    let hosted = hosting_chain_is_ethereum(spell, prev_txs);
+    let created = spell_input_and_ref_txids(spell);
+    for tx in prev_txs {
+        if !matches!(tx, Tx::Ethereum(_)) || tx.proven_final() {
+            continue;
+        }
+        ensure!(
+            hosted && created.contains(&tx.tx_id()),
+            "Ethereum previous transaction {} is not final and did not \
+             create an input or reference of an Ethereum-hosted spell",
+            tx.tx_id()
+        );
+    }
+    Ok(())
+}
+
 fn hosting_chain_is_bitcoin(spell: &NormalizedSpell, prev_txs: &[Tx]) -> bool {
     let Some(first_in) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
         return false;
@@ -1110,6 +1147,7 @@ app_public_inputs: {}
         plan.record
             .extract_and_verify_spell(&[0; 32], false)
             .unwrap();
+        let tx_id = plan.record.tx_id();
         let err = is_correct(
             &carried,
             &vec![crate::tx::Tx::Ethereum(plan.record)],
@@ -1121,7 +1159,11 @@ app_public_inputs: {}
         .unwrap_err();
         assert_eq!(
             err.to_string(),
-            "this build cannot verify an Ethereum transaction"
+            format!(
+                "Ethereum previous transaction {} is not final and did not \
+                 create an input or reference of an Ethereum-hosted spell",
+                tx_id
+            )
         );
     }
 

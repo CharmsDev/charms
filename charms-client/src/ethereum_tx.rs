@@ -1,4 +1,8 @@
-use crate::{CURRENT_VERSION, NormalizedSpell, tx::EnchantedTx, utxo_id_hash_with_nonce};
+use crate::{
+    CURRENT_VERSION, NormalizedSpell,
+    tx::{self, EnchantedTx},
+    utxo_id_hash_with_nonce,
+};
 use anyhow::{Context, ensure};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
 use serde::Serialize;
@@ -70,13 +74,10 @@ impl EthereumTx {
     pub fn decode(&self) -> anyhow::Result<NormalizedSpell> {
         util::read(self.spell.as_slice()).context("ethereum spell CBOR")
     }
-}
 
-impl EnchantedTx for EthereumTx {
-    fn extract_and_verify_spell(
+    fn accept_placeholder(
         &self,
-        _spell_vk: &[u8; 32],
-        mock: bool,
+        committed: NormalizedSpell,
     ) -> anyhow::Result<NormalizedSpell> {
         ensure!(
             self.anchor.is_some(),
@@ -86,17 +87,80 @@ impl EnchantedTx for EthereumTx {
             self.proof.is_empty(),
             "ethereum placeholder proof must be empty"
         );
-        let spell = self.decode()?;
-        if !mock {
-            ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
-        }
-        let (committed, _) = committed_placeholder(&spell)?;
         let canonical = util::write(&committed)?;
         ensure!(
             self.spell == canonical,
             "ethereum spell CBOR is not the committed placeholder"
         );
         Ok(committed)
+    }
+
+    fn verify_proved_spell(
+        &self,
+        spell: &NormalizedSpell,
+        spell_vk: &[u8; 32],
+    ) -> anyhow::Result<NormalizedSpell> {
+        let ins = spell
+            .tx
+            .ins
+            .as_ref()
+            .context("ethereum spell is missing inputs")?;
+        ensure!(!ins.is_empty(), "a proved ethereum spell spends an input");
+        let coins = spell
+            .tx
+            .coins
+            .as_ref()
+            .context("ethereum spell is missing coins")?;
+        ensure!(
+            coins.len() == spell.tx.outs.len(),
+            "coins length ({}) must match outs length ({})",
+            coins.len(),
+            spell.tx.outs.len()
+        );
+        for (index, coin) in coins.iter().enumerate() {
+            ensure!(coin.amount == 0, "coins[{index}].amount must be 0");
+            ensure!(
+                coin.content.is_none(),
+                "coins[{index}].content must be empty"
+            );
+            ensure!(
+                coin.dest.len() == 20,
+                "coins[{index}].dest must be a 20-byte address"
+            );
+        }
+        let canonical = util::write(spell)?;
+        ensure!(
+            self.spell == canonical,
+            "ethereum spell CBOR is not canonical"
+        );
+        let vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
+        let public_values = tx::to_serialized_pv(spell.version, vk, spell);
+        tx::verify_snark_proof(
+            &self.proof,
+            &public_values,
+            vk,
+            spell.version,
+            spell.mock,
+        )?;
+        Ok(spell.clone())
+    }
+}
+
+impl EnchantedTx for EthereumTx {
+    fn extract_and_verify_spell(
+        &self,
+        spell_vk: &[u8; 32],
+        mock: bool,
+    ) -> anyhow::Result<NormalizedSpell> {
+        let spell = self.decode()?;
+        if !mock {
+            ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
+        }
+        match committed_placeholder(&spell) {
+            Ok((committed, _)) => self.accept_placeholder(committed),
+            Err(err) if self.proof.is_empty() => Err(err),
+            Err(_) => self.verify_proved_spell(&spell, spell_vk),
+        }
     }
 
     fn virtual_spell(
@@ -424,6 +488,23 @@ fn address_word(addr: [u8; 20]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::tx::{Chain, EnchantedTx, Tx};
+    use crate::{NormalizedCharms, is_correct};
+    use ark_bls12_381::Bls12_381;
+    use ark_ff::Field;
+    use ark_ff::ToConstraintField;
+    use ark_groth16::{Groth16, ProvingKey};
+    use ark_relations::{
+        gr1cs::{
+            self, ConstraintSynthesizer, ConstraintSystemRef, SynthesisError,
+            Variable,
+        },
+        lc,
+    };
+    use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+    use ark_snark::SNARK;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
+    use charms_data::{NativeOutput, UtxoId};
+    use sha2::{Digest, Sha256};
     use std::str::FromStr;
 
     const CBOR: &str = "a36776657273696f6e0f627478a363696e7380646f75747381a065636f696e7381a266616d6f756e74006464657374940102030405060708090a0b0c0d0e0f1011121314716170705f7075626c69635f696e70757473a0";
@@ -723,5 +804,121 @@ app_public_inputs: {}
             err.to_string(),
             "coins[0].dest must not be the zero address"
         );
+    }
+
+    fn proved_spell() -> NormalizedSpell {
+        let mut spell = NormalizedSpell::default();
+        spell.mock = true;
+        spell.tx.ins = Some(vec![UtxoId(charms_data::TxId([9; 32]), 0)]);
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![NativeOutput {
+            amount: 0,
+            dest: vec![1; 20],
+            content: None,
+        }]);
+        spell
+    }
+
+    fn mock_proof(spell: &NormalizedSpell) -> Vec<u8> {
+        let vk = tx::spell_vk(spell.version, &[0; 32], true).unwrap();
+        let public_values = tx::to_serialized_pv(spell.version, vk, spell);
+        let field_elements = Sha256::digest(&public_values)
+            .to_field_elements()
+            .expect("public values hash");
+        let pk = ProvingKey::<Bls12_381>::deserialize_compressed(MOCK_GROTH16_PK)
+            .expect("mock groth16 proving key");
+        let proof = Groth16::<Bls12_381>::prove(
+            &pk,
+            MintCircuit {
+                a: Some(field_elements[0]),
+            },
+            &mut StdRng::seed_from_u64(1),
+        )
+        .expect("mock groth16 proof");
+        let mut bytes = Vec::new();
+        proof.serialize_compressed(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn proved_record(spell: &NormalizedSpell, proof: Vec<u8>) -> EthereumTx {
+        EthereumTx {
+            chain_id: 1,
+            charms: [0x33; 20],
+            anchor: None,
+            spell: util::write(spell).unwrap(),
+            proof,
+            caller: None,
+            salt: None,
+        }
+    }
+
+    #[test]
+    fn a_valid_ethereum_proof_is_accepted() {
+        let spell = proved_spell();
+        let record = proved_record(&spell, mock_proof(&spell));
+        let verified = record
+            .extract_and_verify_spell(&[0; 32], true)
+            .expect("valid proof");
+        assert_eq!(verified, spell);
+
+        let mut claim = NormalizedSpell::default();
+        claim.mock = true;
+        claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        let ok = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("claim checks the source proof");
+        assert_eq!(ok, true);
+    }
+
+    #[test]
+    fn a_bad_ethereum_proof_is_rejected() {
+        let spell = proved_spell();
+        let proof = mock_proof(&spell);
+        let mut other = spell.clone();
+        other.tx.coins.as_mut().unwrap()[0].dest[0] ^= 1;
+        let record = proved_record(&other, proof);
+        let err = record
+            .extract_and_verify_spell(&[0; 32], true)
+            .expect_err("bad proof");
+        assert_eq!(err.to_string(), "could not verify spell proof");
+
+        let mut claim = NormalizedSpell::default();
+        claim.mock = true;
+        claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        let err = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .expect_err("claim rejects the source proof");
+        assert_eq!(err.to_string(), "could not verify spell proof");
+    }
+
+    const MOCK_GROTH16_PK: &[u8] = include_bytes!("../../src/bin/mock-groth16-pk.bin");
+
+    struct MintCircuit<F: Field> {
+        a: Option<F>,
+    }
+
+    impl<F: Field> ConstraintSynthesizer<F> for MintCircuit<F> {
+        fn generate_constraints(self, cs: ConstraintSystemRef<F>) -> gr1cs::Result<()> {
+            let missing = SynthesisError::AssignmentMissing;
+            let a = cs.new_witness_variable(|| self.a.ok_or(missing))?;
+            let c = cs.new_input_variable(|| self.a.ok_or(missing))?;
+            cs.enforce_r1cs_constraint(
+                || lc!() + a,
+                || lc!() + Variable::One,
+                || lc!() + c,
+            )
+        }
     }
 }
