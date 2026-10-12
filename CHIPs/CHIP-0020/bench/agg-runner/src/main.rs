@@ -20,12 +20,13 @@ fn median(samples: &mut [u128]) -> u128 {
     samples[samples.len() / 2]
 }
 
-fn native_side() {
+fn native_side() -> bool {
     let prepared = agg_bench::bench_prepare();
     println!("native_prepare {prepared}");
     if prepared != 1 {
-        return;
+        return false;
     }
+    let mut failed = false;
     for name in FUNCS {
         let mut samples = Vec::new();
         let mut ok = true;
@@ -54,10 +55,12 @@ fn native_side() {
         println!(
             "native {name} ok={ok} warmup_us={warmup} median_us={med} min_us={lo} max_us={hi} n=5"
         );
+        failed |= !ok;
     }
+    !failed
 }
 
-fn wasm_side(path: &str) {
+fn wasm_side(path: &str) -> bool {
     let mut config = wasmtime::Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::Speed);
     let engine = Engine::new(&config).expect("engine");
@@ -81,8 +84,9 @@ fn wasm_side(path: &str) {
         start.elapsed().as_micros()
     );
     if prepared != 1 {
-        return;
+        return false;
     }
+    let mut failed = false;
 
     for name in FUNCS {
         let func = instance
@@ -104,6 +108,7 @@ fn wasm_side(path: &str) {
         println!(
             "wasm {name} ok={ok} warmup_us={warmup} median_us={med} min_us={lo} max_us={hi} n=5"
         );
+        failed |= !ok;
     }
 
     let mut fuel_config = wasmtime::Config::new();
@@ -126,6 +131,7 @@ fn wasm_side(path: &str) {
         .expect("fuel prepare call");
     let prepare_fuel = before - fuel_store.get_fuel().expect("fuel");
     println!("wasm_fuel bench_prepare result={prepared} fuel={prepare_fuel}");
+    failed |= prepared != 1;
     for name in FUNCS {
         let func = fuel_instance
             .get_typed_func::<(), u32>(&mut fuel_store, name)
@@ -134,15 +140,23 @@ fn wasm_side(path: &str) {
         let result = func.call(&mut fuel_store, ()).expect(name);
         let used = before - fuel_store.get_fuel().expect("fuel");
         println!("wasm_fuel {name} result={result} fuel={used}");
+        failed |= result != 1;
     }
+    !failed
 }
 
 fn main() {
     let wasm_path = std::env::args().nth(1).expect("wasm path");
     println!("runner_start");
+    let mut ok = true;
     if std::env::var("SKIP_NATIVE").is_err() {
-        native_side();
+        ok &= native_side();
     }
-    wasm_side(&wasm_path);
-    println!("runner_done");
+    ok &= wasm_side(&wasm_path);
+    if ok {
+        println!("runner_done");
+    } else {
+        println!("runner_failed");
+        std::process::exit(1);
+    }
 }
