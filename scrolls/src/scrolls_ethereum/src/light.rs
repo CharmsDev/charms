@@ -60,6 +60,30 @@ pub fn outside_weak_subjectivity(
     current_epoch > finalized_epoch.saturating_add(ws_period_epochs)
 }
 
+pub fn admit_public_fetch(
+    checkpoint_is_set: bool,
+    within_weak_subjectivity: bool,
+    proofs_supplied: bool,
+    cycles_available: u128,
+    quote_cycles: u128,
+) -> Result<Option<u128>, String> {
+    if !checkpoint_is_set {
+        return Err("Input error: checkpoint is not set".into());
+    }
+    if !within_weak_subjectivity {
+        return Err("Input error: checkpoint is outside the weak subjectivity window".into());
+    }
+    if proofs_supplied {
+        return Ok(None);
+    }
+    if quote_cycles == 0 || cycles_available < quote_cycles {
+        return Err(format!(
+            "Input error: fetching proofs requires {quote_cycles} cycles, attached {cycles_available}"
+        ));
+    }
+    Ok(Some(quote_cycles))
+}
+
 pub fn finality_message(charms: &[u8; 20], eth_tx_id: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN);
@@ -400,6 +424,27 @@ mod tests {
     fn truncated_chunk_is_rejected() {
         let err = parse_update_chunks(&[4, 0, 0, 0, 0, 0, 0, 0, 1, 2]).unwrap_err();
         assert_eq!(err, "Input error: light client update chunk length");
+    }
+
+    #[test]
+    fn public_fetch_requires_a_ready_checkpoint_and_cycles() {
+        let unset = admit_public_fetch(false, true, false, 50, 10).unwrap_err();
+        assert_eq!(unset, "Input error: checkpoint is not set");
+        let stale = admit_public_fetch(true, false, true, 50, 10).unwrap_err();
+        assert_eq!(
+            stale,
+            "Input error: checkpoint is outside the weak subjectivity window"
+        );
+        let short = admit_public_fetch(true, true, false, 9, 10).unwrap_err();
+        assert_eq!(
+            short,
+            "Input error: fetching proofs requires 10 cycles, attached 9"
+        );
+        assert_eq!(
+            admit_public_fetch(true, true, false, 10, 10).unwrap(),
+            Some(10)
+        );
+        assert_eq!(admit_public_fetch(true, true, true, 0, 0).unwrap(), None);
     }
 
     #[test]

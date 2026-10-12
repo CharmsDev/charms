@@ -4922,6 +4922,7 @@ dependencies = [
  "alloy",
  "alloy-rlp",
  "alloy-trie",
+ "bls12_381",
  "candid",
  "ethereum_ssz",
  "getrandom 0.2.16",
@@ -4933,6 +4934,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha2 0.9.9",
+ "ssz_types",
  "tree_hash",
 ]
 

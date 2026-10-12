@@ -5,6 +5,8 @@ use alloy::{
 #[cfg(test)]
 use alloy_rlp::Encodable;
 use alloy_rlp::{Decodable, Header};
+#[cfg(test)]
+use alloy_trie::{HashBuilder, proof::ProofRetainer};
 use alloy_trie::{Nibbles, proof::verify_proof};
 
 use crate::light::Chain;
@@ -209,10 +211,79 @@ fn rlp_pair(left: &[u8], right: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
+fn rlp_uint(word: &[u8]) -> Vec<u8> {
+    let start = word
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(word.len());
+    alloy_rlp::encode(&word[start..])
+}
+
+#[cfg(test)]
+fn address_word(address: &[u8; 20]) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[12..].copy_from_slice(address);
+    word
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_exec_proofs(
+    chain: &Chain,
+    eth_tx_id: &[u8; 32],
+    beam_block: u64,
+) -> (B256, ExecProofs) {
+    let beam_key = mapping_key(eth_tx_id, chain.beam_source_slot);
+    let beam_path = Nibbles::unpack(keccak256(beam_key));
+    let impl_path = Nibbles::unpack(keccak256(ERC1967_SLOT));
+    let beam_value = rlp_uint(&U256::from(beam_block).to_be_bytes::<32>());
+    let impl_value = rlp_uint(&address_word(&chain.implementation));
+    let mut leaves = [(beam_path, beam_value), (impl_path, impl_value)];
+    if leaves[0].0 > leaves[1].0 {
+        leaves.swap(0, 1);
+    }
+    let retainer = ProofRetainer::new(vec![leaves[0].0, leaves[1].0]);
+    let mut builder = HashBuilder::default().with_proof_retainer(retainer);
+    for (path, value) in &leaves {
+        builder.add_leaf(*path, value);
+    }
+    let storage_root = builder.root();
+    let nodes = builder.take_proof_nodes();
+    let account = TrieAccount {
+        nonce: 1,
+        balance: U256::ZERO,
+        storage_root,
+        code_hash: B256::from(chain.proxy_code_hash),
+    };
+    let (state_root, account_proof) =
+        leaf_proof(&keccak256(chain.charms).0, &alloy_rlp::encode(account));
+    let proofs = ExecProofs {
+        account_proof,
+        storage_proofs: vec![
+            StorageProof {
+                key: beam_key,
+                proof: nodes
+                    .matching_nodes_sorted(&beam_path)
+                    .into_iter()
+                    .map(|(_, node)| node.to_vec())
+                    .collect(),
+            },
+            StorageProof {
+                key: ERC1967_SLOT,
+                proof: nodes
+                    .matching_nodes_sorted(&impl_path)
+                    .into_iter()
+                    .map(|(_, node)| node.to_vec())
+                    .collect(),
+            },
+        ],
+    };
+    (state_root, proofs)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::light::Chain;
-    use alloy_trie::{HashBuilder, proof::ProofRetainer};
 
     fn chain() -> Chain {
         Chain {
@@ -224,69 +295,6 @@ mod tests {
             beam_source_slot: 7,
             ws_period_epochs: 3532,
         }
-    }
-
-    fn rlp_uint(word: &[u8]) -> Vec<u8> {
-        let start = word
-            .iter()
-            .position(|byte| *byte != 0)
-            .unwrap_or(word.len());
-        alloy_rlp::encode(&word[start..])
-    }
-
-    fn address_word(address: &[u8; 20]) -> [u8; 32] {
-        let mut word = [0u8; 32];
-        word[12..].copy_from_slice(address);
-        word
-    }
-
-    fn proofs_for(chain: &Chain, eth_tx_id: &[u8; 32], beam_block: u64) -> (B256, ExecProofs) {
-        let beam_key = mapping_key(eth_tx_id, chain.beam_source_slot);
-        let beam_path = Nibbles::unpack(keccak256(beam_key));
-        let impl_path = Nibbles::unpack(keccak256(ERC1967_SLOT));
-        let beam_value = rlp_uint(&U256::from(beam_block).to_be_bytes::<32>());
-        let impl_value = rlp_uint(&address_word(&chain.implementation));
-        let mut leaves = [(beam_path, beam_value), (impl_path, impl_value)];
-        if leaves[0].0 > leaves[1].0 {
-            leaves.swap(0, 1);
-        }
-        let retainer = ProofRetainer::new(vec![leaves[0].0, leaves[1].0]);
-        let mut builder = HashBuilder::default().with_proof_retainer(retainer);
-        for (path, value) in &leaves {
-            builder.add_leaf(*path, value);
-        }
-        let storage_root = builder.root();
-        let nodes = builder.take_proof_nodes();
-        let account = TrieAccount {
-            nonce: 1,
-            balance: U256::ZERO,
-            storage_root,
-            code_hash: B256::from(chain.proxy_code_hash),
-        };
-        let (state_root, account_proof) =
-            leaf_proof(&keccak256(chain.charms).0, &alloy_rlp::encode(account));
-        let proofs = ExecProofs {
-            account_proof,
-            storage_proofs: vec![
-                StorageProof {
-                    key: beam_key,
-                    proof: nodes
-                        .matching_nodes_sorted(&beam_path)
-                        .into_iter()
-                        .map(|(_, node)| node.to_vec())
-                        .collect(),
-                },
-                StorageProof {
-                    key: ERC1967_SLOT,
-                    proof: nodes
-                        .matching_nodes_sorted(&impl_path)
-                        .into_iter()
-                        .map(|(_, node)| node.to_vec())
-                        .collect(),
-                },
-            ],
-        };
-        (state_root, proofs)
     }
 
     #[test]
@@ -309,7 +317,7 @@ mod tests {
     fn storage_proof_accepts_a_finalized_beam() {
         let chain = chain();
         let eth_tx_id = [0x22u8; 32];
-        let (state_root, proofs) = proofs_for(&chain, &eth_tx_id, 100);
+        let (state_root, proofs) = fixture_exec_proofs(&chain, &eth_tx_id, 100);
         check_storage(state_root, 150, &chain, &eth_tx_id, &proofs).unwrap();
     }
 
@@ -317,7 +325,7 @@ mod tests {
     fn storage_proof_rejects_a_beam_after_the_finalized_block() {
         let chain = chain();
         let eth_tx_id = [0x22u8; 32];
-        let (state_root, proofs) = proofs_for(&chain, &eth_tx_id, 200);
+        let (state_root, proofs) = fixture_exec_proofs(&chain, &eth_tx_id, 200);
         let err = check_storage(state_root, 150, &chain, &eth_tx_id, &proofs).unwrap_err();
         assert_eq!(
             err,

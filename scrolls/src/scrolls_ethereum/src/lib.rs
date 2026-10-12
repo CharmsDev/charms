@@ -1,6 +1,9 @@
 mod light;
 mod trie;
 
+#[cfg(test)]
+mod consensus_fixture;
+
 use candid::{CandidType, Deserialize};
 use getrandom::register_custom_getrandom;
 use ic_cdk::stable::{stable_grow, stable_read, stable_size, stable_write};
@@ -164,13 +167,16 @@ async fn certify_final(
     let eth_tx_id: [u8; 32] = eth_tx_id
         .try_into()
         .map_err(|_| "Input error: eth_tx_id must be 32 bytes".to_string())?;
-    let supplied_update = match &proofs {
-        Some(proofs) if proofs.updates.len() > 1 => {
-            return Err("Input error: at most one light client update".into());
-        }
-        Some(proofs) => proofs.updates.first().cloned(),
-        None => None,
-    };
+    if proofs
+        .as_ref()
+        .is_some_and(|proofs| proofs.updates.len() > 1)
+    {
+        return Err("Input error: at most one light client update".into());
+    }
+    admit_fetches(proofs.is_some())?;
+    let supplied_update = proofs
+        .as_ref()
+        .and_then(|proofs| proofs.updates.first().cloned());
     let finality = match &proofs {
         Some(proofs) => proofs.finality.clone(),
         None => fetch_finality().await?,
@@ -184,10 +190,11 @@ async fn certify_final(
         needs_period_update(store, &finality)
     })?;
     let update = if needs_update {
-        Some(match supplied_update {
-            Some(update) => update,
-            None => fetch_update().await?,
-        })
+        match supplied_update {
+            Some(update) => Some(update),
+            None if proofs.is_none() => Some(fetch_update().await?),
+            None => None,
+        }
     } else {
         supplied_update
     };
@@ -475,8 +482,70 @@ fn finality_url() -> String {
     format!("{base}/eth/v1/beacon/light_client/finality_update")
 }
 
-async fn http_get(url: &str, accept: &str) -> Result<Vec<u8>, String> {
-    let response = HttpRequest::new(url)
+fn admit_fetches(proofs_supplied: bool) -> Result<(), String> {
+    let (set, fresh) = checkpoint_flags();
+    let (available, quote) = if proofs_supplied || !set || !fresh {
+        (0, 0)
+    } else {
+        (ic_cdk::api::msg_cycles_available(), fetch_quote())
+    };
+    let Some(cycles) = light::admit_public_fetch(set, fresh, proofs_supplied, available, quote)?
+    else {
+        return Ok(());
+    };
+    let accepted = ic_cdk::api::msg_cycles_accept(cycles);
+    if accepted < cycles {
+        return Err("Input error: could not accept cycles for proof fetches".into());
+    }
+    Ok(())
+}
+
+fn checkpoint_flags() -> (bool, bool) {
+    STATE.with(|state| {
+        let state = state.borrow();
+        let Some(store) = state.store.as_ref() else {
+            return (false, false);
+        };
+        let fresh = !light::outside_weak_subjectivity(
+            store.finalized_header.beacon().slot,
+            ic_now_secs(),
+            state.chain.ws_period_epochs,
+        );
+        (true, fresh)
+    })
+}
+
+fn fetch_quote() -> u128 {
+    let finality = http_get_request(&finality_url(), "application/octet-stream").get_cost();
+    let update = http_get_request(&updates_url(u64::MAX), "application/octet-stream").get_cost();
+    let url = STATE.with(|state| state.borrow().chain.execution_api.clone());
+    let execution = http_post_request(&url, &execution_quote_body()).get_cost();
+    finality.saturating_add(update).saturating_add(execution)
+}
+
+fn execution_quote_body() -> Vec<u8> {
+    let charms = [0xffu8; 20];
+    let beam_key = [0xffu8; 32];
+    let block = [0xffu8; 32];
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_getProof",
+        "params": [
+            format!("0x{}", hex::encode(charms)),
+            [
+                format!("0x{}", hex::encode(beam_key)),
+                format!("0x{}", hex::encode(ERC1967_SLOT)),
+            ],
+            format!("0x{}", hex::encode(block)),
+        ],
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn http_get_request(url: &str, accept: &str) -> HttpRequest {
+    HttpRequest::new(url)
         .with_method(HttpMethod::GET)
         .with_header("Accept", accept)
         .with_max_response_bytes(MAX_RESPONSE_BYTES)
@@ -484,14 +553,10 @@ async fn http_get(url: &str, accept: &str) -> Result<Vec<u8>, String> {
             "transform_http".into(),
             vec![],
         ))
-        .send()
-        .await
-        .map_err(|e| format!("System error: HTTP outcall failed: {e}"))?;
-    http_ok(response)
 }
 
-async fn http_post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
-    let response = HttpRequest::new(url)
+fn http_post_request(url: &str, body: &[u8]) -> HttpRequest {
+    HttpRequest::new(url)
         .with_method(HttpMethod::POST)
         .with_header("Content-Type", "application/json")
         .with_body(body.to_vec())
@@ -500,6 +565,18 @@ async fn http_post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
             "transform_http".into(),
             vec![],
         ))
+}
+
+async fn http_get(url: &str, accept: &str) -> Result<Vec<u8>, String> {
+    let response = http_get_request(url, accept)
+        .send()
+        .await
+        .map_err(|e| format!("System error: HTTP outcall failed: {e}"))?;
+    http_ok(response)
+}
+
+async fn http_post(url: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+    let response = http_post_request(url, body)
         .send()
         .await
         .map_err(|e| format!("System error: HTTP outcall failed: {e}"))?;
