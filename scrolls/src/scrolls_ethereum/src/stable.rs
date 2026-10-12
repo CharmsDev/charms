@@ -7,7 +7,6 @@ const VERSION: u32 = 1;
 const HEAD: u64 = 24;
 const DATA_START: u64 = 8 + 10 * HEAD;
 const SIGNATURE_LEN: usize = 64;
-const LEGACY_LIMIT: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 enum Slot {
@@ -243,7 +242,10 @@ fn load_legacy(mem: &impl Memory) -> Result<Persisted, String> {
     let mut len_bytes = [0u8; 8];
     mem.read(0, &mut len_bytes);
     let len = u64::from_le_bytes(len_bytes);
-    if len == 0 || len > LEGACY_LIMIT || 8 + len > mem.byte_size() {
+    let Some(end) = len.checked_add(8) else {
+        return Err("stable memory is not a scrolls_ethereum record".into());
+    };
+    if len == 0 || end > mem.byte_size() {
         return Err("stable memory is not a scrolls_ethereum record".into());
     }
     let bytes = read_at(mem, 8, len)?;
@@ -427,11 +429,19 @@ fn write_slot(mem: &mut impl Memory, slot: Slot, bytes: &[u8]) -> Result<(), Str
             },
         );
     }
-    if head.len > 0 && head.offset != 0 {
-        mem.write(head.offset, &vec![0u8; head.len as usize])?;
+    let end = data_end(mem)?;
+    if head.offset != 0 && head.cap > 0 && head.offset.saturating_add(head.cap) == end {
+        return place(mem, slot, head.offset, bytes);
     }
-    let offset = data_end(mem)?;
-    if !bytes.is_empty() {
+    if head.offset != 0 && head.cap > 0 {
+        mem.write(head.offset, &vec![0u8; head.cap as usize])?;
+    }
+    let offset = if bytes.is_empty() { 0 } else { end };
+    place(mem, slot, offset, bytes)
+}
+
+fn place(mem: &mut impl Memory, slot: Slot, offset: u64, bytes: &[u8]) -> Result<(), String> {
+    if offset != 0 && !bytes.is_empty() {
         mem.write(offset, bytes)?;
     }
     write_head(
@@ -538,6 +548,18 @@ mod tests {
     use super::*;
     use crate::light::finalized_beacon_root;
 
+    fn chain() -> Chain {
+        Chain {
+            beacon_api: "https://beacon.example".into(),
+            execution_api: "https://execution.example".into(),
+            charms: [1; 20],
+            implementation: [2; 20],
+            proxy_code_hash: [3; 32],
+            beam_source_slot: 7,
+            ws_period_epochs: 3532,
+        }
+    }
+
     fn sample() -> Persisted {
         let mut store = Store::default();
         let header = crate::consensus_fixture::electra_light_header(99);
@@ -548,18 +570,19 @@ mod tests {
         let mut signatures = SignatureCache::empty();
         signatures.remember(&header, &header, [5; 32], vec![7; 64]);
         Persisted {
-            chain: Chain {
-                beacon_api: "https://beacon.example".into(),
-                execution_api: "https://execution.example".into(),
-                charms: [1; 20],
-                implementation: [2; 20],
-                proxy_code_hash: [3; 32],
-                beam_source_slot: 7,
-                ws_period_epochs: 3532,
-            },
+            chain: chain(),
             store: Some(store),
             public_key: Some(vec![4; 32]),
             signatures,
+        }
+    }
+
+    fn bare(public_key: Option<Vec<u8>>) -> Persisted {
+        Persisted {
+            chain: chain(),
+            store: None,
+            public_key,
+            signatures: SignatureCache::empty(),
         }
     }
 
@@ -632,17 +655,6 @@ mod tests {
 
         assert_eq!(written(&mut memory, &quiet, &quiet), 0);
 
-        let mut signed = quiet.clone();
-        let header = finalized_beacon_root(signed.store.as_ref().unwrap());
-        signed
-            .signatures
-            .remember(&header, &header, [8; 32], vec![6; 64]);
-        let signature_bytes = written(&mut memory, &quiet, &signed);
-        assert_eq!(
-            read_slot(&memory, Slot::CurrentCommittee).unwrap(),
-            current_committee
-        );
-
         let mut header_only = quiet.clone();
         header_only
             .store
@@ -652,6 +664,18 @@ mod tests {
             .beacon_mut()
             .slot = 98;
         let header_bytes = written(&mut memory, &quiet, &header_only);
+        let loaded = load(&memory).unwrap().into_persisted();
+        assert_eq!(
+            loaded
+                .store
+                .as_ref()
+                .unwrap()
+                .finalized_header
+                .beacon()
+                .slot,
+            98
+        );
+        assert!(loaded.signatures.is_empty());
 
         let mut optimistic_only = header_only.clone();
         let store = optimistic_only.store.as_mut().unwrap();
@@ -672,14 +696,27 @@ mod tests {
         );
         assert!(read_slot(&memory, Slot::NextCommittee).unwrap().is_empty());
 
-        let mut rotated = quiet.clone();
+        let mut rotated = advanced.clone();
         let store = rotated.store.as_mut().unwrap();
         store.next_sync_committee = Some(store.current_sync_committee.clone());
-        let rotation_bytes = written(&mut memory, &quiet, &rotated);
+        let rotation_bytes = written(&mut memory, &advanced, &rotated);
         assert_eq!(
             read_slot(&memory, Slot::CurrentCommittee).unwrap(),
             current_committee
         );
+        let loaded = load(&memory).unwrap().into_persisted();
+        assert!(loaded.store.unwrap().next_sync_committee.is_some());
+
+        let mut signed_memory = VecMemory::new();
+        save_all(&quiet, &mut signed_memory).unwrap();
+        let mut signed = quiet.clone();
+        let header = finalized_beacon_root(signed.store.as_ref().unwrap());
+        signed
+            .signatures
+            .remember(&header, &header, [8; 32], vec![6; 64]);
+        let signature_bytes = written(&mut signed_memory, &quiet, &signed);
+        let loaded = load(&signed_memory).unwrap().into_persisted();
+        assert_eq!(loaded.signatures.get(&[8; 32], &header).unwrap(), vec![6; 64]);
 
         assert_eq!(
             (
@@ -693,6 +730,17 @@ mod tests {
             ),
             (108_542, 156, 1_959, 1_959, 40, 3_958, 51_869)
         );
+
+        let mut retired = signed.clone();
+        let store = retired.store.as_mut().unwrap();
+        store.finalized_header.beacon_mut().slot = 98;
+        let current = finalized_beacon_root(store);
+        retired.signatures.retain_current(Some(current));
+        written(&mut signed_memory, &signed, &retired);
+        let loaded = load(&signed_memory).unwrap().into_persisted();
+        assert_eq!(loaded.store.unwrap().finalized_header.beacon().slot, 98);
+        assert!(loaded.signatures.is_empty());
+        assert!(read_slot(&signed_memory, Slot::Signatures).unwrap().is_empty());
     }
 
     #[test]
@@ -729,5 +777,81 @@ mod tests {
                 .slot,
             99
         );
+    }
+
+    #[test]
+    fn signature_growth_keeps_stable_memory_with_the_live_record() {
+        let mut memory = VecMemory::new();
+        save_all(&bare(None), &mut memory).unwrap();
+        let base = memory.byte_size();
+        let header = [4u8; 32];
+        let mut cache = SignatureCache::empty();
+        for i in 0..1_000u32 {
+            let mut tx = [0u8; 32];
+            tx[..4].copy_from_slice(&i.to_le_bytes());
+            cache.remember(&header, &header, tx, vec![9; 64]);
+            write_signatures(&cache, &mut memory).unwrap();
+        }
+        let live = encode_signatures(&cache).unwrap().len() as u64;
+        assert_eq!(memory.byte_size(), base + live);
+        let loaded = load(&memory).unwrap().into_persisted();
+        assert_eq!(loaded.signatures.len(), 1_000);
+        let mut first = [0u8; 32];
+        first[..4].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(loaded.signatures.get(&first, &header).unwrap(), vec![9; 64]);
+    }
+
+    #[test]
+    fn record_before_the_tail_moves_once_then_grows_in_place() {
+        let header = [4u8; 32];
+        let mut cache = SignatureCache::empty();
+        cache.remember(&header, &header, [1; 32], vec![2; 64]);
+        let mut state = bare(Some(vec![1]));
+        state.signatures = cache;
+        let mut memory = VecMemory::new();
+        save_all(&state, &mut memory).unwrap();
+        let base = memory.byte_size();
+        let signature = read_slot(&memory, Slot::Signatures).unwrap();
+        for len in 2..=40 {
+            write_key(Some(&vec![3; len]), &mut memory).unwrap();
+        }
+        assert_eq!(memory.byte_size(), base + 40);
+        assert_eq!(read_slot(&memory, Slot::PublicKey).unwrap().len(), 40);
+        assert_eq!(read_slot(&memory, Slot::Signatures).unwrap(), signature);
+    }
+
+    #[test]
+    fn legacy_snapshot_over_two_mib_migrates() {
+        let header = [6u8; 32];
+        let mut signatures = SignatureCache::empty();
+        for i in 0..10_000u32 {
+            let mut tx = [0u8; 32];
+            tx[..4].copy_from_slice(&i.to_le_bytes());
+            signatures.remember(&header, &header, tx, vec![7; 64]);
+        }
+        let mut state = bare(Some(vec![4; 32]));
+        state.signatures = signatures;
+        let mut bytes = serde_json::to_vec(&state).unwrap();
+        if bytes.len() < 3_569_549 {
+            let pad = 3_569_549 - bytes.len();
+            state.chain.beacon_api.push_str(&"a".repeat(pad));
+            bytes = serde_json::to_vec(&state).unwrap();
+        }
+        assert_eq!(bytes.len(), 3_569_549);
+        let mut prefixed = (bytes.len() as u64).to_le_bytes().to_vec();
+        prefixed.extend(bytes);
+        let mut memory = VecMemory::new();
+        memory.write(0, &prefixed).unwrap();
+        let loaded = load(&memory).unwrap();
+        assert!(loaded.is_legacy());
+        let loaded = loaded.into_persisted();
+        assert_eq!(loaded.signatures.len(), 10_000);
+        let mut first = [0u8; 32];
+        first[..4].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(loaded.signatures.get(&first, &header).unwrap(), vec![7; 64]);
+        save_all(&loaded, &mut memory).unwrap();
+        let again = load(&memory).unwrap();
+        assert!(!again.is_legacy());
+        assert_eq!(again.into_persisted().signatures.len(), 10_000);
     }
 }
