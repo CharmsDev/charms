@@ -363,7 +363,6 @@ fn placeholder_sender(
     Ok((spell, caller, salt))
 }
 
-/// The proof is not verified here: `transact` checks it against the spell it re-encodes.
 fn proved_sender(record: &EthereumTx) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32])> {
     ensure!(
         record.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
@@ -493,7 +492,6 @@ fn committed_placeholder(
     Ok((committed, owners))
 }
 
-/// One ABI value. A dynamic value sits in its parent's tail, behind an offset in the head.
 enum Abi {
     Static(Vec<u8>),
     Dynamic(Vec<u8>),
@@ -515,8 +513,6 @@ pub fn transact_calldata(
     Ok(data)
 }
 
-/// Each input opens as an empty UTXO: a normalized spell does not carry the charms and pins
-/// the contract stored for it.
 fn encode_spell(spell: &NormalizedSpell) -> anyhow::Result<Abi> {
     let tx = &spell.tx;
     let apps: Vec<&App> = spell.app_public_inputs.keys().collect();

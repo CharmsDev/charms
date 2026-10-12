@@ -7,7 +7,6 @@ import {Charms} from "../src/Charms.sol";
 import {ICharmsTypes} from "../src/interfaces/ICharms.sol";
 import {SpellCodec} from "../src/libraries/SpellCodec.sol";
 
-/// @notice Creates one empty UTXO on a v16 proxy and prints its beam hash.
 contract CreatePlaceholder is Script {
     function run(address proxy) external returns (bytes32 txId) {
         Charms charms = Charms(payable(proxy));
