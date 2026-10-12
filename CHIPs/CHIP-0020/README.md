@@ -731,11 +731,11 @@ One message verifies at most one `LightClientUpdate` and one `LightClientFinalit
 The checks run in this order.
 
 1. The `LightClientFinalityUpdate` has a sync-committee aggregate signature whose participation satisfies `bits * 3 >= 512 * 2` (at least 342 of 512). The signature is BLS12-381 under the stored committee for that signature period, over the signing root the light-client spec defines for the attested header.
-2. The finality branch connects `finalized_header` to the attested beacon state's `state_root`.
-3. The execution-payload branch connects the execution payload header to the attested beacon `body_root`. The canister reads `state_root` and `block_number` from that header.
-4. An account proof for the Charms proxy, against that `state_root`. The canister recovers the account from the proof nodes. The code hash equals the deployed proxy bytecode. The proved account is the proxy. Delegatecall keeps the implementation's storage there. The implementation contract's own account is the wrong account.
-5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout, and it is a constant in the canister for one implementation. The trie key is `keccak256(abi.encode(ethTxId, slot))`. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`.
-6. A storage proof that the ERC-1967 implementation slot equals the implementation address the canister expects. A `Charms` upgrade that moves the mapping fails this check until a canister upgrade records the new implementation and the new slot.
+2. The finality branch connects `hash_tree_root(finalized_header.beacon)` to the attested beacon state's `state_root`, at the finalized-checkpoint index. The attested header can be newer than that checkpoint. The branch covers the finalized beacon header. It does not cover the execution payload.
+3. `finalized_header` carries its own execution payload header and its own execution branch. That branch connects the payload to `finalized_header.beacon.body_root`. The canister reads `state_root` and `block_number` from this finalized payload. The attested header has an execution payload too, and the canister checks that branch as well, because the sync committee signed that beacon header. The attested execution state is not the state the storage proofs use. A beam that exists only in a block after the finalized checkpoint does not pass.
+4. An account proof for the Charms proxy, against the finalized execution `state_root`. The canister recovers the account from the proof nodes. The code hash equals the deployed proxy bytecode. The proved account is the proxy. Delegatecall keeps the implementation's storage there. The implementation contract's own account is the wrong account.
+5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout, and it is a constant in the canister for one implementation. The storage slot is `keccak256(abi.encode(ethTxId, uint256(slot)))`. That 32-byte value is the EIP-1186 logical key, and `storage_proof.key` is those bytes. The canister recomputes the slot from `ethTxId` and the compiled index and requires the key to equal it. The secure-trie path is `keccak256(storage_proof.key)`. The canister walks the proof along that path. It does not accept a caller-supplied path hash in place of the slot. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`, where `block_number` is the finalized execution block number from step 3.
+6. A storage proof that the ERC-1967 implementation slot equals the implementation address the canister expects. The logical key is the 32-byte ERC-1967 slot. The trie path is `keccak256` of that slot, same as step 5. A `Charms` upgrade that moves the mapping fails this check until a canister upgrade records the new implementation and the new slot.
 
 The canister then signs with `sign_with_schnorr` (Ed25519) under the derivation path above.
 
@@ -796,7 +796,7 @@ The canister build is `wasm32-unknown-unknown`. This revision does not compile f
 
 Drop those two dependencies and use `std::time::SystemTime` for the slot helper. The canister passes ICP time in. It does not call `SystemTime::now`. `bls12_381` 0.8 still pulls `getrandom` 0.2 through `rand_core` 0.6, and that crate refuses `wasm32-unknown-unknown` unless `js` or `custom` is enabled. Enable `custom` and register a function that returns an error, as `scrolls_cardano` already does. Verification does not draw random bytes. The benchmark below returned success, so this path did not call the stub.
 
-After that patch, `cargo build --release --target wasm32-unknown-unknown` of a cdylib that calls the crate produces a module of 600,325 bytes with no import section. That file includes the benchmark exports, so a canister that only verifies updates is smaller. Rustc was 1.96.1. The release profile was opt-level 3, codegen-units 16, and no LTO.
+The same patch, the cdylib, and the Wasmtime runner are in `CHIPs/CHIP-0020/bench/`. `reproduce.sh` clones tag 0.11.1, applies `helios-0.11.1-wasm32.patch`, and runs them. After that patch, `cargo build --release --target wasm32-unknown-unknown` of the cdylib produces a module of 600,341 bytes with no import section. `reproduce.sh` printed that size, and it printed the fuel counts in the table. That file includes the benchmark exports, so a canister that only verifies updates is smaller. Rustc was 1.96.1. Wasmtime was 34.0.2. The release profile was opt-level 3, codegen-units 16, and no LTO.
 
 The measurement is one minimum-quorum check. 342 of 512 committee keys participate, which is the smallest bit count that satisfies `bits * 3 >= 512 * 2`. Helios then starts from the committee aggregate and subtracts the other 170 keys. Each subtraction decompresses a compressed G1 pubkey. The signature check is `Signature::verify` from the same crate (hash to G2, the crate's scalar-multiplication subgroup check, and one pairing).
 
@@ -804,11 +804,11 @@ The host was a 4-vCPU Xeon under KVM. The run was single-threaded. Wasmtime was 
 
 | Piece | Wasmtime fuel | Median wall time |
 |---|---|---|
-| Decompress the 170 subtracted keys | 1,899,084,026 | 99.0 ms (98.6 to 99.4) |
-| Add those 170 points, already decompressed | 17,878,101 | 0.92 ms (0.91 to 0.92) |
-| Helios participating-key aggregate | 1,928,184,021 | 101 ms (100.4 to 101.1) |
-| `Signature::verify` | 367,867,991 | 18.7 ms (18.7 to 18.8) |
-| Aggregate and verify, the quorum check | 2,296,052,001 | 120 ms (119.2 to 122.2) |
+| Decompress the 170 subtracted keys | 1,899,084,026 | 99.8 ms (99.4 to 101.0) |
+| Add those 170 points, already decompressed | 17,878,101 | 0.92 ms (0.91 to 1.01) |
+| Helios participating-key aggregate | 1,928,184,021 | 100.5 ms (100.5 to 101.2) |
+| `Signature::verify` | 367,867,991 | 18.8 ms (18.7 to 18.8) |
+| Aggregate and verify, the quorum check | 2,296,052,001 | 119.6 ms (119.2 to 120.4) |
 
 Decompression is 98.5 percent of the aggregate and 83 percent of the quorum check. Point addition is not the budget. The check cannot get twice as cheap without decoding fewer keys or a faster field square root. A committee with every bit set subtracts nothing, so the minimum legal quorum is the expensive case. The naive subgroup check inside `Signature::verify` is 117 million fuel. `G2Affine::is_torsion_free` on the same point is 12.6 million. The difference is about 100 million fuel, 4.5 percent of the quorum check. Swapping that check does not move a certificate whose large terms are the signature and the key decompression.
 

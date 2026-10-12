@@ -1,0 +1,227 @@
+diff --git a/ethereum/consensus-core/Cargo.toml b/ethereum/consensus-core/Cargo.toml
+index 1223651..c5e830f 100644
+--- a/ethereum/consensus-core/Cargo.toml
++++ b/ethereum/consensus-core/Cargo.toml
+@@ -28,10 +28,6 @@ superstruct.workspace = true
+ thiserror.workspace = true
+ tracing.workspace = true
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies]
+-getrandom = { version = "0.2", features = ["js"] }
+-wasmtimer.workspace = true
+-
+ [dev-dependencies]
+ tokio = { version = "1", features = ["full"] }
+ snap = "1"
+diff --git a/ethereum/consensus-core/src/consensus_core.rs b/ethereum/consensus-core/src/consensus_core.rs
+index 808ca07..46cf92c 100644
+--- a/ethereum/consensus-core/src/consensus_core.rs
++++ b/ethereum/consensus-core/src/consensus_core.rs
+@@ -1,5 +1,4 @@
+ use std::cmp;
+-#[cfg(not(target_arch = "wasm32"))]
+ use std::time::{SystemTime, UNIX_EPOCH};
+ 
+ use alloy::primitives::B256;
+@@ -7,8 +6,6 @@ use eyre::Result;
+ use ssz_types::BitVector;
+ use tracing::{info, warn};
+ use tree_hash::TreeHash;
+-#[cfg(target_arch = "wasm32")]
+-use wasmtimer::std::{SystemTime, UNIX_EPOCH};
+ 
+ use crate::consensus_spec::ConsensusSpec;
+ use crate::errors::ConsensusError;
+diff --git a/ethereum/consensus-core/src/types/bls.rs b/ethereum/consensus-core/src/types/bls.rs
+index a9167c1..90379a7 100644
+--- a/ethereum/consensus-core/src/types/bls.rs
++++ b/ethereum/consensus-core/src/types/bls.rs
+@@ -114,6 +114,188 @@ fn hash_to_curve(msg: &[u8]) -> G2Projective {
+     <G2Projective as HashToCurve<ExpandMsgXmd<sha2::Sha256>>>::hash_to_curve(msg, DST)
+ }
+ 
++/// Spike-only entry points for a wasm32 aggregate-verify measurement.
++/// Not part of Helios. The scratch clone uses them to time the same
++/// pubkey aggregation and `Signature::verify` a canister would run.
++pub mod agg_bench {
++    use std::sync::OnceLock;
++
++    use bls12_381::{G1Affine, G1Projective, G2Affine, G2Projective, Scalar};
++    use ssz::Bitfield;
++    use ssz_types::{BitVector, FixedVector};
++
++    use super::{ate2_evaluation, hash_to_curve, subgroup_check_g2, PublicKey, Signature};
++    use crate::types::bytes::ByteVector;
++    use crate::consensus_spec::MainnetConsensusSpec;
++    use crate::types::SyncCommittee;
++    use crate::utils::get_participating_aggregate_pubkey;
++
++    const COMMITTEE: usize = 512;
++    const PARTICIPANTS: usize = 342;
++
++    struct Prepared {
++        committee: SyncCommittee<MainnetConsensusSpec>,
++        bits: BitVector<typenum::U512>,
++        signature: Signature,
++        message: Vec<u8>,
++        expected_agg: G1Affine,
++        sig_point: G2Affine,
++        msg_hash: G2Projective,
++        nonparticipant_points: Vec<G1Affine>,
++    }
++
++    fn prepared() -> &'static Prepared {
++        PREP.get().expect("bench_prepare")
++    }
++
++    static PREP: OnceLock<Prepared> = OnceLock::new();
++
++    fn pubkey_from_affine(point: G1Affine) -> PublicKey {
++        let bytes = point.to_compressed();
++        PublicKey {
++            inner: ByteVector {
++                inner: FixedVector::new(bytes.to_vec()).expect("48"),
++            },
++        }
++    }
++
++    fn signature_from_affine(point: G2Affine) -> Signature {
++        let bytes = point.to_compressed();
++        Signature {
++            inner: ByteVector {
++                inner: FixedVector::new(bytes.to_vec()).expect("96"),
++            },
++        }
++    }
++
++    pub fn bench_prepare() -> u32 {
++        let message = b"charms/ethereum/finality/bench-v1".to_vec();
++        let mut public_keys = Vec::with_capacity(COMMITTEE);
++        let mut nonparticipant_points = Vec::with_capacity(COMMITTEE - PARTICIPANTS);
++        let mut aggregate_all = G1Projective::identity();
++        let mut aggregate_part = G1Projective::identity();
++        let mut secret_part = Scalar::from(0u64);
++        for i in 0..COMMITTEE {
++            let secret = Scalar::from((i as u64) + 1);
++            let public = G1Projective::generator() * secret;
++            let affine = G1Affine::from(public);
++            aggregate_all += public;
++            if i < PARTICIPANTS {
++                aggregate_part += public;
++                secret_part += secret;
++            } else {
++                nonparticipant_points.push(affine);
++            }
++            public_keys.push(pubkey_from_affine(affine));
++        }
++        let mut bits: BitVector<typenum::U512> = Bitfield::new();
++        for i in 0..PARTICIPANTS {
++            bits.set(i, true).expect("bit");
++        }
++        let msg_hash = hash_to_curve(&message);
++        let sig_point = G2Affine::from(msg_hash * secret_part);
++        let expected_agg = G1Affine::from(aggregate_part);
++        let signature = signature_from_affine(sig_point);
++        let ok = signature.verify(&message, &expected_agg)
++            && !signature.verify(b"not-the-message", &expected_agg);
++        let prepared = Prepared {
++            committee: SyncCommittee {
++                pubkeys: FixedVector::new(public_keys).expect("512"),
++                aggregate_pubkey: pubkey_from_affine(G1Affine::from(aggregate_all)),
++            },
++            bits,
++            signature,
++            message,
++            expected_agg,
++            sig_point,
++            msg_hash,
++            nonparticipant_points,
++        };
++        let _ = PREP.set(prepared);
++        u32::from(ok && PREP.get().is_some())
++    }
++
++    pub fn bench_aggregate() -> u32 {
++        let prepared = prepared();
++        let aggregated = get_participating_aggregate_pubkey::<MainnetConsensusSpec>(
++            &prepared.committee,
++            &prepared.bits,
++        );
++        u32::from(aggregated.ok().as_ref() == Some(&prepared.expected_agg))
++    }
++
++    pub fn bench_verify() -> u32 {
++        let prepared = prepared();
++        u32::from(prepared.signature.verify(&prepared.message, &prepared.expected_agg))
++    }
++
++    pub fn bench_both() -> u32 {
++        let prepared = prepared();
++        let aggregated = match get_participating_aggregate_pubkey::<MainnetConsensusSpec>(
++            &prepared.committee,
++            &prepared.bits,
++        ) {
++            Ok(point) => point,
++            Err(_) => return 0,
++        };
++        if aggregated != prepared.expected_agg {
++            return 0;
++        }
++        u32::from(prepared.signature.verify(&prepared.message, &aggregated))
++    }
++
++    pub fn bench_subgroup() -> u32 {
++        u32::from(subgroup_check_g2(&prepared().sig_point))
++    }
++
++    pub fn bench_torsion() -> u32 {
++        u32::from(bool::from(prepared().sig_point.is_torsion_free()))
++    }
++
++    pub fn bench_pairing() -> u32 {
++        let prepared = prepared();
++        let msg_hash = G2Affine::from(prepared.msg_hash);
++        let generator_g1_negative = G1Affine::from(-G1Projective::generator());
++        u32::from(ate2_evaluation(
++            &prepared.sig_point,
++            &generator_g1_negative,
++            &msg_hash,
++            &prepared.expected_agg,
++        ))
++    }
++
++    pub fn bench_hash() -> u32 {
++        let prepared = prepared();
++        u32::from(hash_to_curve(&prepared.message) == prepared.msg_hash)
++    }
++
++    /// Decompress the 170 sync-committee keys the quorum path subtracts.
++    pub fn bench_decompress() -> u32 {
++        let prepared = prepared();
++        let mut live = 0u32;
++        for (i, key) in prepared.committee.pubkeys.iter().enumerate() {
++            if i < PARTICIPANTS {
++                continue;
++            }
++            let point = key.point().expect("pubkey");
++            if !bool::from(point.is_identity()) {
++                live += 1;
++            }
++        }
++        u32::from(live == (COMMITTEE - PARTICIPANTS) as u32)
++    }
++
++    /// Add those same 170 points when they are already decompressed.
++    pub fn bench_add() -> u32 {
++        let prepared = prepared();
++        let mut sum = G1Projective::identity();
++        for point in &prepared.nonparticipant_points {
++            sum += G1Projective::from(*point);
++        }
++        u32::from(!bool::from(G1Affine::from(sum).is_identity()))
++    }
++}
++
+ /// Converts hex string to scalar
+ fn hex_to_scalar(hex: &str) -> Option<Scalar> {
+     if hex.len() != 64 {

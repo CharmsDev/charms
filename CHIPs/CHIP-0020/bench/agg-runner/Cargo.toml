@@ -1,0 +1,8 @@
+[package]
+name = "agg_runner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+helios-consensus-core = { path = "../helios/ethereum/consensus-core" }
+wasmtime = "=34.0.2"

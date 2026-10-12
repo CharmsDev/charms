@@ -1,0 +1,16 @@
+[package]
+name = "helios_agg_wasm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+helios-consensus-core = { path = "../helios/ethereum/consensus-core" }
+getrandom = { version = "0.2", features = ["custom"] }
+
+[profile.release]
+panic = "abort"
+lto = false
+codegen-units = 16
