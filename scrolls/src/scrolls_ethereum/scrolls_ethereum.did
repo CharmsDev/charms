@@ -1,0 +1,70 @@
+type CertifyProofs = record {
+  storage_proofs : vec StorageProofArg;
+  updates : vec blob;
+  account_proof : vec blob;
+  finality : blob;
+};
+type DeployConfig = record {
+  proxy_code_hash : blob;
+  implementation : blob;
+  beam_source_slot : nat64;
+  beacon_api : text;
+  charms : blob;
+  ws_period_epochs : nat64;
+  execution_api : text;
+};
+type FinalityStatus = record {
+  finalized_epoch : nat64;
+  implementation : blob;
+  finalized_slot : nat64;
+  current_period : nat64;
+};
+// # HTTP Header.
+// 
+// Represents a HTTP header.
+// 
+// See [`HttpRequestArgs::headers`] and [`HttpRequestResult::headers`].
+type HttpHeader = record {
+  // Value of the header.
+  value : text;
+  // Name of the header.
+  name : text;
+};
+// # HTTP Request Result
+// 
+// Result type of [`http_request`](https://docs.internetcomputer.org/references/management-canister/#http_request).
+type HttpRequestResult = record {
+  // The response status (e.g. 200, 404).
+  status : nat;
+  // The response’s body.
+  body : blob;
+  // List of HTTP response headers and their corresponding values.
+  headers : vec HttpHeader;
+};
+type Result = variant { Ok : blob; Err : text };
+type Result_1 = variant { Ok; Err : text };
+type StorageProofArg = record { key : blob; proof : vec blob };
+// # Transform Args.
+// 
+// ```text
+// record {
+// response : http_response;
+// context : blob;
+// }
+// ```
+// 
+// See [`TransformContext`].
+type TransformArgs = record {
+  // Context for response transformation
+  context : blob;
+  // Raw response from remote service, to be transformed
+  response : HttpRequestResult;
+};
+service : (DeployConfig) -> {
+  certify_final : (blob, opt CertifyProofs) -> (Result);
+  finality_public_key : () -> (blob) query;
+  finality_status : () -> (FinalityStatus) query;
+  reset_checkpoint : (blob) -> (Result_1);
+  set_ws_period : (nat64) -> (Result_1);
+  transform_http : (TransformArgs) -> (HttpRequestResult) query;
+}

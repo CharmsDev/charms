@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Scrolls is a set of Internet Computer (ICP) canisters that sign Bitcoin and Cardano transactions. It also includes a Cloudflare Workers API that wraps the Bitcoin canister. The canisters use ICP's threshold cryptography (ECDSA for Bitcoin, Schnorr/Ed25519 for Cardano) to derive keys and sign transactions without holding private keys directly.
+Scrolls is a set of Internet Computer (ICP) canisters that sign Bitcoin and Cardano transactions and certify Ethereum finality. It also includes a Cloudflare Workers API that wraps the Bitcoin canister. The canisters use ICP's threshold cryptography (ECDSA for Bitcoin, Schnorr/Ed25519 for Cardano and Ethereum finality) to derive keys and sign without holding private keys directly.
 
 ## Build & Development Commands
 
@@ -14,6 +14,7 @@ Scrolls is a set of Internet Computer (ICP) canisters that sign Bitcoin and Card
 # Build canisters
 dfx build scrolls_bitcoin_v14
 dfx build scrolls_cardano
+dfx build scrolls_ethereum
 
 # Run all workspace tests
 cargo test
@@ -21,6 +22,7 @@ cargo test
 # Run tests for a specific canister
 cargo test --package scrolls_bitcoin
 cargo test --package scrolls_cardano
+cargo test --package scrolls_ethereum
 
 # Run Cardano integration tests (requires dfx + network access to IC mainnet)
 cargo test --package scrolls_cardano --test canister_integration -- --ignored
@@ -43,10 +45,11 @@ dfx deploy --network ic
 
 ### Workspace Structure
 
-The Cargo workspace contains two crates (`scrolls-api` is excluded — it has its own workspace):
+The Cargo workspace contains three crates (`scrolls-api` is excluded — it has its own workspace):
 
 - **`src/scrolls_bitcoin/`** — ICP canister for Bitcoin transaction signing (P2WPKH, Secp256k1 ECDSA)
 - **`src/scrolls_cardano/`** — ICP canister for Cardano transaction signing (Ed25519 Schnorr)
+- **`src/scrolls_ethereum/`** — ICP canister that certifies Ethereum beam finality (Ed25519 Schnorr). Upgradeable, one controller. `helios-consensus-core` 0.11.1 is vendored at `vendor/helios-consensus-core`.
 - **`src/scrolls-api/`** — Cloudflare Workers HTTP API wrapping the Bitcoin canister (axum + ic-agent)
 
 ### Key Concepts
@@ -54,7 +57,7 @@ The Cargo workspace contains two crates (`scrolls-api` is excluded — it has it
 - **Nonce-based key derivation:** Bitcoin addresses are derived using derivation path `["scrolls", nonce_bytes]`. Cardano uses a fixed path `["scrolls"]`.
 - **Fee validation:** Bitcoin canister validates that transactions include a fee output to configured addresses before signing. Cardano validates a fixed cost.
 - **Spell verification:** Both canisters use `charms-lib` to extract and verify "spells" from transactions. Cardano has a special bypass for CIP-68 reference NFT minting.
-- **`certify_final`:** Cardano canister can sign a final transaction with a certification signature (separate from the regular `sign` flow).
+- **`certify_final`:** Cardano signs a final transaction. Ethereum signs `SHA-256("charms/ethereum/finality/v1" ‖ chain id ‖ Charms address ‖ eth tx id)` after a beacon light-client check and an `eth_getProof` of `beamSourceAt`. Derivation path `["scrolls", "ethereum", "finality"]`, key `key_1`.
 - **Config from YAML:** Each canister loads its fee addresses and cost parameters from a `config.yaml` embedded at compile time.
 
 ### Canister IDs (IC Mainnet)

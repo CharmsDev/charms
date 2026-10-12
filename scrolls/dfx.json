@@ -14,6 +14,11 @@
       "candid": "src/scrolls_cardano/scrolls_cardano.did",
       "package": "scrolls_cardano",
       "type": "rust"
+    },
+    "scrolls_ethereum": {
+      "candid": "src/scrolls_ethereum/scrolls_ethereum.did",
+      "package": "scrolls_ethereum",
+      "type": "rust"
     }
   },
   "defaults": {

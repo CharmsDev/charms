@@ -689,16 +689,29 @@ The guest does not grow a beacon light client. `EthereumTx::WithFinalityProof` s
 `scrolls_ethereum` is a new canister under `scrolls/`. It is not blackholed. It has one controller, chosen at deploy and not named here. `scrolls_bitcoin` and `scrolls_cardano` stay blackholed. This canister is the exception because a beacon fork can change a generalized index or the execution payload's SSZ layout, and the verifier has to change with it. A wasm upgrade keeps the canister id. `sign_with_schnorr` with key `key_1` and derivation path `["scrolls", "ethereum", "finality"]` keeps the same public key, so `ETHEREUM_FINALITY_VKEY` does not change. A new canister at each fork would be a new id, a new key, and another guest build. That is rejected.
 
 ```candid
-type storage_proof = record { key : blob; proof : vec blob };
-type certify_proofs = record {
+type StorageProofArg = record {
+  key : blob;
+  proof : vec blob;
+};
+type CertifyProofs = record {
   updates : vec blob;
   finality : blob;
   account_proof : vec blob;
-  storage_proofs : vec storage_proof;
+  storage_proofs : vec StorageProofArg;
+};
+type DeployConfig = record {
+  beacon_api : text;
+  execution_api : text;
+  charms : blob;
+  implementation : blob;
+  proxy_code_hash : blob;
+  beam_source_slot : nat64;
+  ws_period_epochs : nat64;
 };
 
-service : {
-  certify_final : (eth_tx_id : blob, proofs : opt certify_proofs) -> (variant { Ok : blob; Err : text });
+service : (DeployConfig) -> {
+  certify_final : (blob, opt CertifyProofs) ->
+    (variant { Ok : blob; Err : text });
   finality_public_key : () -> (blob) query;
   finality_status : () -> (record {
     finalized_slot : nat64;
@@ -706,11 +719,14 @@ service : {
     current_period : nat64;
     implementation : blob;
   }) query;
-  reset_checkpoint : (bootstrap : blob) -> (variant { Ok; Err : text });
+  reset_checkpoint : (blob) -> (variant { Ok; Err : text });
+  set_ws_period : (nat64) -> (variant { Ok; Err : text });
 }
 ```
 
-`updates` and `finality` are SSZ. `updates` runs from the oldest period. `account_proof` is the Merkle-Patricia nodes for the Charms proxy. Each `storage_proof` opens one slot. `finality_public_key` is the query. Cardano's Rust constant for the same kind of key is `FINALITY_VKEY`. The canister method keeps its own name. `reset_checkpoint` accepts a call only from the controller.
+`updates` and `finality` are Electra SSZ. A caller passes those bytes raw. A fetched beacon response is a sequence of chunks: a little-endian length, a 4-byte fork digest, and the SSZ payload. The canister strips that framing and then runs the same checks. `updates` holds at most one `LightClientUpdate`. `account_proof` is the Merkle-Patricia nodes for the Charms proxy. Each storage proof opens one slot. `finality_public_key` is the query. Cardano's Rust constant for the same kind of key is `FINALITY_VKEY`. The canister method keeps its own name. `reset_checkpoint` and `set_ws_period` accept a call only from the controller.
+
+`DeployConfig` is the install argument. `beacon_api` and `execution_api` are https URLs with no userinfo. `charms` and `implementation` are 20 bytes. `proxy_code_hash` is 32 bytes. `ws_period_epochs` is non-zero. The upgrade argument is `opt DeployConfig`. `null` keeps the stored config. A record replaces it, which is how a new implementation and a new `beamSourceAt` slot are recorded. v1 stores `beamSources` at slot 7.
 
 ### The light-client store
 
@@ -740,7 +756,7 @@ The checks run in this order.
 2. The finality branch connects `hash_tree_root(finalized_header.beacon)` to the attested beacon state's `state_root`, at the finalized-checkpoint index. The attested header can be newer than that checkpoint. The branch covers the finalized beacon header. It does not cover the execution payload.
 3. `finalized_header` carries its own execution payload header and its own execution branch. That branch connects the payload to `finalized_header.beacon.body_root`. The canister reads `state_root` and `block_number` from this finalized payload. The attested header has an execution payload too, and the canister checks that branch as well, because the sync committee signed that beacon header. The attested execution state is not the state the storage proofs use. A beam that exists only in a block after the finalized checkpoint does not pass.
 4. An account proof for the Charms proxy, against the finalized execution `state_root`. The canister recovers the account from the proof nodes. The code hash equals the deployed proxy bytecode. The proved account is the proxy. Delegatecall keeps the implementation's storage there. The implementation contract's own account is the wrong account.
-5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout, and it is a constant in the canister for one implementation. The storage slot is `keccak256(abi.encode(ethTxId, uint256(slot)))`. That 32-byte value is the EIP-1186 logical key, and `storage_proof.key` is those bytes. The canister recomputes the slot from `ethTxId` and the compiled index and requires the key to equal it. The secure-trie path is `keccak256(storage_proof.key)`. The canister walks the proof along that path. It does not accept a caller-supplied path hash in place of the slot. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`, where `block_number` is the finalized execution block number from step 3.
+5. A storage proof of `beamSourceAt[ethTxId]`. The slot index is that mapping's place in the implementation layout. v1 stores `beamSources` at slot 7, and `DeployConfig.beam_source_slot` records that index. The storage slot is `keccak256(abi.encode(ethTxId, uint256(slot)))`. That 32-byte value is the EIP-1186 logical key, and the proof's `key` is those bytes. The canister recomputes the slot from `ethTxId` and the recorded index and requires the key to equal it. The secure-trie path is `keccak256(storage_proof.key)`. The canister walks the proof along that path. It does not accept a caller-supplied path hash in place of the slot. The value `v` opened by the proof satisfies `0 < v` and `v <= block_number`, where `block_number` is the finalized execution block number from step 3.
 6. A storage proof that the ERC-1967 implementation slot equals the implementation address the canister expects. The logical key is the 32-byte ERC-1967 slot. The trie path is `keccak256` of that slot, same as step 5. A `Charms` upgrade that moves the mapping fails this check until a canister upgrade records the new implementation and the new slot.
 
 The canister then signs with `sign_with_schnorr` (Ed25519) under the derivation path above.
@@ -759,7 +775,7 @@ Blackholing would freeze that table. The next incompatible fork would stop certi
 
 ### Weak subjectivity
 
-A light client that is too far behind cannot tell the canonical chain from a conflicting history. Electra computes that window with `compute_weak_subjectivity_period` in the [weak subjectivity guide](https://ethereum.github.io/consensus-specs/electra/weak-subjectivity/). The spec's worked example caps the period at 3,532 epochs once total active balance is at least 16,777,216 ETH. 3,532 epochs is 3,532 * 32 * 12 = 1,356,288 seconds, which is 15.7 days. The canister does not hold a full beacon state, so it cannot recompute that function. It stores `ws_period_epochs`, which the controller sets. The initial value follows the spec period for stake at deploy. If the published period shrinks, the controller lowers the stored value. A stored period longer than the spec period would keep a checkpoint that is already too old.
+A light client that is too far behind cannot tell the canonical chain from a conflicting history. Electra computes that window with `compute_weak_subjectivity_period` in the [weak subjectivity guide](https://ethereum.github.io/consensus-specs/electra/weak-subjectivity/). The spec's worked example caps the period at 3,532 epochs once total active balance is at least 16,777,216 ETH. 3,532 epochs is 3,532 * 32 * 12 = 1,356,288 seconds, which is 15.7 days. The canister does not hold a full beacon state, so it cannot recompute that function. It stores `ws_period_epochs`, which the controller sets with `set_ws_period`. The initial value follows the spec period for stake at deploy. If the published period shrinks, the controller lowers the stored value. A stored period longer than the spec period would keep a checkpoint that is already too old.
 
 When the current epoch is past the stored finalized epoch plus `ws_period_epochs`, the canister rejects updates and refuses to sign. Recovery is `reset_checkpoint` with an SSZ `LightClientBootstrap` (header, current sync committee, and branch). The canister checks the branch against the header's `state_root`. The header being canonical is the controller's assertion. That is weak subjectivity, not a proof the canister can rerun. After the reset, the timer and `certify_final` catch up one period at a time. The Ed25519 key does not change. A dishonest reset can authorize a false beam. `finality_status` changes when it happens, and the call is on chain.
 

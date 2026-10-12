@@ -1,0 +1,31 @@
+[package]
+name = "helios-consensus-core"
+version = "0.11.1"
+edition = "2021"
+license = "MIT"
+description = "Helios consensus core 0.11.1, patched for wasm32-unknown-unknown"
+repository = "https://github.com/a16z/helios"
+
+[dependencies]
+alloy = { version = "1.0.37", default-features = false, features = [
+    "consensus",
+    "rpc-types",
+    "ssz",
+    "rlp",
+    "k256",
+    "eips",
+] }
+alloy-rlp = "0.3.12"
+bls12_381 = { version = "0.8.0", features = ["experimental"] }
+ssz_types = "0.11"
+ethereum_ssz_derive = "0.9"
+ethereum_ssz = "0.9"
+tree_hash_derive = "0.10.0"
+tree_hash = "0.10.0"
+typenum = "1.17.0"
+sha2 = "0.9"
+eyre = "0.6.8"
+serde = { version = "1.0.143", features = ["derive"] }
+superstruct = "0.7.0"
+thiserror = "1.0.37"
+tracing = "0.1"

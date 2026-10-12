@@ -21,3 +21,10 @@ canisters:
       configuration:
         package: scrolls_cardano
         candid: src/scrolls_cardano/scrolls_cardano.did
+
+  - name: scrolls_ethereum
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_ethereum
+        candid: src/scrolls_ethereum/scrolls_ethereum.did
