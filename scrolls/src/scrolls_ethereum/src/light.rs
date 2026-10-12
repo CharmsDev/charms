@@ -35,11 +35,20 @@ pub struct Chain {
     pub ws_period_epochs: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignatureRecord {
+    pub eth_tx_id: [u8; 32],
+    pub header: [u8; 32],
+    pub signature: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Persisted {
     pub chain: Chain,
     pub store: Option<Store>,
     pub public_key: Option<Vec<u8>>,
+    #[serde(default)]
+    pub signatures: Vec<SignatureRecord>,
 }
 
 pub fn current_slot(now_secs: u64) -> u64 {
@@ -82,6 +91,51 @@ pub fn admit_public_fetch(
         ));
     }
     Ok(Some(quote_cycles))
+}
+
+pub fn finalized_beacon_root(store: &Store) -> [u8; 32] {
+    store.finalized_header.beacon().tree_hash_root().0
+}
+
+pub fn cached_signature(
+    records: &[SignatureRecord],
+    eth_tx_id: &[u8; 32],
+    header: &[u8; 32],
+) -> Option<Vec<u8>> {
+    records.iter().find_map(|record| {
+        (record.eth_tx_id == *eth_tx_id && record.header == *header)
+            .then(|| record.signature.clone())
+    })
+}
+
+pub fn remember_signature(
+    records: &mut Vec<SignatureRecord>,
+    eth_tx_id: [u8; 32],
+    header: [u8; 32],
+    signature: Vec<u8>,
+) {
+    if let Some(record) = records
+        .iter_mut()
+        .find(|record| record.eth_tx_id == eth_tx_id)
+    {
+        record.header = header;
+        record.signature = signature;
+        return;
+    }
+    records.push(SignatureRecord {
+        eth_tx_id,
+        header,
+        signature,
+    });
+}
+
+pub fn admit_signature(cycles_available: u128, quote_cycles: u128) -> Result<u128, String> {
+    if quote_cycles == 0 || cycles_available < quote_cycles {
+        return Err(format!(
+            "Input error: signing requires {quote_cycles} cycles, attached {cycles_available}"
+        ));
+    }
+    Ok(quote_cycles)
 }
 
 pub fn finality_message(charms: &[u8; 20], eth_tx_id: &[u8; 32]) -> [u8; 32] {
@@ -448,6 +502,39 @@ mod tests {
     }
 
     #[test]
+    fn signature_cache_is_keyed_by_tx_and_header() {
+        let mut records = Vec::new();
+        let tx = [1u8; 32];
+        let header = [2u8; 32];
+        assert!(cached_signature(&records, &tx, &header).is_none());
+        remember_signature(&mut records, tx, header, vec![9; 64]);
+        assert_eq!(
+            cached_signature(&records, &tx, &header).unwrap(),
+            vec![9; 64]
+        );
+        assert!(cached_signature(&records, &tx, &[3; 32]).is_none());
+        remember_signature(&mut records, tx, [3; 32], vec![8; 64]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            cached_signature(&records, &tx, &[3; 32]).unwrap(),
+            vec![8; 64]
+        );
+        assert!(cached_signature(&records, &tx, &header).is_none());
+    }
+
+    #[test]
+    fn signing_requires_cycles_on_a_cache_miss() {
+        let short = admit_signature(25, 26).unwrap_err();
+        assert_eq!(
+            short,
+            "Input error: signing requires 26 cycles, attached 25"
+        );
+        assert_eq!(admit_signature(26, 26).unwrap(), 26);
+        let free = admit_signature(26, 0).unwrap_err();
+        assert_eq!(free, "Input error: signing requires 0 cycles, attached 26");
+    }
+
+    #[test]
     fn store_json_keeps_the_finalized_slot() {
         let mut store = Store::default();
         store.finalized_header.beacon_mut().slot = 99;
@@ -463,11 +550,21 @@ mod tests {
             },
             store: Some(store),
             public_key: Some(vec![4; 32]),
+            signatures: vec![SignatureRecord {
+                eth_tx_id: [5; 32],
+                header: [6; 32],
+                signature: vec![7; 64],
+            }],
         };
         let bytes = serde_json::to_vec(&persisted).unwrap();
         let back: Persisted = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(back.store.unwrap().finalized_header.beacon().slot, 99);
         assert_eq!(back.public_key.unwrap(), vec![4; 32]);
         assert_eq!(back.chain.beam_source_slot, 7);
+        assert_eq!(back.signatures, persisted.signatures);
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value.as_object_mut().unwrap().remove("signatures");
+        let older: Persisted = serde_json::from_value(value).unwrap();
+        assert!(older.signatures.is_empty());
     }
 }

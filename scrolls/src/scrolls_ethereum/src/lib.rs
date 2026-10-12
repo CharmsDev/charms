@@ -9,8 +9,8 @@ use getrandom::register_custom_getrandom;
 use ic_cdk::stable::{stable_grow, stable_read, stable_size, stable_write};
 use ic_cdk_management_canister::{
     HttpMethod, HttpRequest, HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId,
-    SignWithSchnorrArgs, TransformArgs, schnorr_public_key, sign_with_schnorr,
-    transform_context_from_query,
+    SignWithSchnorrArgs, TransformArgs, cost_sign_with_schnorr, schnorr_public_key,
+    sign_with_schnorr, transform_context_from_query,
 };
 use light::{
     Chain, Persisted, execution_block_hash, finality_payload, needs_period_update,
@@ -37,6 +37,7 @@ thread_local! {
             },
             store: None,
             public_key: None,
+            signatures: Vec::new(),
         })
     };
 }
@@ -218,7 +219,7 @@ async fn certify_final(
             &exec,
         )
     })?;
-    sign_message(&message).await
+    issue_signature(eth_tx_id, message).await
 }
 
 #[ic_cdk::query]
@@ -610,20 +611,61 @@ async fn fetch_public_key() -> Result<Vec<u8>, String> {
     Ok(result.public_key)
 }
 
+async fn issue_signature(eth_tx_id: [u8; 32], message: [u8; 32]) -> Result<Vec<u8>, String> {
+    let header = STATE
+        .with(|state| {
+            state
+                .borrow()
+                .store
+                .as_ref()
+                .map(light::finalized_beacon_root)
+        })
+        .ok_or_else(|| "Input error: checkpoint is not set".to_string())?;
+    if let Some(signature) =
+        STATE.with(|state| light::cached_signature(&state.borrow().signatures, &eth_tx_id, &header))
+    {
+        return Ok(signature);
+    }
+    let quote = signature_quote(&message)?;
+    let cycles = light::admit_signature(ic_cdk::api::msg_cycles_available(), quote)?;
+    let accepted = ic_cdk::api::msg_cycles_accept(cycles);
+    if accepted < cycles {
+        return Err("Input error: could not accept cycles for signing".into());
+    }
+    let signature = sign_message(&message).await?;
+    STATE.with(|state| {
+        light::remember_signature(
+            &mut state.borrow_mut().signatures,
+            eth_tx_id,
+            header,
+            signature.clone(),
+        );
+    });
+    Ok(signature)
+}
+
+fn signature_quote(message: &[u8; 32]) -> Result<u128, String> {
+    cost_sign_with_schnorr(&schnorr_args(message))
+        .map_err(|e| format!("System error: signature cost: {e}"))
+}
+
 async fn sign_message(message: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let args = SignWithSchnorrArgs {
-        message: message.to_vec(),
-        derivation_path: derivation_path(),
-        key_id: key_id(),
-        aux: None,
-    };
-    let result = sign_with_schnorr(&args)
+    let result = sign_with_schnorr(&schnorr_args(message))
         .await
         .map_err(|e| format!("System error: signing: {e}"))?;
     if result.signature.len() != 64 {
         return Err("System error: signature length".into());
     }
     Ok(result.signature)
+}
+
+fn schnorr_args(message: &[u8; 32]) -> SignWithSchnorrArgs {
+    SignWithSchnorrArgs {
+        message: message.to_vec(),
+        derivation_path: derivation_path(),
+        key_id: key_id(),
+        aux: None,
+    }
 }
 
 fn derivation_path() -> Vec<Vec<u8>> {
