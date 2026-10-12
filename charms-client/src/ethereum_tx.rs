@@ -100,6 +100,13 @@ impl EthereumTx {
         spell: &NormalizedSpell,
         spell_vk: &[u8; 32],
     ) -> anyhow::Result<NormalizedSpell> {
+        // The proof does not cover the anchor. `transact` writes 32 zero
+        // bytes when the spell spends an input, so any other anchor names
+        // an output id the contract never creates.
+        ensure!(
+            self.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
+            "a proved ethereum spell's anchor must be zero"
+        );
         let ins = spell
             .tx
             .ins
@@ -901,6 +908,86 @@ app_public_inputs: {}
         )
         .expect_err("claim rejects the source proof");
         assert_eq!(err.to_string(), "could not verify spell proof");
+    }
+
+    fn claim_spending(records: &[EthereumTx]) -> NormalizedSpell {
+        let mut claim = NormalizedSpell::default();
+        claim.mock = true;
+        claim.tx.ins = Some(
+            records
+                .iter()
+                .map(|record| UtxoId(record.tx_id(), 0))
+                .collect(),
+        );
+        claim
+    }
+
+    fn check_claim(records: Vec<EthereumTx>) -> anyhow::Result<bool> {
+        let claim = claim_spending(&records);
+        let prev_txs = records.into_iter().map(Tx::Ethereum).collect();
+        is_correct(&claim, &prev_txs, None, &[0; 32], &BTreeMap::new(), None)
+    }
+
+    #[test]
+    fn a_proved_spell_with_a_nonzero_anchor_is_rejected() {
+        let spell = proved_spell();
+        let mut record = proved_record(&spell, mock_proof(&spell));
+        record.anchor = Some([0u8; 32]);
+        record
+            .extract_and_verify_spell(&[0; 32], true)
+            .expect("a zero anchor is the contract's anchor");
+
+        record.anchor = Some([7u8; 32]);
+        let err = record
+            .extract_and_verify_spell(&[0; 32], true)
+            .expect_err("nonzero anchor");
+        assert_eq!(
+            err.to_string(),
+            "a proved ethereum spell's anchor must be zero"
+        );
+        let err = check_claim(vec![record]).expect_err("claim of that output");
+        assert_eq!(
+            err.to_string(),
+            "a proved ethereum spell's anchor must be zero"
+        );
+    }
+
+    #[test]
+    fn a_record_from_another_host_is_rejected() {
+        let host_spell = proved_spell();
+        let host = proved_record(&host_spell, mock_proof(&host_spell));
+        let mut sibling_spell = proved_spell();
+        sibling_spell.tx.coins.as_mut().unwrap()[0].dest[0] = 2;
+        let sibling = proved_record(&sibling_spell, mock_proof(&sibling_spell));
+        assert!(
+            check_claim(vec![host.clone(), sibling.clone()]).expect("same host")
+        );
+
+        let mut other_chain = sibling.clone();
+        other_chain.chain_id = host.chain_id + 1;
+        let err = check_claim(vec![host.clone(), other_chain.clone()])
+            .expect_err("other chain");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Ethereum previous transaction {} is not on the same chain \
+                 and contract as the hosting record",
+                other_chain.tx_id()
+            )
+        );
+
+        let mut other_contract = sibling;
+        other_contract.charms[0] ^= 1;
+        let err = check_claim(vec![host, other_contract.clone()])
+            .expect_err("other contract");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Ethereum previous transaction {} is not on the same chain \
+                 and contract as the hosting record",
+                other_contract.tx_id()
+            )
+        );
     }
 
     const MOCK_GROTH16_PK: &[u8] = include_bytes!("../../src/bin/mock-groth16-pk.bin");
