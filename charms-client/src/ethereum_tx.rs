@@ -1,5 +1,5 @@
 use crate::{
-    CURRENT_VERSION, NormalizedSpell,
+    CURRENT_VERSION, NormalizedSpell, V14, V15,
     tx::{self, EnchantedTx, Tx},
     utxo_id_hash_with_nonce,
 };
@@ -355,9 +355,11 @@ pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
 fn committed_placeholder(
     spell: &NormalizedSpell,
 ) -> anyhow::Result<(NormalizedSpell, Vec<[u8; 20]>)> {
+    // A version-15 empty UTXO keeps the bytes it was committed with.
+    // Rewriting the version would change the transaction id.
     ensure!(
-        spell.version == CURRENT_VERSION,
-        "placeholder spell version must be {CURRENT_VERSION}"
+        spell.version == V15 || spell.version == CURRENT_VERSION,
+        "placeholder spell version must be {V15} or {CURRENT_VERSION}"
     );
     ensure!(!spell.mock, "a placeholder is not a mock spell");
     ensure!(
@@ -858,6 +860,61 @@ app_public_inputs: {}
             content: None,
         }]);
         claim
+    }
+
+    #[test]
+    fn a_v15_placeholder_still_extracts_and_can_be_spent() {
+        let mut carried = spell(1);
+        carried.version = V15;
+        let plan = plan_placeholder(&carried, &request(None)).unwrap();
+        let bytes = plan.record.spell.clone();
+        let tx_id = plan.record.tx_id();
+        let extracted = plan
+            .record
+            .extract_and_verify_spell(&[0; 32], false)
+            .expect("v15 placeholder");
+        assert_eq!(extracted.version, V15);
+        assert_eq!(util::write(&extracted).unwrap(), bytes);
+        assert_eq!(plan.record.spell, bytes);
+        assert_eq!(plan.record.tx_id(), tx_id);
+
+        let mut rewritten = extracted.clone();
+        rewritten.version = CURRENT_VERSION;
+        let mut rewritten_record = plan.record.clone();
+        rewritten_record.spell = util::write(&rewritten).unwrap();
+        assert_ne!(rewritten_record.spell, bytes);
+        assert_ne!(rewritten_record.tx_id(), tx_id);
+
+        let mut claim = NormalizedSpell::default();
+        claim.tx.ins = Some(vec![UtxoId(tx_id, 0)]);
+        claim.tx.outs = vec![NormalizedCharms::new()];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount: 0,
+            dest: vec![1; 20],
+            content: None,
+        }]);
+        assert_eq!(claim.version, CURRENT_VERSION);
+        let ok = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(plan.record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("v16 spell spends the v15 placeholder");
+        assert!(ok);
+    }
+
+    #[test]
+    fn a_version_14_placeholder_is_rejected() {
+        let mut carried = spell(1);
+        carried.version = V14;
+        let err = plan_placeholder(&carried, &request(None)).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "placeholder spell version must be 15 or 16"
+        );
     }
 
     #[test]
