@@ -2438,10 +2438,13 @@ version = "16.0.0"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
+ "ark-ec",
  "ark-ff 0.6.0",
  "ark-groth16",
+ "ark-relations",
  "ark-serialize 0.6.0",
  "ark-snark",
+ "ark-std 0.6.0",
  "bitcoin",
  "charms-app-runner",
  "charms-data",
