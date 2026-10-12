@@ -35,8 +35,11 @@ pub async fn prove(req: ProveRequest) -> anyhow::Result<Vec<Tx>> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use charms_client::{NormalizedSpell, SpellProverInput};
-    use charms_data::util;
+    use charms_client::{
+        NormalizedCharms, NormalizedSpell, SpellProverInput,
+        tx::{EnchantedTx, Tx},
+    };
+    use charms_data::{NativeOutput, UtxoId, util};
     use charms_lib::SPELL_VK;
     use sp1_sdk::{Elf, HashableKey, Prover, ProverClient, ProvingKey, SP1Stdin, SP1VerifyingKey};
     use std::collections::BTreeMap;
@@ -45,10 +48,14 @@ mod test {
         concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-spell-checker");
     const PROOF_WRAPPER_ELF_PATH: &str =
         concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-proof-wrapper");
-    const SPELL_CHECKER_VK_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-spell-checker-vk.bin");
-    const PROOF_WRAPPER_VK_PATH: &str =
-        concat!(env!("CARGO_MANIFEST_DIR"), "/src/bin/charms-proof-wrapper-vk.bin");
+    const SPELL_CHECKER_VK_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bin/charms-spell-checker-vk.bin"
+    );
+    const PROOF_WRAPPER_VK_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/src/bin/charms-proof-wrapper-vk.bin"
+    );
 
     fn read_cached_vk(vk_path: &str) -> Option<SP1VerifyingKey> {
         let bytes = std::fs::read(vk_path).ok()?;
@@ -168,5 +175,115 @@ mod test {
             .expect("proof-wrapper should execute successfully");
 
         assert_eq!(pv.as_slice(), input.as_slice());
+    }
+
+    #[tokio::test]
+    async fn guest_checks_an_ethereum_source_proof() {
+        let hex = include_str!("../charms-lib/test/ethereum-spell.hex");
+        let Tx::Ethereum(record) = Tx::try_from(hex.trim()).unwrap() else {
+            panic!("fixture is an Ethereum record");
+        };
+        let verified = record
+            .extract_and_verify_spell(&SPELL_VK, false)
+            .expect("host accepts the ethereum proof");
+        assert_eq!(verified.version, charms_client::CURRENT_VERSION);
+        assert!(record.proof.starts_with(&hex_literal::hex!("4388a21c")));
+
+        let mut claim = NormalizedSpell::default();
+        claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        claim.tx.outs = vec![NormalizedCharms::new()];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount: 0,
+            dest: vec![3; 20],
+            content: None,
+        }]);
+        let input = SpellProverInput {
+            self_spell_vk: SPELL_VK,
+            prev_txs: vec![Tx::Ethereum(record)],
+            spell: claim.clone(),
+            tx_ins_beamed_source_utxos: BTreeMap::new(),
+            app_input: None,
+            scroll_outputs: None,
+        };
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&input).unwrap());
+        let client = ProverClient::builder().light().build().await;
+        let (pv, _) = client
+            .execute(Elf::Static(SPELL_CHECKER_BINARY), stdin)
+            .await
+            .expect("guest checks the source proof");
+        let (committed_vk, committed_spell): ([u8; 32], NormalizedSpell) =
+            util::read(pv.as_slice()).unwrap();
+        assert_eq!(committed_vk, SPELL_VK);
+        assert_eq!(committed_spell, claim);
+    }
+}
+
+#[cfg(all(test, feature = "prover"))]
+mod ethereum_spell_proof {
+    use super::*;
+    use charms_client::ethereum_tx::{PlaceholderRequest, plan_placeholder, record_with_proof};
+    use charms_client::tx::EnchantedTx;
+    use charms_client::{NormalizedCharms, NormalizedSpell};
+    use charms_data::{NativeOutput, UtxoId};
+    use charms_lib::SPELL_VK;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "network Groth16 proof; CHARMS_PROVE_ETHEREUM=1"]
+    async fn prove_an_ethereum_spell() {
+        if std::env::var("CHARMS_PROVE_ETHEREUM").ok().as_deref() != Some("1") {
+            return;
+        }
+        let mut salt = [0u8; 32];
+        salt[31] = 7;
+        let request = PlaceholderRequest {
+            chain_id: 1,
+            charms: [0x33; 20],
+            caller: [0x11; 20],
+            salt,
+            nonce: None,
+        };
+        let spell: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 16
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let source = plan_placeholder(&spell, &request).unwrap().record;
+        let mut claim = NormalizedSpell::default();
+        claim.tx.ins = Some(vec![UtxoId(source.tx_id(), 0)]);
+        claim.tx.outs = vec![NormalizedCharms::new()];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount: 0,
+            dest: vec![3; 20],
+            content: None,
+        }]);
+        let prover = crate::cli::prove_impl(false);
+        let (committed, proof, _) = prover
+            .prove(
+                claim,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                vec![Tx::Ethereum(source)],
+                Default::default(),
+                None,
+            )
+            .expect("network proof");
+        assert_eq!(committed.version, charms_client::CURRENT_VERSION);
+        let record = record_with_proof(&committed, proof, 1, [0x33; 20]).unwrap();
+        record
+            .extract_and_verify_spell(&SPELL_VK, false)
+            .expect("host verifies the network proof");
+        let path = "charms-lib/test/ethereum-spell.hex";
+        std::fs::write(path, record.hex()).unwrap();
+        println!("wrote {path} proof_bytes {}", record.proof.len());
     }
 }

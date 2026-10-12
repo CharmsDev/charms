@@ -73,6 +73,9 @@ pub const V13_SPELL_VK: [u8; 32] =
 /// Verification key for version `14` of the protocol implemented by `charms-proof-wrapper` binary.
 pub const V14_SPELL_VK: [u8; 32] =
     hex!("001a2396afb7e376736d9cf82d33c0dec55cb66866bf7f141fdaa92ab70a0506");
+/// Verification key for version `15` of the protocol implemented by `charms-proof-wrapper` binary.
+pub const V15_SPELL_VK: [u8; 32] =
+    hex!("00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52");
 
 /// Version `0` of the protocol.
 pub const V0: u32 = 0;
@@ -106,9 +109,11 @@ pub const V13: u32 = 13;
 pub const V14: u32 = 14;
 /// Version `15` of the protocol.
 pub const V15: u32 = 15;
+/// Version `16` of the protocol.
+pub const V16: u32 = 16;
 
 /// Current version of the protocol.
-pub const CURRENT_VERSION: u32 = V15;
+pub const CURRENT_VERSION: u32 = V16;
 
 pub const CHARMS_PROVE_API_URL: &'static str =
     formatcp!("https://v{CURRENT_VERSION}.charms.dev/spells/prove");
@@ -934,7 +939,7 @@ fn spell_input_and_ref_txids(spell: &NormalizedSpell) -> BTreeSet<TxId> {
         .collect()
 }
 
-fn ensure_ethereum_prev_txs_admissible(
+pub fn ensure_ethereum_prev_txs_admissible(
     spell: &NormalizedSpell,
     prev_txs: &[Tx],
 ) -> anyhow::Result<()> {
@@ -1135,7 +1140,7 @@ mod test {
         salt[31] = 7;
         let carried: NormalizedSpell = serde_yaml::from_str(
             r#"
-version: 15
+version: 16
 tx:
   outs:
     - {}

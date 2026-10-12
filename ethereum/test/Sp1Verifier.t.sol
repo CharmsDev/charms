@@ -32,9 +32,9 @@ contract Sp1VerifierTest is Test {
         assertEq(verifier.VK_ROOT(), vm.parseJsonBytes32(json, "$.sp1.vkRoot"));
     }
 
-    /// @dev To create `test/vectors/v15-proof.json` from a Bitcoin transaction that carries a v15
-    /// spell, run from `ethereum/`:
-    /// `cargo run --manifest-path vectors/Cargo.toml -- --proof <tx.hex> test/vectors/v15-proof.json`
+    /// @dev `test/vectors/v15-proof.json` is one v15 Groth16 proof of a spell with
+    /// empty inputs. `programVKey` is the key that proof commits. The stock verifier
+    /// checks those bytes. Later proofs commit the rebuilt spell-checker key.
     function test_realV15ProofVerifies() public {
         vm.skip(!vm.exists(REAL_PROOF));
         string memory proof = vm.readFile(REAL_PROOF);

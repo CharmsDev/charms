@@ -39,7 +39,7 @@ Those directories, and the parents `/tmp/charms-verify-work`, `/tmp/charms-verif
 
 Do not start a second `cargo build` against the same checkout at the same time. Two runs may share the already-built binary if they use different run ids, work directories, and tmux sessions.
 
-This launch does not pass `--features prover`, so the binary is not an SP1 prover. `charms spell prove` on Bitcoin or Cardano, without `--payload`, posts to `CHARMS_PROVE_API_URL` (default `https://v15.charms.dev/spells/prove`). Building `charms-prover` and proving on the SP1 network is the later path in `features/spell-prove.md`.
+This launch does not pass `--features prover`, so the binary is not an SP1 prover. `charms spell prove` on Bitcoin or Cardano, without `--payload`, posts to `CHARMS_PROVE_API_URL` (default `https://v16.charms.dev/spells/prove`). Building `charms-prover` and proving on the SP1 network is the later path in `features/spell-prove.md`.
 
 The default logger filter is `off` (`RUST_LOG` unset). Do not wait for an info log line to decide that a command finished. Readiness for a drive is `control-charms doctor`.
 

@@ -1,6 +1,6 @@
 use crate::{
     CURRENT_VERSION, NormalizedSpell,
-    tx::{self, EnchantedTx},
+    tx::{self, EnchantedTx, Tx},
     utxo_id_hash_with_nonce,
 };
 use anyhow::{Context, ensure};
@@ -75,10 +75,7 @@ impl EthereumTx {
         util::read(self.spell.as_slice()).context("ethereum spell CBOR")
     }
 
-    fn accept_placeholder(
-        &self,
-        committed: NormalizedSpell,
-    ) -> anyhow::Result<NormalizedSpell> {
+    fn accept_placeholder(&self, committed: NormalizedSpell) -> anyhow::Result<NormalizedSpell> {
         ensure!(
             self.anchor.is_some(),
             "ethereum placeholder is missing an anchor"
@@ -142,13 +139,7 @@ impl EthereumTx {
         );
         let vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
         let public_values = tx::to_serialized_pv(spell.version, vk, spell);
-        tx::verify_snark_proof(
-            &self.proof,
-            &public_values,
-            vk,
-            spell.version,
-            spell.mock,
-        )?;
+        tx::verify_snark_proof(&self.proof, &public_values, vk, spell.version, spell.mock)?;
         Ok(spell.clone())
     }
 }
@@ -253,6 +244,45 @@ pub fn eth_tx_id(
     hasher.update(anchor.unwrap_or([0u8; 32]));
     hasher.update(spell_cbor);
     hasher.finalize().into()
+}
+
+pub fn is_placeholder(spell: &NormalizedSpell) -> bool {
+    committed_placeholder(spell).is_ok()
+}
+
+/// Chain id and Charms contract of the record that created `spell.tx.ins[0]`.
+pub fn hosting_chain(spell: &NormalizedSpell, prev_txs: &[Tx]) -> anyhow::Result<(u64, [u8; 20])> {
+    let first = spell
+        .tx
+        .ins
+        .as_ref()
+        .and_then(|ins| ins.first())
+        .context("a proved ethereum spell spends an input")?;
+    let host = prev_txs
+        .iter()
+        .find_map(|tx| match tx {
+            Tx::Ethereum(record) if record.tx_id() == first.0 => Some(record),
+            _ => None,
+        })
+        .context("prev_txs must include the Ethereum record that created the spent input")?;
+    Ok((host.chain_id, host.charms))
+}
+
+pub fn record_with_proof(
+    spell: &NormalizedSpell,
+    proof: Vec<u8>,
+    chain_id: u64,
+    charms: [u8; 20],
+) -> anyhow::Result<EthereumTx> {
+    Ok(EthereumTx {
+        chain_id,
+        charms,
+        anchor: None,
+        spell: util::write(spell)?,
+        proof,
+        caller: None,
+        salt: None,
+    })
 }
 
 pub fn plan_placeholder(
@@ -501,10 +531,7 @@ mod tests {
     use ark_ff::ToConstraintField;
     use ark_groth16::{Groth16, ProvingKey};
     use ark_relations::{
-        gr1cs::{
-            self, ConstraintSynthesizer, ConstraintSystemRef, SynthesisError,
-            Variable,
-        },
+        gr1cs::{self, ConstraintSynthesizer, ConstraintSystemRef, SynthesisError, Variable},
         lc,
     };
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
@@ -514,11 +541,11 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
 
-    const CBOR: &str = "a36776657273696f6e0f627478a363696e7380646f75747381a065636f696e7381a266616d6f756e74006464657374940102030405060708090a0b0c0d0e0f1011121314716170705f7075626c69635f696e70757473a0";
-    const TX_ID: &str = "fe12fb10d8317475b864e2393961d5aa2af56d0923de9c79ac8bc0eb02f3e7a7";
-    const BEAM: &str = "adcaddcc66a2d1719f8a3145e458023be9f5fb8c466fdceae2a03e31b0015d5c";
-    const BEAM_NONCE_1: &str = "9cc13c1cf309dfd6cc3fd38f3e14b3b7f1e971f5842a686591dc352b0accdd1a";
-    const CALL: &str = "0x27485a930000000000000000000000000000000000000000000000000000000000000080000000000000000000000000000000000000000000000000000000000000000700000000000000000000000000000000000000000000000000000000000003200000000000000000000000000000000000000000000000000000000000000340000000000000000000000000000000000000000000000000000000000000000f000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000160000000000000000000000000000000000000000000000000000000000000018000000000000000000000000000000000000000000000000000000000000001a000000000000000000000000000000000000000000000000000000000000001c00000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000028000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000200000000000000000000000000102030405060708090a0b0c0d0e0f1011121314000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+    const CBOR: &str = "a36776657273696f6e10627478a363696e7380646f75747381a065636f696e7381a266616d6f756e74006464657374940102030405060708090a0b0c0d0e0f1011121314716170705f7075626c69635f696e70757473a0";
+    const TX_ID: &str = "8cb5ef4b8fd977bd570fbe98db1eaed4f1bb223086ab3e8d0b1b6e892abe2b5d";
+    const BEAM: &str = "07703e3d628141aaae43f70cafe8eaa764b9da77b076817be1c847e472665718";
+    const BEAM_NONCE_1: &str = "c203c462cba325170ab8eb66e6b350d3a84bb4acf1545f680f471fa4278de2d7";
+    const CALL: &str = "0x27485a9300000000000000000000000000000000000000000000000000000000000000800000000000000000000000000000000000000000000000000000000000000007000000000000000000000000000000000000000000000000000000000000032000000000000000000000000000000000000000000000000000000000000003400000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000012000000000000000000000000000000000000000000000000000000000000001400000000000000000000000000000000000000000000000000000000000000160000000000000000000000000000000000000000000000000000000000000018000000000000000000000000000000000000000000000000000000000000001a000000000000000000000000000000000000000000000000000000000000001c00000000000000000000000000000000000000000000000000000000000000260000000000000000000000000000000000000000000000000000000000000028000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000200000000000000000000000000102030405060708090a0b0c0d0e0f1011121314000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
     fn request(nonce: Option<u64>) -> PlaceholderRequest {
         let mut salt = [0u8; 32];
@@ -545,7 +572,7 @@ mod tests {
             coins.push_str(&format!("    - amount: 0\n      dest: \"{dest}\"\n"));
         }
         let yaml = format!(
-            "version: 15\ntx:\n  outs:\n{outputs}  coins:\n{coins}app_public_inputs: {{}}\n"
+            "version: 16\ntx:\n  outs:\n{outputs}  coins:\n{coins}app_public_inputs: {{}}\n"
         );
         serde_yaml::from_str(&yaml).unwrap()
     }
@@ -668,30 +695,30 @@ mod tests {
         let plan = plan_placeholder(&spell(2), &request(None)).unwrap();
         assert_eq!(
             plan.tx_id,
-            "1568b0106469209c7aa1b6c36bf9d7613e3843811128524d0887e1ae51bf7150"
+            "4736b5c20eb90bbfb63815d4864551dcc71c7988983aabc244c498eddda6cce7"
         );
         assert_eq!(
             plan.beamed_outs["0"],
-            "0ba3f5eb7e9c415c9cb1b90fe8d0670430216d023b4ebd6144a6a467ebd12d15"
+            "872a4fefe34ec766f5d02b94fbc95c52f7eae8130f40f549408c644e40bf46f3"
         );
         assert_eq!(
             plan.beamed_outs["1"],
-            "f93d8a3539d71ea1acb14c49adde0b1486382ae1fcc9956bb6840e1c371919b5"
+            "e014ac9cae206f740ed6ef90179b42d5e399b7227b646d90099fe6738b2ddd73"
         );
         assert_eq!(
             plan.utxo_ids[1],
-            "1568b0106469209c7aa1b6c36bf9d7613e3843811128524d0887e1ae51bf7150:1"
+            "4736b5c20eb90bbfb63815d4864551dcc71c7988983aabc244c498eddda6cce7:1"
         );
         assert_eq!(
             hex::encode(&plan.record.spell),
-            "a36776657273696f6e0f627478a363696e7380646f75747382a0a065636f696e7382a266616d6f756e74006464657374940102030405060708090a0b0c0d0e0f1011121314a266616d6f756e740064646573749418221822182218221822182218221822182218221822182218221822182218221822182218221822716170705f7075626c69635f696e70757473a0"
+            "a36776657273696f6e10627478a363696e7380646f75747382a0a065636f696e7382a266616d6f756e74006464657374940102030405060708090a0b0c0d0e0f1011121314a266616d6f756e740064646573749418221822182218221822182218221822182218221822182218221822182218221822182218221822716170705f7075626c69635f696e70757473a0"
         );
     }
 
     #[test]
     fn a_charm_on_the_output_is_not_a_placeholder() {
         let yaml = r#"
-version: 15
+version: 16
 tx:
   outs:
     - 0: 1
@@ -708,10 +735,10 @@ app_public_inputs: {}
     #[test]
     fn a_charm_envelope_is_not_accepted() {
         let yaml = r#"
-version: 15
+version: 16
 tx:
   ins:
-    - fe12fb10d8317475b864e2393961d5aa2af56d0923de9c79ac8bc0eb02f3e7a7:0
+    - 8cb5ef4b8fd977bd570fbe98db1eaed4f1bb223086ab3e8d0b1b6e892abe2b5d:0
   outs:
     - 0: 1
   coins:
@@ -796,7 +823,7 @@ app_public_inputs: {}
     #[test]
     fn a_zero_owner_is_not_a_placeholder() {
         let yaml = r#"
-version: 15
+version: 16
 tx:
   outs:
     - {}
@@ -884,6 +911,23 @@ app_public_inputs: {}
     }
 
     #[test]
+    fn a_proved_record_copies_the_host_and_verifies() {
+        let source_spell = proved_spell();
+        let source = proved_record(&source_spell, mock_proof(&source_spell));
+        let mut claim = proved_spell();
+        claim.tx.ins = Some(vec![UtxoId(source.tx_id(), 0)]);
+        let (chain_id, charms) = hosting_chain(&claim, &[Tx::Ethereum(source.clone())]).unwrap();
+        assert_eq!((chain_id, charms), (source.chain_id, source.charms));
+        let record = record_with_proof(&claim, mock_proof(&claim), chain_id, charms).unwrap();
+        let verified = record
+            .extract_and_verify_spell(&[0; 32], true)
+            .expect("proof of the committed spell");
+        assert_eq!(verified, claim);
+        assert!(is_placeholder(&spell(1)));
+        assert!(!is_placeholder(&claim));
+    }
+
+    #[test]
     fn a_bad_ethereum_proof_is_rejected() {
         let spell = proved_spell();
         let proof = mock_proof(&spell);
@@ -959,14 +1003,11 @@ app_public_inputs: {}
         let mut sibling_spell = proved_spell();
         sibling_spell.tx.coins.as_mut().unwrap()[0].dest[0] = 2;
         let sibling = proved_record(&sibling_spell, mock_proof(&sibling_spell));
-        assert!(
-            check_claim(vec![host.clone(), sibling.clone()]).expect("same host")
-        );
+        assert!(check_claim(vec![host.clone(), sibling.clone()]).expect("same host"));
 
         let mut other_chain = sibling.clone();
         other_chain.chain_id = host.chain_id + 1;
-        let err = check_claim(vec![host.clone(), other_chain.clone()])
-            .expect_err("other chain");
+        let err = check_claim(vec![host.clone(), other_chain.clone()]).expect_err("other chain");
         assert_eq!(
             err.to_string(),
             format!(
@@ -978,8 +1019,7 @@ app_public_inputs: {}
 
         let mut other_contract = sibling;
         other_contract.charms[0] ^= 1;
-        let err = check_claim(vec![host, other_contract.clone()])
-            .expect_err("other contract");
+        let err = check_claim(vec![host, other_contract.clone()]).expect_err("other contract");
         assert_eq!(
             err.to_string(),
             format!(
@@ -1001,11 +1041,7 @@ app_public_inputs: {}
             let missing = SynthesisError::AssignmentMissing;
             let a = cs.new_witness_variable(|| self.a.ok_or(missing))?;
             let c = cs.new_input_variable(|| self.a.ok_or(missing))?;
-            cs.enforce_r1cs_constraint(
-                || lc!() + a,
-                || lc!() + Variable::One,
-                || lc!() + c,
-            )
+            cs.enforce_r1cs_constraint(|| lc!() + a, || lc!() + Variable::One, || lc!() + c)
         }
     }
 }

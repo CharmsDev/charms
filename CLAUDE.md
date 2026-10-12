@@ -29,7 +29,7 @@ charms app build
 
 ## Project Overview
 
-Charms is a Rust framework for programmable assets on Bitcoin and Cardano using zero-knowledge proofs. Users create "spells" (transaction metadata) that define creation/transformation of "charms" (bundles of tokens, NFTs, and app state) attached to UTXOs. The current protocol version is **V15**.
+Charms is a Rust framework for programmable assets on Bitcoin and Cardano using zero-knowledge proofs. Users create "spells" (transaction metadata) that define creation/transformation of "charms" (bundles of tokens, NFTs, and app state) attached to UTXOs. The current protocol version is **V16**.
 
 ## Binaries
 
@@ -38,7 +38,7 @@ Both binaries are built from the same root `charms` crate (`src/main.rs`):
 - **`charms`** (default features) — the CLI. `charms spell prove` forwards proving to a hosted Prover API.
 - **`charms-prover`** (`--features prover`) — the proving server with real SP1 proving built in. Run with `charms-prover server`. The `prover` feature also pulls in `redis`/`rslock` for proof caching.
 
-The hosted prover URL is derived from the protocol version: `https://v15.charms.dev/spells/prove` (override with `CHARMS_PROVE_API_URL`).
+The hosted prover URL is derived from the protocol version: `https://v16.charms.dev/spells/prove` (override with `CHARMS_PROVE_API_URL`).
 
 ## Workspace Architecture
 

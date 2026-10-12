@@ -691,7 +691,7 @@ mod test {
     use std::fs;
     use std::path::PathBuf;
 
-    const TX_ID: &str = "fe12fb10d8317475b864e2393961d5aa2af56d0923de9c79ac8bc0eb02f3e7a7";
+    const TX_ID: &str = "8cb5ef4b8fd977bd570fbe98db1eaed4f1bb223086ab3e8d0b1b6e892abe2b5d";
     const CALLER: &str = "1111111111111111111111111111111111111111";
     const SALT: &str = "0000000000000000000000000000000000000000000000000000000000000007";
     const CHARMS: &str = "3333333333333333333333333333333333333333";
@@ -707,7 +707,7 @@ mod test {
 
     fn placeholder_spell() -> &'static str {
         r#"
-version: 15
+version: 16
 tx:
   outs:
     - {}
@@ -811,7 +811,7 @@ app_public_inputs: {}
         assert!(data.starts_with("0x27485a93"));
         assert_eq!(
             hex::encode(Sha256::digest(data.as_bytes())),
-            "16ab3c7888645532ae655427625c47245f53d99a5ce5cb31572086ed66aa1cb0",
+            "59553ae6f8643ca5d2382a821b28b613f7e5a671e8c19daf41950eb72043945d",
             "sha256 of the empty-UTXO transact calldata"
         );
         let err = tx::ethereum_transact_json(&printed).unwrap_err();

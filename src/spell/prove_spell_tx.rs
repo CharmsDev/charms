@@ -1,5 +1,5 @@
 use super::{
-    prove::Prove,
+    prove::{Prove, clear_inputs_and_coins},
     request::{CharmsFee, ProveRequest},
 };
 #[cfg(feature = "prover")]
@@ -119,17 +119,22 @@ impl ProveSpellTxImpl {
             collateral_utxo,
         } = prove_request;
 
-        if chain == Chain::Ethereum {
-            bail!("this build does not prove Ethereum spells");
-        }
-        super::validate::ensure_no_ethereum_history(&prev_txs)?;
+        charms_client::ensure_ethereum_prev_txs_admissible(&norm_spell, &prev_txs)?;
+        let ethereum_host = if chain == Chain::Ethereum {
+            Some(charms_client::ethereum_tx::hosting_chain(
+                &norm_spell,
+                &prev_txs,
+            )?)
+        } else {
+            None
+        };
         if chain == Chain::Cardano && collateral_utxo.is_none() {
             bail!("Collateral UTXO is required for Cardano spells");
         }
 
         let prev_txs_by_id = by_txid(&prev_txs);
 
-        let (truncated_norm_spell, proof, proof_app_cycles) = self.prover.prove(
+        let (committed_spell, proof, proof_app_cycles) = self.prover.prove(
             norm_spell.clone(),
             binaries,
             app_signatures,
@@ -147,13 +152,12 @@ impl ProveSpellTxImpl {
 
         tracing::info!("proof generated. total app cycles: {}", total_cycles);
 
-        // Serialize spell into CBOR
-        let spell_data = util::write(&(&truncated_norm_spell, &proof))?;
-
         let charms_fee = self.charms_fee_settings.clone();
 
         match chain {
             Chain::Bitcoin => {
+                let truncated = clear_inputs_and_coins(committed_spell);
+                let spell_data = util::write(&(&truncated, &proof))?;
                 let txs = bitcoin_tx::make_transactions(
                     &norm_spell,
                     &change_address,
@@ -165,8 +169,21 @@ impl ProveSpellTxImpl {
                 )?;
                 Ok(txs)
             }
-            Chain::Ethereum => unreachable!(),
+            Chain::Ethereum => {
+                let Some((chain_id, charms)) = ethereum_host else {
+                    bail!("an Ethereum spell needs the record that created its first input");
+                };
+                let record = charms_client::ethereum_tx::record_with_proof(
+                    &committed_spell,
+                    proof,
+                    chain_id,
+                    charms,
+                )?;
+                Ok(vec![Tx::Ethereum(record)])
+            }
             Chain::Cardano => {
+                let truncated = clear_inputs_and_coins(committed_spell);
+                let spell_data = util::write(&(&truncated, &proof))?;
                 let txs = cardano_tx::make_transactions(
                     &norm_spell,
                     &change_address,
@@ -372,7 +389,7 @@ mod tests {
         NormalizedSpell,
         ethereum_tx::EthereumTx,
         request::ProveRequest,
-        tx::{Chain, Tx},
+        tx::{Chain, EnchantedTx, Tx},
     };
 
     #[tokio::test]
@@ -398,13 +415,18 @@ mod tests {
             chain: Chain::Cardano,
             collateral_utxo: None,
         };
+        let Tx::Ethereum(record) = &request.prev_txs[0] else {
+            unreachable!("the fixture is an Ethereum record");
+        };
+        let expected = format!(
+            "Ethereum previous transaction {} is not final and did not \
+             create an input or reference of an Ethereum-hosted spell",
+            record.tx_id()
+        );
         let err = prover
             .do_prove_spell_tx(request, 0, None)
             .await
             .unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "prev_txs cannot include an Ethereum transaction in this build"
-        );
+        assert_eq!(err.to_string(), expected);
     }
 }

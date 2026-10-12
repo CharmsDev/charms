@@ -111,8 +111,8 @@ mod tests {
     use super::{hex_encode, replace_spell_checker_vk, replace_spell_vk};
 
     const SPELL_CHECKER_VK: [u32; 8] = [
-        594351357, 1129065526, 1335503287, 1134438958, 1095361067, 1699468311, 1887077198,
-        882329457,
+        1984750207, 1567470138, 1349947137, 1907579142, 529032310, 940856958, 590958814,
+        1352275862,
     ];
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn spell_vk_replacement_matches_charms_lib_source() {
         let src = include_str!("../../../charms-lib/src/lib.rs");
-        let vk = hex_decode_32("00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52");
+        let vk = hex_decode_32("0083016a6ca432c8768918af826105b05a5c28966e7f3a61ab64edfac1298d4e");
         assert_eq!(replace_spell_vk(src, &vk), src);
     }
 
@@ -147,7 +147,7 @@ mod tests {
         let encoded = hex_encode(&vk);
         assert!(updated.contains(&format!("hex!(\"{encoded}\")")));
         assert!(
-            !updated.contains("00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52")
+            !updated.contains("00b2302225db1c44647df6508ac0b1b03c9b04485e5d4e76cab134dfd4ce6b86")
         );
         assert_eq!(replace_spell_vk(&updated, &vk), updated);
     }

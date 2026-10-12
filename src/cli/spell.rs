@@ -59,10 +59,31 @@ impl SpellCli {
 impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         if params.chain == Chain::Ethereum {
-            println!("{}", ethereum_placeholder_json(&params)?);
-            return Ok(());
+            let spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(&params.spell)?)?;
+            if charms_client::ethereum_tx::is_placeholder(&spell) {
+                println!("{}", ethereum_placeholder_json(&params)?);
+                return Ok(());
+            }
+            ensure!(
+                params.change_address.is_none(),
+                "--change-address is not used for an Ethereum spell"
+            );
+            ensure!(
+                params.caller.is_none() && params.salt.is_none(),
+                "--caller and --salt are only for an empty Ethereum UTXO"
+            );
+            ensure!(
+                params.chain_id.is_none() && params.charms.is_none(),
+                "chain id and contract come from the Ethereum record in --prev-txs"
+            );
+            ensure!(
+                params.collateral_utxo.is_none(),
+                "--collateral-utxo is not used on Ethereum"
+            );
+        } else {
+            reject_ethereum_only_options(&params)?;
+            ensure!(params.fee_rate >= 1.0, "fee rate must be >= 1.0");
         }
-        reject_ethereum_only_options(&params)?;
 
         let SpellProveParams {
             spell,
@@ -80,16 +101,17 @@ impl Prove for SpellCli {
             collateral_utxo,
             ..
         } = params;
-        let change_address =
-            change_address.context("--change-address is required for this chain")?;
+        let change_address = if chain == Chain::Ethereum {
+            String::new()
+        } else {
+            change_address.context("--change-address is required for this chain")?
+        };
 
         let spell_prover = ProveSpellTxImpl::new(mock);
 
         let collateral_utxo = collateral_utxo
             .map(|utxo| UtxoId::from_str(&utxo))
             .transpose()?;
-
-        ensure!(fee_rate >= 1.0, "fee rate must be >= 1.0");
 
         let norm_spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(spell)?)?;
 
@@ -193,7 +215,10 @@ impl Prove for SpellCli {
                 });
                 println!("{}", tx_draft);
             }
-            Chain::Ethereum => unreachable!(),
+            Chain::Ethereum => {
+                let hexes: Vec<String> = transactions.iter().map(Tx::hex).collect();
+                println!("{}", serde_json::to_string(&hexes)?);
+            }
         }
 
         Ok(())

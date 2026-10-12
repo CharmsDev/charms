@@ -20,7 +20,7 @@ Preconditions:
 - Write `/tmp/charms-verify-work/$CHARMS_VERIFY_RUN_ID/empty.yaml` with this body:
 
 ```yaml
-version: 15
+version: 16
 tx:
   ins: []
   outs: []
@@ -38,7 +38,7 @@ app_public_inputs: {}
 
 - `tx.ins` must be present. An omitted key fails with `Error: spell.tx.ins must be present`. An empty list is present.
 - `tx.coins` must be present and the same length as `tx.outs`. A missing `coins` key fails with `coins must be present`.
-- The protocol version in the file must be `15`.
+- The protocol version in the file must be `16`.
 - Apps that are not simple transfers need `--app-bins`. The failure names the apps and says `no app binaries provided`.
 - A spell with unbound Scrolls outputs can still exit 0 after a stderr warning: `spell has Scrolls outputs whose scriptPubKeys are not yet bound`. That warning is not a successful binding.
 - `--mock` does not turn this command into a proof. Cycle output is the local contract run.

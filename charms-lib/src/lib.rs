@@ -10,7 +10,7 @@ use wasm_bindgen::{JsValue, prelude::wasm_bindgen};
 /// Verification key for the current `charms-spell-checker` binary
 /// (and the current protocol version).
 pub const SPELL_VK: [u8; 32] =
-    hex!("00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52");
+    hex!("0083016a6ca432c8768918af826105b05a5c28966e7f3a61ab64edfac1298d4e");
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen(js_name = "extractAndVerifySpell")]
@@ -37,6 +37,19 @@ mod tests {
         let tx: Tx = serde_json::from_str(tx_json).unwrap();
         let norm_spell = extract_and_verify_spell(&tx, true).unwrap();
         println!("{}", serde_json::to_string_pretty(&norm_spell).unwrap());
+    }
+
+    #[test]
+    fn test_extract_and_verify_spell_ethereum() {
+        let hex = include_str!("../test/ethereum-spell.hex");
+        let tx = Tx::try_from(hex.trim()).unwrap();
+        let Tx::Ethereum(record) = &tx else {
+            panic!("fixture is an Ethereum record");
+        };
+        assert!(!record.proof.is_empty());
+        let norm_spell = extract_and_verify_spell(&tx, false).unwrap();
+        assert_eq!(norm_spell.version, CURRENT_VERSION);
+        assert_eq!(norm_spell.tx.ins.as_ref().unwrap().len(), 1);
     }
 
     #[test]

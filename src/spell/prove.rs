@@ -56,8 +56,8 @@ pub trait Prove: Send + Sync {
     ///
     /// # Returns
     /// - `Ok((NormalizedSpell, Proof, u64))`: On success, returns a tuple containing:
-    ///   * The original `NormalizedSpell` object that was proven in its onchain form (i.e. without
-    ///     the inputs, since they are already specified by the transaction).
+    ///   * The `NormalizedSpell` the proof commits, including inputs and coins. Bitcoin and
+    ///     Cardano clear those fields before embedding the spell in the chain transaction.
     ///   * The generated `Proof` object, which provides evidence of correctness for the spell.
     ///   * A `u64` value indicating the total number of cycles consumed during the proving process.
     /// - `Err(anyhow::Error)`: Returns an error if the proving process fails due to validation
@@ -169,7 +169,6 @@ impl Prove for Prover {
             .get()
             .prove(&self.proof_wrapper_pk, &stdin, SP1ProofMode::Groth16)
             .map_err(|e| anyhow!("{} SNARK wrapper: {}", TRANSIENT_PROVER_FAILURE, e))?;
-        let norm_spell = clear_inputs_and_coins(norm_spell);
         let proof = proof.bytes();
 
         // TODO app_cycles might turn out to be much more expensive than spell_cycles
@@ -245,8 +244,6 @@ impl Prove for MockProver {
         let mut proof_bytes = vec![];
         proof.serialize_compressed(&mut proof_bytes)?;
 
-        let norm_spell = clear_inputs_and_coins(norm_spell);
-
         Ok((norm_spell, proof_bytes, spell_cycles))
     }
 }
@@ -256,7 +253,7 @@ fn make_mock(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell
 }
 
-pub(super) fn clear_inputs_and_coins(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
+pub(crate) fn clear_inputs_and_coins(mut norm_spell: NormalizedSpell) -> NormalizedSpell {
     norm_spell.tx.ins = None;
     norm_spell.tx.coins = None;
     norm_spell

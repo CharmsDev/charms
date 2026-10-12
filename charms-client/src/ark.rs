@@ -18,11 +18,8 @@ pub fn verify_groth16_proof(
     let field_elements = Sha256::digest(public_inputs)
         .to_field_elements()
         .expect("non-empty vector");
-    let verified = Groth16::<Bls12_381>::verify_with_processed_vk(
-        &pvk,
-        &[field_elements[0]],
-        &proof,
-    )?;
+    let verified =
+        Groth16::<Bls12_381>::verify_with_processed_vk(&pvk, &[field_elements[0]], &proof)?;
     ensure!(verified, "could not verify spell proof");
     Ok(())
 }

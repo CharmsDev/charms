@@ -3,8 +3,8 @@ use crate::{
     CURRENT_VERSION, MOCK_SPELL_VK, NormalizedSpell, V0, V0_SPELL_VK, V1, V1_SPELL_VK, V2,
     V2_SPELL_VK, V3, V3_SPELL_VK, V4, V4_SPELL_VK, V5, V5_SPELL_VK, V6, V6_SPELL_VK, V7,
     V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, V11, V11_SPELL_VK, V12,
-    V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, ark, bitcoin_tx::BitcoinTx,
-    cardano_tx::CardanoTx,
+    V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, V15, V15_SPELL_VK, ark,
+    bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
@@ -121,6 +121,7 @@ pub fn spell_vk(spell_version: u32, spell_vk: &[u8; 32], mock: bool) -> anyhow::
     }
     match spell_version {
         CURRENT_VERSION => Ok(spell_vk),
+        V15 => Ok(&V15_SPELL_VK),
         V14 => Ok(&V14_SPELL_VK),
         V13 => Ok(&V13_SPELL_VK),
         V12 => Ok(&V12_SPELL_VK),
@@ -159,6 +160,7 @@ pub fn groth16_vk(spell_version: u32, mock: bool) -> anyhow::Result<&'static [u8
     }
     match spell_version {
         CURRENT_VERSION => Ok(CURRENT_GROTH16_VK_BYTES),
+        V15 => Ok(V15_GROTH16_VK_BYTES),
         V14 => Ok(V14_GROTH16_VK_BYTES),
         V13 => Ok(V13_GROTH16_VK_BYTES),
         V12 => Ok(V12_GROTH16_VK_BYTES),
@@ -196,7 +198,8 @@ pub const V12_GROTH16_VK_BYTES: &'static [u8] = include_bytes!("../vk/v12/groth1
 pub const V13_GROTH16_VK_BYTES: &'static [u8] = V12_GROTH16_VK_BYTES;
 pub const V14_GROTH16_VK_BYTES: &'static [u8] = include_bytes!("../vk/v14/groth16_vk.bin");
 pub const V15_GROTH16_VK_BYTES: &'static [u8] = V14_GROTH16_VK_BYTES;
-pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V15_GROTH16_VK_BYTES;
+pub const V16_GROTH16_VK_BYTES: &'static [u8] = V15_GROTH16_VK_BYTES;
+pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V16_GROTH16_VK_BYTES;
 
 pub fn to_serialized_pv(
     spell_version: u32,
@@ -258,7 +261,7 @@ const VK_HASH_PREFIX_LENGTH: usize = 4;
 const SP1_V6_0_VK_ROOT: [u8; 32] =
     hex!("008cd56e10c2fe24795cff1e1d1f40d3a324528d315674da45d26afb376e8670");
 
-/// `VK_ROOT_BYTES` from `sp1-verifier` 6.2.0 — covers spell versions V14 and V15.
+/// `VK_ROOT_BYTES` from `sp1-verifier` 6.2.0 — covers spell versions V14 and later.
 const SP1_V6_2_VK_ROOT: [u8; 32] =
     hex!("002f850ee998974d6cc00e50cd0814b098c05bfade466d28573240d057f25352");
 
@@ -348,6 +351,16 @@ mod tests {
     #[test]
     fn current_sp1_vk_root_matches_hardcoded_constant() {
         assert_eq!(SP1_V6_2_VK_ROOT, *sp1_verifier::VK_ROOT_BYTES);
+    }
+
+    #[test]
+    fn version_15_keeps_its_program_key() {
+        let current = [9u8; 32];
+        assert_eq!(spell_vk(V15, &current, false).unwrap(), &V15_SPELL_VK);
+        assert_eq!(
+            spell_vk(CURRENT_VERSION, &current, false).unwrap(),
+            &current
+        );
     }
 
     #[test]
