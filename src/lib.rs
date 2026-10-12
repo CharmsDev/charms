@@ -37,6 +37,7 @@ mod test {
     use super::*;
     use charms_client::{
         NormalizedCharms, NormalizedSpell, SpellProverInput,
+        ethereum_tx::EthereumTx,
         tx::{EnchantedTx, Tx},
     };
     use charms_data::{NativeOutput, UtxoId, util};
@@ -286,6 +287,76 @@ app_public_inputs: {}
             assert_eq!(code, 1);
             assert_eq!(committed, 0);
         }
+    }
+
+    fn v15_placeholder_spend() -> (NormalizedSpell, EthereumTx, Vec<u8>) {
+        let mut salt = [0u8; 32];
+        salt[31] = 15;
+        let carried: NormalizedSpell = serde_yaml::from_str(
+            r#"
+version: 15
+tx:
+  outs:
+    - {}
+  coins:
+    - amount: 0
+      dest: "0102030405060708090a0b0c0d0e0f1011121314"
+app_public_inputs: {}
+"#,
+        )
+        .unwrap();
+        let plan = charms_client::ethereum_tx::plan_placeholder(
+            &carried,
+            &charms_client::ethereum_tx::PlaceholderRequest {
+                chain_id: 1,
+                charms: [0x33; 20],
+                caller: [0x11; 20],
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        let bytes = plan.record.spell.clone();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(plan.record.tx_id(), 0)]);
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![NativeOutput {
+            amount: 0,
+            dest: vec![3; 20],
+            content: None,
+        }]);
+        (spell, plan.record, bytes)
+    }
+
+    #[tokio::test]
+    async fn guest_accepts_a_v15_placeholder_as_an_input() {
+        let (claim, record, bytes) = v15_placeholder_spend();
+        let extracted = record
+            .extract_and_verify_spell(&SPELL_VK, false)
+            .expect("v15 placeholder extracts");
+        assert_eq!(extracted.version, 15);
+        assert_eq!(util::write(&extracted).unwrap(), bytes);
+        assert_eq!(record.spell, bytes);
+        let input = SpellProverInput {
+            self_spell_vk: SPELL_VK,
+            prev_txs: vec![Tx::Ethereum(record)],
+            spell: claim.clone(),
+            tx_ins_beamed_source_utxos: BTreeMap::new(),
+            app_input: None,
+            scroll_outputs: None,
+        };
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&input).unwrap());
+        let client = ProverClient::builder().light().build().await;
+        let (pv, report) = client
+            .execute(Elf::Static(SPELL_CHECKER_BINARY), stdin)
+            .await
+            .expect("guest execution returns a report");
+        assert_eq!(report.exit_code, 0);
+        let (committed_vk, committed_spell): ([u8; 32], NormalizedSpell) =
+            util::read(pv.as_slice()).unwrap();
+        assert_eq!(committed_vk, SPELL_VK);
+        assert_eq!(committed_spell, claim);
     }
 }
 

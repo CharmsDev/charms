@@ -920,7 +920,7 @@ App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and 
 | Phase | Spell version | Guest | Keys |
 |---|---|---|---|
 | Ethereum-local | The phase-1 contract writes version 15 and rejects proofs and `beamed_outs`. | An empty UTXO does not run the guest. The CLI writes that record at version 16. | The empty-UTXO path does not use `SPELL_VK`. The phase-1 contract rejects version 16. |
-| Proved Ethereum spell | Version 16. | The guest verifies a spell in `Tx::Ethereum`, including its proof. | `SPELL_VK` is `0x006d1a33e5f03f87e0cd378ff40af6f9b05926f032ccf3b28bb84d8aab82b340`. Version 15 keeps `0x00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52`. Older Bitcoin and Cardano proofs verify under their pinned keys. |
+| Proved Ethereum spell | Version 16. | The guest verifies a spell in `Tx::Ethereum`, including its proof. | `SPELL_VK` is `0x0010f4cf67bc2486066ec3912f4078c2dc59c8650756f96928e2949b5e1251a2`. Version 15 keeps `0x00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52`. Older Bitcoin and Cardano proofs verify under their pinned keys. |
 | Beaming | Later. `proven_final` stays false until a finality signature exists. | Another rebuild once `ETHEREUM_FINALITY_VKEY` is known. | That rebuild publishes the next `programVKey` into the contract. |
 
 An empty UTXO committed at version 15 stays that version. The bytes are not rewritten, and a version-16 spell can spend it.
