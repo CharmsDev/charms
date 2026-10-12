@@ -693,7 +693,7 @@ mod tests {
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_snark::SNARK;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
-    use charms_data::{B32, Data, NativeOutput, UtxoId};
+    use charms_data::{B32, Data, NFT, NativeOutput, UtxoId, VersionedApp};
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
 
@@ -1038,6 +1038,73 @@ app_public_inputs: {}
 
         let placeholder = plan_placeholder(&spell(1), &request(None)).unwrap().record;
         assert_eq!(transact_call(&placeholder).unwrap().data, CALL);
+    }
+
+    fn rich_claim() -> NormalizedSpell {
+        let nft = App {
+            tag: NFT,
+            identity: B32([0x10; 32]),
+            vk: B32([0x20; 32]),
+        };
+        let token = App {
+            tag: TOKEN,
+            identity: B32([0x30; 32]),
+            vk: B32([0x40; 32]),
+        };
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(TxId([0x51; 32]), 2)]);
+        spell.tx.refs = Some(vec![UtxoId(TxId([0x61; 32]), 4)]);
+        spell
+            .app_public_inputs
+            .insert(nft.clone(), Data::from(&7u64));
+        spell.app_public_inputs.insert(token, Data::empty());
+        spell.versioned_apps.insert(
+            nft.vk,
+            VersionedApp {
+                version: 3,
+                wasm_hash: B32([0x70; 32]),
+            },
+        );
+        let mut both = NormalizedCharms::new();
+        both.insert(0, Data::from(&9u64));
+        both.insert(1, Data::from(&1000u64));
+        let mut token_only = NormalizedCharms::new();
+        token_only.insert(1, Data::from(&5u64));
+        spell.tx.outs = vec![both, token_only, NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![
+            NativeOutput {
+                amount: 0,
+                dest: vec![0x11; 20],
+                content: None,
+            },
+            NativeOutput {
+                amount: 0,
+                dest: vec![0x22; 20],
+                content: None,
+            },
+            NativeOutput {
+                amount: 0,
+                dest: vec![0; 20],
+                content: None,
+            },
+        ]);
+        spell.tx.beamed_outs = Some(BTreeMap::from([(2, B32([0x80; 32]))]));
+        spell
+    }
+
+    #[test]
+    fn a_rich_proved_call_matches_the_guest_spell() {
+        let spell = rich_claim();
+        let data = transact_calldata(&spell, [0u8; 32], &[0xab, 0xcd]).unwrap();
+        let cbor = util::write(&spell).unwrap();
+        assert_eq!(
+            format!("0x{}", hex::encode(data)),
+            include_str!("../../ethereum/test/vectors/proved-claim-call.hex").trim()
+        );
+        assert_eq!(
+            format!("0x{}", hex::encode(cbor)),
+            include_str!("../../ethereum/test/vectors/proved-claim-cbor.hex").trim()
+        );
     }
 
     #[test]
