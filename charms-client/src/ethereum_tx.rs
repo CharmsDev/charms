@@ -1,5 +1,5 @@
 use crate::{
-    CURRENT_VERSION, NormalizedSpell, V14, V15,
+    CURRENT_VERSION, NormalizedSpell, V15,
     tx::{self, EnchantedTx, Tx},
     utxo_id_hash_with_nonce,
 };
@@ -535,7 +535,7 @@ fn address_word(addr: [u8; 20]) -> [u8; 32] {
 mod tests {
     use super::*;
     use crate::tx::{Chain, EnchantedTx, Tx};
-    use crate::{NormalizedCharms, is_correct};
+    use crate::{NormalizedCharms, V14, is_correct};
     use ark_bls12_381::Bls12_381;
     use ark_ff::Field;
     use ark_ff::ToConstraintField;
