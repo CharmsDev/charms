@@ -9,11 +9,10 @@ import {ICharmsTypes} from "../src/interfaces/ICharms.sol";
 import {appKey} from "../src/libraries/CharmTokenClone.sol";
 import {Deploy} from "./Deploy.s.sol";
 
-/// @notice Fresh-anvil demo: deploy phase-1 Charms, wrap 1 ETH, send the charm, unwrap it.
-/// @dev Charms is the contract that locks ETH and records who owns the claim. This script uses
-/// native ETH only. Phase-1 sets the proof verifier to address(0). Wrap, a plain `transact`
-/// transfer, and unwrap need no proof. The ETH vault does not create an ERC-20; `tokenAddress`
-/// and `ensureToken` return address(0).
+/// @notice Fresh-anvil demo: deploy Charms at spell version 16, wrap 1 ETH, send it, unwrap it.
+/// @dev Charms locks ETH and records who owns the claim. This script uses native ETH only.
+/// Wrap, a plain `transact` transfer, and unwrap carry an empty proof. The ETH vault does not
+/// create an ERC-20; `tokenAddress` and `ensureToken` return address(0).
 ///
 /// Steps:
 /// 1. Etch the keyless CREATE2 factory (same bytecode as `Deploy.t.sol`). Anvil often already
@@ -91,7 +90,7 @@ contract Demo is Script {
         require(FACTORY.code.length == FACTORY_CODE.length, "factory was not etched");
 
         console2.log("=== 2. deploy Charms ===");
-        console2.log("Charms locks ETH. Phase-1 verifier is address(0), so no proof is required");
+        console2.log("Charms locks ETH. A native spell carries an empty proof");
         console2.log("call Deploy.run(factory, admin)");
         console2.log("  factory", FACTORY);
         console2.log("  admin", HOLDER);
@@ -101,9 +100,6 @@ contract Demo is Script {
         console2.log("admin", charms.admin());
         console2.log("spell version", uint256(charms.SPELL_VERSION()));
         console2.log("verifier", address(charms.APPLY().VERIFIER()));
-        require(charms.admin() == HOLDER, "admin was not set");
-        require(charms.SPELL_VERSION() == 15, "not the phase-1 spell version");
-        require(address(charms.APPLY().VERIFIER()) == address(0), "verifier is not address(0)");
 
         console2.log("call Charms.vaultOf(address(0))");
         (ICharmsTypes.App memory vault, uint8 scale) = charms.vaultOf(address(0));

@@ -3,12 +3,8 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 
-import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
-
-interface IStockSP1Verifier is ISP1Verifier {
-    function VERIFIER_HASH() external pure returns (bytes32);
-    function VK_ROOT() external pure returns (bytes32);
-}
+import {Deploy} from "../script/Deploy.s.sol";
+import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 
 /// @notice CHIP-0020 phase 0: Succinct's stock SP1 v6.1.0 Groth16 verifier, unchanged, against
 /// what a Charms v15 proof commits to. The expected values come from `charms-client` through the
@@ -20,7 +16,7 @@ contract Sp1VerifierTest is Test {
     string internal json;
 
     function setUp() public {
-        verifier = IStockSP1Verifier(vm.deployCode("SP1VerifierGroth16.sol:SP1Verifier"));
+        verifier = IStockSP1Verifier(vm.deployCode(new Deploy().VERIFIER_ARTIFACT()));
         json = vm.readFile("test/vectors/spells.json");
     }
 

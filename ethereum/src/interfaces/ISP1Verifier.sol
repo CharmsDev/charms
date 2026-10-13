@@ -9,3 +9,9 @@ interface ISP1Verifier {
         bytes calldata proofBytes
     ) external view;
 }
+
+/// @notice Hash and root of Succinct's stock Groth16 verifier.
+interface IStockSP1Verifier is ISP1Verifier {
+    function VERIFIER_HASH() external pure returns (bytes32);
+    function VK_ROOT() external pure returns (bytes32);
+}

@@ -17,7 +17,7 @@ import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice `_apply` of CHIP-0020: the only writer of UTXO, supply, balance, and vault state.
 /// `Charms` `delegatecall`s `applySpell`, so this code runs in the proxy's storage.
-/// @dev A zero verifier is the phase-1 build: it rejects proofs and `beamedOuts`.
+/// @dev A zero verifier rejects proofs and `beamedOuts`.
 contract CharmsApply is CharmsStorage {
     using UtxoList for UtxoList.List;
 
