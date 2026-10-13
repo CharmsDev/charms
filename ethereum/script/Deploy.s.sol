@@ -7,28 +7,41 @@ import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 
-/// @notice Deploys the phase-1 (spell version 15) Charms. The proxy address is `ETHEREUM_CHARMS`,
-/// and it depends only on `deployer`, `admin`, and this bytecode.
+/// @notice Deploys the first Charms release at spell version 16. The proxy address is
+/// `ETHEREUM_CHARMS`, and it depends only on `deployer`, `admin`, and this bytecode.
 /// @dev `deployer` is a CREATE2 factory that takes `salt ‖ initCode` as calldata, such as
 /// 0x4e59b44847b379578588920ca78fbf26c0b4956c. A rerun after a partial deployment finishes it.
+/// `initialize` creates the shared `CharmToken` implementation. This script does not deploy
+/// per-app clones.
 ///
 /// forge script script/Deploy.s.sol --sig "run(address,address)" <deployer> <admin> \
 ///     --rpc-url <url> --broadcast
 contract Deploy is Script {
+    /// @dev Same bytes as `charms-lib`'s `SPELL_VK`.
+    bytes32 public constant PROGRAM_VKEY =
+        hex"0060f1593d80473ff16c56a15c9042aa0e61fe54d8ec34638853dc4946f25d3e";
+
+    bytes32 public constant VERIFIER_SALT = keccak256("charms-sp1-verifier-v1");
+    bytes32 public constant APPLY_SALT = keccak256("charms-apply-v16");
+    bytes32 public constant IMPLEMENTATION_SALT = keccak256("charms-implementation-v16");
     bytes32 public constant PROXY_SALT = keccak256("charms-proxy-v1");
-    bytes32 public constant APPLY_SALT = keccak256("charms-apply-v15");
-    bytes32 public constant IMPLEMENTATION_SALT = keccak256("charms-implementation-v15");
 
     function run(address deployer, address admin) external returns (Charms charms) {
         require(deployer.code.length != 0, "deployer has no code");
         require(admin != address(0), "admin is zero");
 
+        // Groth16Verifier pins solc 0.8.20, so this script loads that artifact
+        // instead of importing it into the 0.8.37 compilation.
+        bytes memory verifierInit = vm.getCode("SP1VerifierGroth16.sol:SP1Verifier");
+        require(verifierInit.length != 0, "verifier bytecode missing");
+
         vm.startBroadcast();
+        address verifier = _create2(deployer, VERIFIER_SALT, verifierInit);
         address applier = _create2(
             deployer,
             APPLY_SALT,
             abi.encodePacked(
-                type(CharmsApply).creationCode, abi.encode(uint32(15), bytes32(0), address(0))
+                type(CharmsApply).creationCode, abi.encode(uint32(16), PROGRAM_VKEY, verifier)
             )
         );
         address implementation = _create2(
@@ -49,7 +62,10 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         require(charms.admin() == admin, "admin not set");
-        require(charms.SPELL_VERSION() == 15, "not the phase-1 build");
+        require(charms.SPELL_VERSION() == 16, "not spell version 16");
+        require(charms.APPLY().PROGRAM_VKEY() == PROGRAM_VKEY, "program vkey mismatch");
+        require(address(charms.APPLY().VERIFIER()) == verifier, "verifier not set");
+        console.log("SP1Verifier", verifier);
         console.log("CharmsApply", applier);
         console.log("Charms implementation", implementation);
         console.log("ETHEREUM_CHARMS", address(charms));

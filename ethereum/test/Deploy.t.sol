@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 
 import {Deploy} from "../script/Deploy.s.sol";
 import {Charms} from "../src/Charms.sol";
+import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 
 contract DeployTest is Test {
@@ -21,18 +22,27 @@ contract DeployTest is Test {
         script = new Deploy();
     }
 
-    function test_deploysThePhase1ProxyAtItsCreate2Address() public {
+    function test_deploysSpellVersion16AtItsCreate2Address() public {
         Charms charms = script.run(FACTORY, admin);
 
-        address implementation = address(
-            uint160(
-                uint256(
-                    vm.load(
-                        address(charms),
-                        bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)
-                    )
+        bytes memory verifierInit = vm.getCode("SP1VerifierGroth16.sol:SP1Verifier");
+        address verifier = vm.computeCreate2Address(
+            keccak256("charms-sp1-verifier-v1"), keccak256(verifierInit), FACTORY
+        );
+        address applier = vm.computeCreate2Address(
+            keccak256("charms-apply-v16"),
+            keccak256(
+                abi.encodePacked(
+                    type(CharmsApply).creationCode,
+                    abi.encode(uint32(16), script.PROGRAM_VKEY(), verifier)
                 )
-            )
+            ),
+            FACTORY
+        );
+        address implementation = vm.computeCreate2Address(
+            keccak256("charms-implementation-v16"),
+            keccak256(abi.encodePacked(type(Charms).creationCode, abi.encode(applier))),
+            FACTORY
         );
         bytes memory proxyInit = abi.encodePacked(
             type(CharmsProxy).creationCode,
@@ -43,9 +53,16 @@ contract DeployTest is Test {
             vm.computeCreate2Address(keccak256("charms-proxy-v1"), keccak256(proxyInit), FACTORY)
         );
         assertEq(charms.admin(), admin);
-        assertEq(charms.SPELL_VERSION(), 15);
-        assertEq(address(charms.APPLY().VERIFIER()), address(0));
+        assertEq(charms.SPELL_VERSION(), 16);
+        assertEq(charms.APPLY().PROGRAM_VKEY(), script.PROGRAM_VKEY());
+        assertEq(
+            script.PROGRAM_VKEY(),
+            hex"0060f1593d80473ff16c56a15c9042aa0e61fe54d8ec34638853dc4946f25d3e"
+        );
+        assertEq(address(charms.APPLY().VERIFIER()), verifier);
+        assertGt(verifier.code.length, 0);
         assertGt(vm.computeCreateAddress(address(charms), 1).code.length, 0);
+        assertEq(vm.computeCreateAddress(address(charms), 2).code.length, 0);
     }
 
     function test_rerunKeepsTheSameDeployment() public {

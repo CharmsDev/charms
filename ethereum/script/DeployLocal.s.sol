@@ -8,7 +8,7 @@ import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 
-/// @notice Deploys the phase-1 Charms proxy with `new`, for a local chain.
+/// @notice Deploys version-15 bytecode with `new`, for a local chain. Mainnet uses `Deploy`.
 contract DeployLocal is Script {
     function run() external returns (Charms charms) {
         vm.startBroadcast();

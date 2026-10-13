@@ -32,6 +32,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_spell_vk_is_the_deploy_script_key() {
+        let src = include_str!("../../ethereum/script/Deploy.s.sol");
+        let mut hex_vk = String::with_capacity(64);
+        for byte in SPELL_VK {
+            hex_vk.push(char::from(b"0123456789abcdef"[(byte >> 4) as usize]));
+            hex_vk.push(char::from(b"0123456789abcdef"[(byte & 0xf) as usize]));
+        }
+        assert!(
+            src.contains(&hex_vk),
+            "Deploy.s.sol PROGRAM_VKEY drifted from SPELL_VK"
+        );
+    }
+
+    #[test]
     fn test_extract_and_verify_spell_bitcoin() {
         let tx_json = include_str!("../test/bitcoin-tx.json");
         let tx: Tx = serde_json::from_str(tx_json).unwrap();
