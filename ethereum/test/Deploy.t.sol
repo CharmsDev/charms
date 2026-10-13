@@ -10,6 +10,8 @@ import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmsTypes} from "../src/interfaces/ICharms.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
+import {CharmsIds} from "../src/libraries/CharmsIds.sol";
+import {SpellCodec} from "../src/libraries/SpellCodec.sol";
 
 contract DeployTest is Test {
     /// @dev The keyless deterministic-deployment proxy and its runtime code.
@@ -19,6 +21,11 @@ contract DeployTest is Test {
 
     bytes32 internal constant PROGRAM_VKEY =
         0x0060f1593d80473ff16c56a15c9042aa0e61fe54d8ec34638853dc4946f25d3e;
+    address internal constant CALLER = 0x1111111111111111111111111111111111111111;
+    address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
+    address internal constant NEXT_OWNER = 0x3333333333333333333333333333333333333333;
+    bytes32 internal constant PLACEHOLDER_TX =
+        0x97c2b57e3d80acbe4b1d574557e61dc8737d890a029674075a98f7a892054f7c;
 
     address internal admin = makeAddr("admin");
     Deploy internal script;
@@ -104,6 +111,53 @@ contract DeployTest is Test {
         assertEq(address(charms).balance, 1 ether);
     }
 
+    function test_claimEncodingMatchesTheProvedSpell() public {
+        Charms charms = script.run(FACTORY, admin);
+        assertEq(address(charms), 0x7269cC778B9b90EEe6717B3D3050E372E399d8E7);
+        (, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+        assertEq(
+            SpellCodec.encode(claim), vm.parseBytes(vm.readFile("test/vectors/v16-claim-cbor.hex"))
+        );
+    }
+
+    function test_realV16ProofChangesState() public {
+        Charms charms = script.run(FACTORY, admin);
+        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+        bytes memory proof = _v16Proof();
+        bytes memory cbor = SpellCodec.encode(claim);
+        vm.expectCall(
+            address(charms.APPLY().VERIFIER()),
+            abi.encodeCall(
+                ISP1Verifier.verifyProof,
+                (PROGRAM_VKEY, SpellCodec.publicValues(PROGRAM_VKEY, cbor), proof)
+            )
+        );
+
+        vm.prank(CALLER);
+        bytes32 created = charms.transact(claim, bytes32(0), proof, new bytes[](0));
+
+        assertEq(_owner(charms, txId, 0), address(0));
+        assertEq(_owner(charms, txId, 1), REF_OWNER);
+        assertEq(_owner(charms, created, 0), NEXT_OWNER);
+    }
+
+    function test_corruptedV16ProofLeavesStateUnchanged() public {
+        Charms charms = script.run(FACTORY, admin);
+        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+        bytes memory proof = _v16Proof();
+        proof[proof.length - 1] ^= 0x01;
+        bytes32 created =
+            CharmsIds.ethTxId(block.chainid, address(charms), bytes32(0), SpellCodec.encode(claim));
+
+        vm.prank(CALLER);
+        vm.expectRevert();
+        charms.transact(claim, bytes32(0), proof, new bytes[](0));
+
+        assertEq(_owner(charms, txId, 0), CALLER);
+        assertEq(_owner(charms, txId, 1), REF_OWNER);
+        assertEq(_owner(charms, created, 0), address(0));
+    }
+
     function test_checkRefusesAnOldBuild() public {
         Charms old = Charms(
             payable(address(
@@ -117,6 +171,42 @@ contract DeployTest is Test {
         );
         vm.expectRevert(bytes("spell version"));
         script.check(old, admin);
+    }
+
+    /// @dev Chain 31337 and salt 1. Output 0 is spent. Output 1 is the reference.
+    function _placeholder(Charms charms)
+        internal
+        returns (bytes32 txId, ICharmsTypes.Spell memory claim)
+    {
+        vm.chainId(31_337);
+        ICharmsTypes.Spell memory created;
+        created.version = 16;
+        created.outs = new ICharmsTypes.Output[](2);
+        created.outs[0].owner = CALLER;
+        created.outs[1].owner = REF_OWNER;
+        vm.prank(CALLER);
+        txId = charms.transact(created, bytes32(uint256(1)), "", new bytes[](0));
+        assertEq(txId, PLACEHOLDER_TX);
+
+        claim.version = 16;
+        claim.ins = new ICharmsTypes.Input[](1);
+        claim.ins[0].utxo = ICharmsTypes.UtxoRef(txId, 0);
+        claim.refs = new ICharmsTypes.UtxoRef[](1);
+        claim.refs[0] = ICharmsTypes.UtxoRef(txId, 1);
+        claim.outs = new ICharmsTypes.Output[](1);
+        claim.outs[0].owner = NEXT_OWNER;
+    }
+
+    function _v16Proof() internal view returns (bytes memory) {
+        return vm.parseJsonBytes(vm.readFile("test/vectors/v16-deploy-proof.json"), ".proof");
+    }
+
+    function _owner(Charms charms, bytes32 txId, uint32 index)
+        internal
+        view
+        returns (address owner)
+    {
+        (owner,) = charms.utxo(ICharmsTypes.UtxoRef(txId, index));
     }
 
     function _implementation(Charms charms) internal view returns (address) {
