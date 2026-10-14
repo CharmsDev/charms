@@ -39,6 +39,8 @@ Now head on to [docs.charms.dev](https://docs.charms.dev) to learn more!
 
 Concepts and guides: [docs.charms.dev](https://docs.charms.dev)
 
+A recorded Bitcoin-to-Ethereum eBTC beam: [docs/ebtc-ethereum-beam.md](docs/ebtc-ethereum-beam.md).
+
 Charms CLI:
 
 ```sh
