@@ -114,7 +114,7 @@ app_public_inputs:
 
 `charms-prover spell prove --chain ethereum` again uses `APP_SP1_PROVER=network` and `SPELL_SP1_PROVER=network`. `--prev-txs` is the placeholder record and the Bitcoin finality proof. `--beamed-from` is `{0: ["7762dc7d5afb95c9ee6e5dd5dd0060d06714a76d98b0cd526c13a19ae837ce1b:0"]}`.
 
-`charms tx build --chain ethereum` prints the `transact` call. Its `from` field is the output owner. The account that owns the placeholder submitted the call: inputs owned by `msg.sender` need no extra signature.
+`charms tx build --chain ethereum` prints the `transact` call. The generated `from` is the receiver, `0xcCc6dD3c85DAa7bBB33B5ea22bbFBF28B6fA8Cc8`. Replace that `from` with the placeholder owner's address, `0x0Fec1E72F9702681dFDC30c46530FBD1B9797453`, before sending the claim. Sending the generated call unchanged fails with `BadSignature`, because the claim has to be sent by the placeholder owner, with no extra signature.
 
 | | |
 | --- | --- |
