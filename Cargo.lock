@@ -2269,7 +2269,7 @@ dependencies = [
  "num-bigint 0.4.8",
  "num-traits",
  "paste",
- "pretty 0.12.5",
+ "pretty",
  "serde",
  "serde_bytes",
  "stacker",
@@ -5457,21 +5457,20 @@ dependencies = [
 
 [[package]]
 name = "miette"
-version = "5.10.0"
+version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59bb584eaeeab6bd0226ccf3509a69d7936d148cf3d036ad350abe35e8c6856e"
+checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
 dependencies = [
+ "cfg-if",
  "miette-derive",
- "once_cell",
- "thiserror 1.0.69",
  "unicode-width 0.1.14",
 ]
 
 [[package]]
 name = "miette-derive"
-version = "5.10.0"
+version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e7bc1560b95a3c4a25d03de42fe76ca718ab92d1a22a55b9b4cf67b3ae635c"
+checksum = "db5b29714e950dbb20d5e6f74f9dcec4edbcc1067bb7f8ed198c097b8c1a818b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6622,18 +6621,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
 dependencies = [
  "zerocopy",
-]
-
-[[package]]
-name = "pretty"
-version = "0.11.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83f3aa1e3ca87d3b124db7461265ac176b40c277f37e503eaa29c9c75c037846"
-dependencies = [
- "arrayvec 0.5.2",
- "log",
- "typed-arena",
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -10192,13 +10179,13 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "uplc"
-version = "1.1.23"
+version = "1.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6040ff5aabfd77c7757b3736c736d1a58fa06e8a43f78970bfa29f18b2729b54"
+checksum = "3c44c0e0c131c76e52bd11b2b3c411589210b7c73ada19cb02ff33aa2969654a"
 dependencies = [
  "bitvec",
  "blst",
- "cryptoxide 0.4.4",
+ "cryptoxide 0.6.5",
  "hamming",
  "hex",
  "indexmap 1.9.3",
@@ -10215,7 +10202,7 @@ dependencies = [
  "pallas-primitives 0.35.1",
  "pallas-traverse 0.35.1",
  "peg",
- "pretty 0.11.3",
+ "pretty",
  "secp256k1 0.26.0",
  "serde",
  "serde_json",
