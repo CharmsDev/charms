@@ -933,7 +933,7 @@ Charms does not implement ERC-1046 `tokenURI()`. That method would describe one 
 
 ERC-20 defines no logo method. Wallets that do not call `contractURI` still need an icon.
 
-The Charms token list uses the tokenlists.org schema. Chain id 1 is published at `https://charms.dev/tokens/ethereum.json`. Another chain id is published at `https://charms.dev/tokens/<chainId>.json`. An off-chain generator rebuilds each file from `MetadataSet` logs. It includes a clone only after `ensureToken` has deployed that clone. `name`, `symbol`, and `decimals` are the published values, or the defaults when that app has no `MetadataSet`. `logoURI` is the stored `image` when the image is nonempty, and the field is omitted when the image is empty.
+The Charms token list uses the tokenlists.org schema. Chain id 1 is published at `https://charms.dev/tokens/ethereum.json`. Another chain id is published at `https://charms.dev/tokens/<chainId>.json`. An off-chain generator rebuilds each file from `MetadataSet` logs. An app is listed only after both of these are true: `setMetadata` has been accepted, and `ensureToken` has deployed the clone. An unpublished clone is not on the list. Its `name`, `symbol`, and `decimals` still return the defaults. `name`, `symbol`, and `decimals` on the list are the published values. `logoURI` is the stored `image` when the image is nonempty, and the field is omitted when the image is empty.
 
 A dapp adds the token with EIP-747 `wallet_watchAsset`. `address` is the clone. `symbol`, `decimals`, and `image` are the published fields. Omit `image` when the stored image is empty.
 
