@@ -459,7 +459,7 @@ contract CharmTokenProxy {
 
     fallback() external {
         address impl = charms.tokenImplementation();
-        assembly ("memory-safe") {
+        assembly {
             calldatacopy(0, 0, calldatasize())
             let ok := delegatecall(
                 gas(), impl, 0, calldatasize(), 0, 0
