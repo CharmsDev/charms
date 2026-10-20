@@ -840,6 +840,8 @@ Until the first accepted `setMetadata`, `name()` returns `Charm`, `symbol()` ret
 - A remote image starts with `https://`, `ipfs://`, or `ar://`, is at most 128 bytes, and requires a nonzero `imageHash`.
 - An SVG starts with `data:image/svg+xml`, is at most 256 bytes, and requires `imageHash` to be zero.
 
+CHIP-0420 asks that a remote image be `image/png`, `image/jpeg`, or `image/svg+xml`. The contract does not fetch the URI, so it does not check that media type.
+
 A nonempty `url` starts with `https://`, `ipfs://`, `ar://`, or `data:`. The contract does not fetch either URI.
 
 `setMetadata` reverts when `app.tag` is not `t` or when `app.vk` is `VAULT_VK`. A vault has no clone. Wallets keep the underlying token's `name`, `symbol`, `decimals`, and icon. ETH has no ERC-20 metadata here.
