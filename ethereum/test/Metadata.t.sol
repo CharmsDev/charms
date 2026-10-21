@@ -192,6 +192,27 @@ contract MetadataTest is CharmsTestBase {
         assertEq(vm.load(address(charms), bytes32(uint256(base) + 1)), IMAGE_HASH);
     }
 
+    function test_contractUriRoundTripsSpecialCharacters() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        metadata.name = string(bytes.concat(bytes('A"B\\C'), hex"e58583"));
+        metadata.symbol = 'X"Y';
+        metadata.description = string(bytes.concat(bytes('say "hi"\\path'), hex"0a09080c"));
+        metadata.url = 'https://example.com/a"b';
+        metadata.image = 'ipfs://bafy/"img';
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+        bytes memory json = _json(token.contractURI());
+        assertEq(_stringField(json, "name"), metadata.name);
+        assertEq(_stringField(json, "symbol"), metadata.symbol);
+        assertEq(_stringField(json, "description"), metadata.description);
+        assertEq(_stringField(json, "image"), metadata.image);
+        assertEq(_stringField(json, "external_link"), metadata.url);
+        assertEq(_numberField(json, "decimals"), metadata.decimals);
+        assertEq(json, _json(charms.contractURI(coin)));
+    }
+
     function test_permitDomainStaysCharmAfterRename() public {
         App memory coin = _app(T, "coin");
         CharmToken token = CharmToken(charms.ensureToken(coin));
@@ -258,6 +279,103 @@ contract MetadataTest is CharmsTestBase {
                 metadata.imageHash
             )
         );
+    }
+
+    function _json(string memory uri) internal pure returns (bytes memory) {
+        bytes memory raw = bytes(uri);
+        bytes memory prefix = bytes("data:application/json,");
+        uint256 n;
+        for (uint256 i = prefix.length; i < raw.length; ++i) {
+            if (raw[i] == "%") i += 2;
+            ++n;
+        }
+        bytes memory out = new bytes(n);
+        uint256 j;
+        for (uint256 i = prefix.length; i < raw.length; ++i) {
+            if (raw[i] == "%") {
+                out[j++] = bytes1(uint8(_hex(raw[i + 1]) * 16 + _hex(raw[i + 2])));
+                i += 2;
+            } else {
+                out[j++] = raw[i];
+            }
+        }
+        return out;
+    }
+
+    function _stringField(bytes memory json, string memory key)
+        internal
+        pure
+        returns (string memory)
+    {
+        bytes memory pattern = bytes(string.concat('"', key, '":"'));
+        uint256 i = _at(json, pattern) + pattern.length;
+        bytes memory buf = new bytes(json.length);
+        uint256 n;
+        while (i < json.length) {
+            bytes1 c = json[i++];
+            if (c == '"') break;
+            if (c != "\\") {
+                buf[n++] = c;
+                continue;
+            }
+            c = json[i++];
+            if (c == "n") {
+                buf[n++] = 0x0a;
+            } else if (c == "r") {
+                buf[n++] = 0x0d;
+            } else if (c == "t") {
+                buf[n++] = 0x09;
+            } else if (c == "u") {
+                uint16 code = (uint16(_hex(json[i])) << 12) | (uint16(_hex(json[i + 1])) << 8)
+                    | (uint16(_hex(json[i + 2])) << 4) | uint16(_hex(json[i + 3]));
+                i += 4;
+                buf[n++] = bytes1(uint8(code));
+            } else {
+                buf[n++] = c;
+            }
+        }
+        return _trim(buf, n);
+    }
+
+    function _numberField(bytes memory json, string memory key) internal pure returns (uint8) {
+        bytes memory pattern = bytes(string.concat('"', key, '":'));
+        uint256 i = _at(json, pattern) + pattern.length;
+        uint256 value;
+        while (i < json.length && json[i] >= "0" && json[i] <= "9") {
+            value = value * 10 + uint8(json[i]) - 48;
+            ++i;
+        }
+        return uint8(value);
+    }
+
+    function _at(bytes memory hay, bytes memory needle) internal pure returns (uint256) {
+        for (uint256 i; i + needle.length <= hay.length; ++i) {
+            bool match_ = true;
+            for (uint256 j; j < needle.length; ++j) {
+                if (hay[i + j] != needle[j]) {
+                    match_ = false;
+                    break;
+                }
+            }
+            if (match_) return i;
+        }
+        revert("field missing");
+    }
+
+    function _hex(bytes1 c) internal pure returns (uint8) {
+        uint8 v = uint8(c);
+        if (v >= 0x30 && v <= 0x39) return v - 0x30;
+        if (v >= 0x41 && v <= 0x46) return v - 0x37;
+        if (v >= 0x61 && v <= 0x66) return v - 0x57;
+        revert("bad hex");
+    }
+
+    function _trim(bytes memory buf, uint256 n) internal pure returns (string memory) {
+        bytes memory out = new bytes(n);
+        for (uint256 i; i < n; ++i) {
+            out[i] = buf[i];
+        }
+        return string(out);
     }
 
     function _sign(App memory app, Metadata memory metadata, uint64 version)
