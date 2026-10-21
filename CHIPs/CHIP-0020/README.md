@@ -21,7 +21,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | UTXO id | Content-addressed. Not the Ethereum transaction hash and not a counter. `TxId.0` is the reverse of that id, matching `UtxoId::to_bytes` and Cardano's `tx_id`. |
 | Simple transfer | The contract checks it. The proof is empty. A proof on a spell the contract can check itself is rejected. |
 | Anything else | Groth16 is verified on Ethereum, against the same public values Bitcoin and Cardano already use: CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled. |
-| Token metadata | `setMetadata` on the proxy, checked against `metadataSigner()`. That signer is an immutable in the `Charms` implementation. Fields follow CHIP-0420. `decimals` freezes on the first accepted call. `name`, `symbol`, and `image` may change later. The clone's `contractURI()` reads the proxy. |
+| Token metadata | `setMetadata` on the proxy, checked against `metadataSigner()`. That signer is an immutable in the `Charms` implementation. Fields follow CHIP-0420. `decimals` freezes on the first accepted call. `name`, `symbol`, and `image` may change later. The clone's `contractURI()` reads the proxy. `charms_metadata` signs `metadataHash` for the CHIP-0420 reference NFT. `setMetadata` still binds that hash to the chain, the contract, the app key, and the version. |
 | ERC-20 facade | One `CharmToken` per non-vault tag-`t` app. A vault app has no `CharmToken`, and neither does any other tag. For a non-vault app, `tokenAddress` is the CREATE2 address and does not deploy, and `ensureToken` deploys the minimal-proxy clone. That clone `delegatecall`s `CharmTokenProxy`. For a vault app, both return the underlying ERC-20 recorded for that vault, or `address(0)` for ETH, and `ensureToken` does not deploy. `balanceOf`, `transfer`, and `transferFrom` apply only to a non-vault clone. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. A vault charm moves through `transact`. The underlying token's `transfer` is unchanged. `_apply` does not deploy a clone. |
 | ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
@@ -885,9 +885,13 @@ A nonempty `url` starts with `https://`, `ipfs://`, `ar://`, or `data:`. The con
 
 Anyone may submit `setMetadata`. The contract accepts it only when `ecrecover` of the digest below equals `metadataSigner()`.
 
-`metadataSigner` is one secp256k1 address, an immutable set by the `Charms` constructor, and never the zero address. It is not a proxy slot. Replacing it is a new `Charms` implementation and `upgradeToAndCall`. The example key is an ICP threshold key from `sign_with_ecdsa`, key name `key_1`, derivation path `["scrolls", "metadata"]`. That key is separate from `ETHEREUM_FINALITY_VKEY`. The canister that holds the key, and the off-chain policy that chooses the signed payload, are chosen at deploy. They are out of scope. The contract checks the signature, the version, and the decimals rule.
+`metadataSigner` is one secp256k1 address, an immutable set by the `Charms` constructor, and never the zero address. It is not a proxy slot. Replacing it is a new `Charms` implementation and `upgradeToAndCall`. The key is the ICP threshold ECDSA key from `sign_with_ecdsa`, key name `key_1`, derivation path `["scrolls", "metadata"]`. That key is separate from `ETHEREUM_FINALITY_VKEY`. The Ethereum address of the key is fixed when `charms_metadata` is created. The contract checks the signature, the version, and the decimals rule.
 
-The signature is 65 bytes, `r || s || v`, and `v` is 27 or 28. `sign_with_ecdsa` returns `r || s`. The submitter appends `v`. There is no EIP-191 prefix. The canister signs this 32-byte digest.
+`charms_metadata` holds that key. `sign_metadata` takes a tag-`t` app and one transaction, and it rejects every other tag. For `{tag: t, identity, vk}` the metadata charm is `{tag: n, identity, vk}`: the same identity and the same vk. That pair is the CHIP-0420 reference NFT. The transaction must be final under its proof, and exactly one output must carry that charm. The canister checks only the transaction passed into the call. It does not read earlier transactions, and it does not follow a `ref` field. Charms does not read or store an NFT UTXO.
+
+The charm data is the metadata. `ticker` maps to `symbol`. The other CHIP-0420 names are the names in the table above. The canister signs `metadataHash`, the value of `_metadataHash` below. There is no EIP-191 prefix. `sign_with_ecdsa` returns `r || s`. The method returns the metadata charm and 65 bytes, `r || s || v`, with `v` equal to 27 or 28. `ecrecover` of `metadataHash` and that signature is the Ethereum address of the canister public key. The caller attaches the cycle cost of `sign_with_ecdsa`.
+
+`setMetadata` still recovers `_metadataDigest`. That digest binds `metadataHash` to the chain id, the Charms address, the app key, and the version. The canister does not sign `_metadataDigest`.
 
 ```solidity
 bytes32 constant METADATA_TYPEHASH = keccak256(
@@ -1353,7 +1357,7 @@ Which spell versions an implementation accepts, and the `programVKey` for each, 
 | A UUPS proxy between the clone and `CharmToken` | `upgradeTo` and the ERC-1967 read would run under the clone's `delegatecall`, so each clone would store its own implementation. `CharmTokenProxy` does not read that slot and has no `upgradeTo`. |
 | Wei on `NativeOutput.amount` | `u64` overflows near 18 ETH, native coins are not beamable, and ETH would have two representations. The vault charm is the one representation. |
 | Store the Groth16 proof beside the spell and require only the guest to verify it | The proof is already a field of the record and is not part of the id. The host checks a non-empty proof in `extract_and_verify_spell`. The guest checks the same proof when the record is in `prev_txs`. The contract checks it on Ethereum. |
-| Read display fields from a reference NFT | The NFT may not be on Ethereum. `setMetadata` takes a signature instead, and the contract does not track an NFT UTXO. |
+| Read display fields from a reference NFT | The NFT may not be on Ethereum. `setMetadata` takes a signature instead, and the contract does not track an NFT UTXO. `charms_metadata` checks that NFT in the transaction it is given. |
 | Store the image bytes in the proxy | A remote image does not fit in contract state. The contract stores a URI and `imageHash`. |
 | ERC-1046 `tokenURI()` | That method describes one unit. A fungible charm has one document, returned by `contractURI()`. |
 | Put `contractURI` in the clone bytecode | A new implementation address in that bytecode changes `tokenAddress`. `contractURI` is a method on the `CharmToken` implementation named by the `Charms` constructor. `upgradeToAndCall` installs a later `Charms`. The clone keeps `CharmTokenProxy`. |
@@ -1381,7 +1385,7 @@ A stolen metadata key can rename a charm and can freeze a wrong `decimals` on th
 
 The admin address, the `scrolls_ethereum` controller, the beacon API URL, and the execution API URL are chosen at deploy. The design does not name them.
 
-The metadata signer address, the canister that holds that key, and the off-chain policy that chooses what it signs are chosen at deploy. The design does not name them.
+The Ethereum address of the metadata key is fixed when `charms_metadata` is deployed. The design names the canister, the derivation path, and the signed `metadataHash`. It does not name that address.
 
 The bootstrap checkpoint, the `beamSourceAt` slot index, and the expected `Charms` implementation address are fixed when that implementation is deployed. `ws_period_epochs` starts from the Electra spec period for the stake at that time.
 
