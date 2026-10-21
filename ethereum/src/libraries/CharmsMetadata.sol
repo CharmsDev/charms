@@ -9,21 +9,9 @@ library CharmsMetadata {
         "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
     );
 
-    function hash(ICharmsTypes.Metadata calldata metadata) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                metadata.name,
-                metadata.symbol,
-                metadata.decimals,
-                metadata.description,
-                metadata.url,
-                metadata.image,
-                metadata.imageHash
-            )
-        );
-    }
-
     /// @dev `address(this)` is the proxy. The signed message is this digest, with no EIP-191 prefix.
+    /// `metadataHash` is `MetadataHash.digest`. This wrapper binds that hash to the chain, the
+    /// proxy, the app key, and the version. `charms_metadata` does not sign this digest.
     function digest(bytes32 key, uint64 version, bytes32 metadataHash)
         internal
         view

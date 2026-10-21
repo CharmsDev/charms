@@ -13,6 +13,7 @@ import {ICharmTokenHooks, ICharms, ICharmsLedger} from "./interfaces/ICharms.sol
 import {CharmTokenClone, appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
 import {CharmsMetadata} from "./libraries/CharmsMetadata.sol";
+import {MetadataHash} from "./libraries/MetadataHash.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
 import {UtxoList} from "./libraries/UtxoList.sol";
 
@@ -287,7 +288,15 @@ contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient 
         MetadataRecord storage rec = meta[key];
         if (version <= rec.version) revert StaleMetadataVersion();
         if (rec.version != 0 && metadata.decimals != rec.decimals) revert DecimalsFrozen();
-        bytes32 metadataHash = CharmsMetadata.hash(metadata);
+        bytes32 metadataHash = MetadataHash.digest(
+            metadata.name,
+            metadata.symbol,
+            metadata.decimals,
+            metadata.description,
+            metadata.url,
+            metadata.image,
+            metadata.imageHash
+        );
         bytes32 metadataDigest = CharmsMetadata.digest(key, version, metadataHash);
         if (_recoverMetadata(metadataDigest, sig) != metadataSigner) {
             revert InvalidMetadataSignature();
