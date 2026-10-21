@@ -67,6 +67,17 @@ interface ICharmsTypes {
         BeamedOut[] beamedOuts;
         uint32[] scrolls;
     }
+
+    /// @notice CHIP-0420 display fields. `symbol` is that CHIP's `ticker`.
+    struct Metadata {
+        string name;
+        string symbol;
+        uint8 decimals;
+        string description;
+        string url;
+        string image;
+        bytes32 imageHash;
+    }
 }
 
 /// @notice Ledger calls from a tag-`t` `CharmToken`. The token stores this address (the Charms
@@ -100,8 +111,11 @@ interface ICharmsLedger {
     function symbol(ICharmsTypes.App calldata app) external view returns (string memory);
 
     /// @notice The token's ERC-20 `decimals`.
-    /// @dev `0` until CHIP-0420 `decimals` is published.
+    /// @dev `0` until published, then the frozen value.
     function decimals(ICharmsTypes.App calldata app) external view returns (uint8);
+
+    /// @notice ERC-7572 document for `app`, as a `data:application/json` URI.
+    function contractURI(ICharmsTypes.App calldata app) external view returns (string memory);
 }
 
 /// @notice The `Transaction` log and every revert reason of the Charms proxy.
@@ -143,6 +157,10 @@ interface ICharmsErrors {
     error EthTransferFailed();
     error VaultUndercollateralized();
     error MetadataUnspecified();
+    error InvalidMetadata();
+    error InvalidMetadataSignature();
+    error StaleMetadataVersion();
+    error DecimalsFrozen();
     error EthRejected();
     error NotAdmin();
     error ZeroAdmin();
@@ -207,9 +225,25 @@ interface ICharms is ICharmsErrors {
     /// @dev Immutable in this bytecode.
     function tokenImplementation() external view returns (address);
 
-    /// @notice Metadata signer carried by this implementation.
-    /// @dev Immutable in this bytecode.
+    /// @notice Signer `setMetadata` accepts.
+    /// @dev Immutable in this bytecode. Not a proxy slot.
     function metadataSigner() external view returns (address);
+
+    /// @notice Accepted publication. Indexers read `appKey`, `version`, and the hash.
+    event MetadataSet(bytes32 indexed appKey, uint64 version, bytes32 metadataHash);
+
+    /// @notice Publish CHIP-0420 display fields for a non-vault tag-`t` app.
+    /// @dev Anyone may call. `version` must exceed the stored version.
+    /// The first success freezes `decimals`.
+    function setMetadata(
+        ICharmsTypes.App calldata app,
+        ICharmsTypes.Metadata calldata metadata,
+        uint64 version,
+        bytes calldata sig
+    ) external;
+
+    /// @notice Stored metadata version for `app`. `0` means unpublished.
+    function metadataVersion(ICharmsTypes.App calldata app) external view returns (uint64);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a
     /// spell. `transfer` does not.
@@ -274,6 +308,9 @@ interface ICharmTokenHooks {
     /// `transferFrom` emits `Transfer(from, to, amount)` instead, including a self-transfer.
     /// `_apply` does not deploy the clone in order to emit.
     function emitTransfer(address from, address to, uint256 amount) external;
+
+    /// @notice Emit `ContractURIUpdated` from this clone. Only `Charms` may call.
+    function emitContractURIUpdated() external;
 }
 
 /// @notice User-facing ERC-20 for one non-vault fungible charm, tag `t`. Wallets, routers, and
@@ -329,9 +366,15 @@ interface ICharmToken {
     /// `ticker` is published.
     function symbol() external view returns (string memory);
 
-    /// @notice Display decimals. Forwards to `ICharmsLedger.decimals`. `0` until CHIP-0420
-    /// `decimals` is published.
+    /// @notice Display decimals. Forwards to `ICharmsLedger.decimals`. `0` until published,
+    /// then the frozen value.
     function decimals() external view returns (uint8);
+
+    /// @notice ERC-7572. The proxy causes this via `emitContractURIUpdated`.
+    event ContractURIUpdated();
+
+    /// @notice ERC-7572 URI for this clone. Forwards to `ICharmsLedger.contractURI`.
+    function contractURI() external view returns (string memory);
 
     /// @notice EIP-2612. The holder signs an allowance off-chain. A router submits it and then
     /// calls `transferFrom`.
@@ -349,5 +392,6 @@ interface ICharmToken {
     function nonces(address owner) external view returns (uint256);
 
     /// @notice EIP-712 domain separator for `permit`. The signing wallet reads this.
+    /// @dev The domain name is the constant `"Charm"`, not the published display name.
     function DOMAIN_SEPARATOR() external view returns (bytes32);
 }

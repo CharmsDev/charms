@@ -69,7 +69,21 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
     mapping(address token => Vault) internal vaults;
     address public admin;
     mapping(bytes32 appKey => address token) internal vaultTokens;
-    uint256[50] private __gap;
+
+    /// @dev Slot 11. `version` and `decimals` share the first word. Unpublished is version 0.
+    struct MetadataRecord {
+        uint64 version;
+        uint8 decimals;
+        bytes32 imageHash;
+        string name;
+        string symbol;
+        string description;
+        string url;
+        string image;
+    }
+
+    mapping(bytes32 appKey => MetadataRecord) internal meta;
+    uint256[49] private __gap;
 
     function _appEq(App memory a, App memory b) internal pure returns (bool) {
         return a.tag == b.tag && a.identity == b.identity && a.vk == b.vk;

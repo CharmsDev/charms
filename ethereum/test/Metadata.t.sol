@@ -1,0 +1,283 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.37;
+
+import {Vm} from "forge-std/Vm.sol";
+
+import {CharmToken} from "../src/CharmToken.sol";
+import {ICharmToken, ICharms, ICharmsErrors} from "../src/interfaces/ICharms.sol";
+import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
+
+contract MetadataTest is CharmsTestBase {
+    uint256 internal metadataKey;
+
+    bytes32 internal constant IMAGE_HASH = bytes32(uint256(1));
+
+    string internal constant DEFAULT_URI =
+        "data:application/json,%7B%22name%22%3A%22Charm%22%2C%22symbol%22%3A%22CHARM%22%2C%22decimals%22%3A0%7D";
+    string internal constant EXAMPLE_URI =
+        "data:application/json,%7B%22name%22%3A%22Example%22%2C%22symbol%22%3A%22EX%22%2C%22decimals%22%3A8%2C%22description%22%3A%22One%20fungible%20charm.%22%2C%22image%22%3A%22ipfs%3A%2F%2Fbafyexample%22%2C%22external_link%22%3A%22https%3A%2F%2Fexample.com%22%7D";
+
+    function setUp() public override {
+        (metadataSigner, metadataKey) = makeAddrAndKey("metadata");
+        super.setUp();
+    }
+
+    function test_unpublishedCloneUsesTheDefaults() public {
+        CharmToken token = CharmToken(charms.ensureToken(_app(T, "coin")));
+
+        assertEq(token.name(), "Charm");
+        assertEq(token.symbol(), "CHARM");
+        assertEq(token.decimals(), 0);
+        assertEq(token.contractURI(), DEFAULT_URI);
+        assertEq(charms.metadataVersion(_app(T, "coin")), 0);
+    }
+
+    function test_setMetadataPublishesFieldsAndContractUri() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes32 hash = _hash(metadata);
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+
+        vm.expectEmit(true, false, false, true, address(charms));
+        emit ICharms.MetadataSet(_key(coin), 1, hash);
+        vm.expectEmit(false, false, false, false, address(token));
+        emit ICharmToken.ContractURIUpdated();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        assertEq(token.name(), "Example");
+        assertEq(token.symbol(), "EX");
+        assertEq(token.decimals(), 8);
+        assertEq(token.contractURI(), EXAMPLE_URI);
+        assertEq(charms.metadataVersion(coin), 1);
+        assertEq(charms.name(coin), "Example");
+        assertEq(charms.symbol(coin), "EX");
+        assertEq(charms.decimals(coin), 8);
+        assertEq(charms.contractURI(coin), EXAMPLE_URI);
+    }
+
+    function test_laterCallChangesMutableFieldsAndKeepsDecimals() public {
+        App memory coin = _app(T, "coin");
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+        Metadata memory metadata = _example();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        Metadata memory next = metadata;
+        next.name = "Renamed";
+        next.symbol = "RN";
+        next.description = "Updated.";
+        next.url = "https://renamed.example";
+        next.image = "ar://renamed";
+        next.imageHash = bytes32(uint256(2));
+        next.decimals = 6;
+        vm.expectRevert(ICharmsErrors.DecimalsFrozen.selector);
+        charms.setMetadata(coin, next, 2, _sign(coin, next, 2));
+        assertEq(token.name(), "Example");
+        assertEq(token.decimals(), 8);
+        assertEq(charms.metadataVersion(coin), 1);
+
+        next.decimals = 8;
+        charms.setMetadata(coin, next, 2, _sign(coin, next, 2));
+
+        assertEq(token.name(), "Renamed");
+        assertEq(token.symbol(), "RN");
+        assertEq(token.decimals(), 8);
+        assertEq(charms.metadataVersion(coin), 2);
+        assertEq(
+            token.contractURI(),
+            "data:application/json,%7B%22name%22%3A%22Renamed%22%2C%22symbol%22%3A%22RN%22%2C%22decimals%22%3A8%2C%22description%22%3A%22Updated.%22%2C%22image%22%3A%22ar%3A%2F%2Frenamed%22%2C%22external_link%22%3A%22https%3A%2F%2Frenamed.example%22%7D"
+        );
+    }
+
+    function test_badSignatureIsRejectedAndLeavesTheRecord() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes memory sig = _sign(coin, metadata, 1);
+        sig[0] = bytes1(uint8(sig[0]) ^ 1);
+
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 1, sig);
+
+        assertEq(charms.metadataVersion(coin), 0);
+        assertEq(CharmToken(charms.ensureToken(coin)).name(), "Charm");
+        assertEq(CharmToken(charms.ensureToken(coin)).contractURI(), DEFAULT_URI);
+    }
+
+    function test_sameVersionCannotBeReplayed() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes memory sig = _sign(coin, metadata, 1);
+        charms.setMetadata(coin, metadata, 1, sig);
+
+        vm.expectRevert(ICharmsErrors.StaleMetadataVersion.selector);
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 1);
+    }
+
+    function test_setMetadataBeforeEnsureTokenEmitsOnDeploy() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        assertEq(charms.tokenAddress(coin).code.length, 0);
+
+        address token = charms.ensureToken(coin);
+        assertEq(CharmToken(token).name(), "Example");
+        assertEq(CharmToken(token).contractURI(), EXAMPLE_URI);
+    }
+
+    function test_ensureTokenEmitsContractUriWhenAlreadyPublished() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        address token = charms.tokenAddress(coin);
+
+        vm.expectEmit(false, false, false, false, token);
+        emit ICharmToken.ContractURIUpdated();
+        assertEq(charms.ensureToken(coin), token);
+    }
+
+    function test_unpublishedEnsureTokenDoesNotEmitContractUri() public {
+        App memory coin = _app(T, "coin");
+        vm.recordLogs();
+        charms.ensureToken(coin);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 topic = keccak256("ContractURIUpdated()");
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != topic);
+        }
+    }
+
+    function test_vaultAndOtherTagsHaveNoMetadataSurface() public {
+        Metadata memory metadata = _example();
+        App memory vault = App(T, keccak256("vault"), VAULT_VK);
+        vm.expectRevert(ICharmsErrors.NotToken.selector);
+        charms.setMetadata(vault, metadata, 1, "");
+        vm.expectRevert(ICharmsErrors.NotToken.selector);
+        charms.name(vault);
+
+        App memory nft = _app(N, "nft");
+        vm.expectRevert(ICharmsErrors.NotTokenTag.selector);
+        charms.setMetadata(nft, metadata, 1, "");
+        vm.expectRevert(ICharmsErrors.NotTokenTag.selector);
+        charms.contractURI(nft);
+    }
+
+    function test_invalidFieldsRevert() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        metadata.symbol = "";
+        vm.expectRevert(ICharmsErrors.InvalidMetadata.selector);
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        metadata = _example();
+        metadata.imageHash = bytes32(0);
+        vm.expectRevert(ICharmsErrors.InvalidMetadata.selector);
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        metadata = _example();
+        metadata.url = "http://example.com";
+        vm.expectRevert(ICharmsErrors.InvalidMetadata.selector);
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        assertEq(charms.metadataVersion(coin), 0);
+    }
+
+    function test_metadataRecordUsesSlotEleven() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        bytes32 base = keccak256(abi.encode(_key(coin), uint256(11)));
+        uint256 packed = uint256(vm.load(address(charms), base));
+        assertEq(uint64(packed), 1);
+        assertEq(uint8(packed >> 64), 8);
+        assertEq(vm.load(address(charms), bytes32(uint256(base) + 1)), IMAGE_HASH);
+    }
+
+    function test_permitDomainStaysCharmAfterRename() public {
+        App memory coin = _app(T, "coin");
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+        Metadata memory metadata = _example();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        metadata.name = "Renamed";
+        charms.setMetadata(coin, metadata, 2, _sign(coin, metadata, 2));
+        assertEq(token.name(), "Renamed");
+
+        bytes32 domain = keccak256(
+            abi.encode(
+                keccak256(
+                    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+                ),
+                keccak256("Charm"),
+                keccak256("1"),
+                block.chainid,
+                address(token)
+            )
+        );
+        assertEq(token.DOMAIN_SEPARATOR(), domain);
+
+        (address alice, uint256 aliceKey) = makeAddrAndKey("alice");
+        uint256 deadline = block.timestamp + 1000;
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+                ),
+                alice,
+                address(0xBEEF),
+                uint256(1),
+                uint256(0),
+                deadline
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(aliceKey, keccak256(abi.encodePacked(hex"1901", domain, structHash)));
+        token.permit(alice, address(0xBEEF), 1, deadline, v, r, s);
+        assertEq(token.allowance(alice, address(0xBEEF)), 1);
+    }
+
+    function _example() internal pure returns (Metadata memory) {
+        return Metadata({
+            name: "Example",
+            symbol: "EX",
+            decimals: 8,
+            description: "One fungible charm.",
+            url: "https://example.com",
+            image: "ipfs://bafyexample",
+            imageHash: IMAGE_HASH
+        });
+    }
+
+    function _hash(Metadata memory metadata) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                metadata.name,
+                metadata.symbol,
+                metadata.decimals,
+                metadata.description,
+                metadata.url,
+                metadata.image,
+                metadata.imageHash
+            )
+        );
+    }
+
+    function _sign(App memory app, Metadata memory metadata, uint64 version)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 digest = keccak256(
+            abi.encode(
+                keccak256(
+                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
+                ),
+                block.chainid,
+                address(charms),
+                _key(app),
+                version,
+                _hash(metadata)
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(metadataKey, digest);
+        return abi.encodePacked(r, s, v);
+    }
+}

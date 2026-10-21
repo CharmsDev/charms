@@ -12,6 +12,7 @@ import {CharmsAuth} from "./CharmsAuth.sol";
 import {ICharmTokenHooks, ICharms, ICharmsLedger} from "./interfaces/ICharms.sol";
 import {CharmTokenClone, appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
+import {CharmsMetadata} from "./libraries/CharmsMetadata.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
 import {UtxoList} from "./libraries/UtxoList.sol";
 
@@ -175,13 +176,14 @@ contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient 
         if (app.vk == VAULT_VK) return _vaultUnderlying(app);
         token = _tokenAddress(app);
         if (token.code.length != 0) return token;
+        bytes32 key = appKey(app);
         bytes memory init = CharmTokenClone.initCode(_charmTokenProxy(), app);
-        bytes32 salt = appKey(app);
         address deployed;
         assembly ("memory-safe") {
-            deployed := create2(0, add(init, 32), mload(init), salt)
+            deployed := create2(0, add(init, 32), mload(init), key)
         }
         assert(deployed == token);
+        if (meta[key].version != 0) ICharmTokenHooks(token).emitContractURIUpdated();
     }
 
     function tokenAddress(App calldata app) external view returns (address) {
@@ -239,16 +241,68 @@ contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient 
         return (_vaultApp(token), v.appKey != 0 ? v.scale : _scale(token));
     }
 
-    function name(App calldata) external pure returns (string memory) {
-        return "Charm";
+    function name(App calldata app) external view returns (string memory) {
+        string memory stored = meta[_tokenKey(app)].name;
+        if (bytes(stored).length == 0) return "Charm";
+        return stored;
     }
 
-    function symbol(App calldata) external pure returns (string memory) {
-        return "CHARM";
+    function symbol(App calldata app) external view returns (string memory) {
+        bytes32 key = _tokenKey(app);
+        if (meta[key].version == 0) return "CHARM";
+        return meta[key].symbol;
     }
 
-    function decimals(App calldata) external pure returns (uint8) {
-        return 0;
+    function decimals(App calldata app) external view returns (uint8) {
+        bytes32 key = _tokenKey(app);
+        if (meta[key].version == 0) return 0;
+        return meta[key].decimals;
+    }
+
+    function contractURI(App calldata app) external view returns (string memory) {
+        bytes32 key = _tokenKey(app);
+        MetadataRecord storage rec = meta[key];
+        string memory displayName = bytes(rec.name).length == 0 ? "Charm" : rec.name;
+        string memory displaySymbol = rec.version == 0 ? "CHARM" : rec.symbol;
+        uint8 displayDecimals = rec.version == 0 ? 0 : rec.decimals;
+        return CharmsMetadata.uri(
+            displayName, displaySymbol, displayDecimals, rec.description, rec.image, rec.url
+        );
+    }
+
+    function metadataVersion(App calldata app) external view returns (uint64) {
+        return meta[_tokenKey(app)].version;
+    }
+
+    function setMetadata(
+        App calldata app,
+        Metadata calldata metadata,
+        uint64 version,
+        bytes calldata sig
+    ) external nonReentrant {
+        if (app.tag != TAG_T) revert NotTokenTag();
+        if (app.vk == VAULT_VK) revert NotToken();
+        CharmsMetadata.check(metadata);
+        bytes32 key = appKey(app);
+        MetadataRecord storage rec = meta[key];
+        if (version <= rec.version) revert StaleMetadataVersion();
+        if (rec.version != 0 && metadata.decimals != rec.decimals) revert DecimalsFrozen();
+        bytes32 metadataHash = CharmsMetadata.hash(metadata);
+        bytes32 metadataDigest = CharmsMetadata.digest(key, version, metadataHash);
+        if (_recoverMetadata(metadataDigest, sig) != metadataSigner) {
+            revert InvalidMetadataSignature();
+        }
+        rec.version = version;
+        rec.decimals = metadata.decimals;
+        rec.imageHash = metadata.imageHash;
+        rec.name = metadata.name;
+        rec.symbol = metadata.symbol;
+        rec.description = metadata.description;
+        rec.url = metadata.url;
+        rec.image = metadata.image;
+        emit MetadataSet(key, version, metadataHash);
+        address token = _tokenAddress(app);
+        if (token.code.length != 0) ICharmTokenHooks(token).emitContractURIUpdated();
     }
 
     function _transferSpell(Transfer memory request) private view returns (Spell memory s) {
@@ -495,6 +549,32 @@ contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient 
         bytes32 key = appKey(app);
         token = vaultTokens[key];
         if (vaults[token].appKey != key) revert MetadataUnspecified();
+    }
+
+    function _tokenKey(App calldata app) private pure returns (bytes32) {
+        if (app.tag != TAG_T) revert NotTokenTag();
+        if (app.vk == VAULT_VK) revert NotToken();
+        return appKey(app);
+    }
+
+    /// @dev 65-byte `r || s || v`, `v` 27 or 28. Raw `ecrecover`, the same primitive `Spend` uses,
+    /// without the EIP-712 wrapper that `Spend` adds.
+    function _recoverMetadata(bytes32 metadataDigest, bytes calldata sig)
+        private
+        pure
+        returns (address)
+    {
+        if (sig.length != 65) revert InvalidMetadataSignature();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly ("memory-safe") {
+            r := calldataload(sig.offset)
+            s := calldataload(add(sig.offset, 32))
+            v := shr(248, calldataload(add(sig.offset, 64)))
+        }
+        if (v != 27 && v != 28) revert InvalidMetadataSignature();
+        return ecrecover(metadataDigest, v, r, s);
     }
 
     function _apply(Spell memory s, Context memory c) private returns (bytes32) {

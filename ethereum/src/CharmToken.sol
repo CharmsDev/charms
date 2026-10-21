@@ -42,7 +42,7 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
         return charms.balanceOf(_appKey(), owner);
     }
 
-    function name() public view returns (string memory) {
+    function name() external view returns (string memory) {
         return charms.name(app());
     }
 
@@ -52,6 +52,10 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
 
     function decimals() external view returns (uint8) {
         return charms.decimals(app());
+    }
+
+    function contractURI() external view returns (string memory) {
+        return charms.contractURI(app());
     }
 
     function transfer(address to, uint256 amount) external returns (bool) {
@@ -79,6 +83,11 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
         emit Transfer(from, to, amount);
     }
 
+    function emitContractURIUpdated() external {
+        if (msg.sender != address(charms)) revert NotCharms();
+        emit ContractURIUpdated();
+    }
+
     function permit(
         address owner,
         address spender,
@@ -101,11 +110,7 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(
             abi.encode(
-                DOMAIN_TYPEHASH,
-                keccak256(bytes(name())),
-                keccak256("1"),
-                block.chainid,
-                address(this)
+                DOMAIN_TYPEHASH, keccak256("Charm"), keccak256("1"), block.chainid, address(this)
             )
         );
     }
