@@ -147,6 +147,9 @@ interface ICharmsErrors {
     error EthRejected();
     error NotAdmin();
     error ZeroAdmin();
+    error ZeroMetadataSigner();
+    error NoTokenImplementation();
+    error TokenCharmsMismatch();
     error InvalidCursor();
     error ZeroLimit();
     error NotDelegated();
@@ -200,6 +203,15 @@ interface ICharms is ICharmsErrors {
     /// already there, return that address. Any tag other than `t` reverts. `_apply` and
     /// `tokenTransfer` do not call this.
     function ensureToken(ICharmsTypes.App calldata app) external returns (address token);
+
+    /// @notice `CharmToken` implementation the forwarder delegatecalls.
+    /// @dev Immutable in this bytecode. Not a proxy slot and not ERC-1967.
+    /// A clone does not store this.
+    function tokenImplementation() external view returns (address);
+
+    /// @notice Metadata signer carried by this implementation.
+    /// @dev Immutable in this bytecode. Not a proxy slot.
+    function metadataSigner() external view returns (address);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a
     /// spell. `transfer` does not.

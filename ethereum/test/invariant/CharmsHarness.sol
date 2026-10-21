@@ -10,7 +10,9 @@ import {UtxoList} from "../../src/libraries/UtxoList.sol";
 /// @notice `Charms` plus the views CHIP-0020 names for the invariant tests. A proxy over this
 /// contract runs them on the storage `_apply` writes, without reading the `balance` cache.
 contract CharmsHarness is Charms {
-    constructor(CharmsApply applier) Charms(applier) {}
+    constructor(CharmsApply applier, address tokenImplementation_, address metadataSigner_)
+        Charms(applier, tokenImplementation_, metadataSigner_)
+    {}
 
     function utxoBalance(bytes32 key, address owner) external view returns (uint256 sum) {
         UtxoList.List storage list = utxos[owner][key];

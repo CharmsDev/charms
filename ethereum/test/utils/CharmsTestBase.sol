@@ -3,10 +3,12 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 
+import {CharmToken} from "../../src/CharmToken.sol";
 import {Charms} from "../../src/Charms.sol";
 import {CharmsApply} from "../../src/CharmsApply.sol";
+import {CharmsInitializer} from "../../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../../src/CharmsProxy.sol";
-import {ICharmsTypes} from "../../src/interfaces/ICharms.sol";
+import {ICharmsLedger, ICharmsTypes} from "../../src/interfaces/ICharms.sol";
 import {ISP1Verifier} from "../../src/interfaces/ISP1Verifier.sol";
 import {CharmsIds} from "../../src/libraries/CharmsIds.sol";
 import {SpellCodec} from "../../src/libraries/SpellCodec.sol";
@@ -23,6 +25,7 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
     bytes32 internal constant VAULT_VK = sha256("charms/ethereum/vault/v1");
 
     address internal admin = makeAddr("admin");
+    address internal metadataSigner = makeAddr("metadataSigner");
     MockVerifier internal verifier;
     Charms internal charms;
 
@@ -34,9 +37,31 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
     }
 
     function _deploy(uint32 version, bytes32 vk, ISP1Verifier v) internal returns (Charms) {
-        Charms impl = new Charms(new CharmsApply(version, vk, v));
-        CharmsProxy proxy =
-            new CharmsProxy(address(impl), abi.encodeCall(Charms.initialize, (admin)));
+        CharmsApply applier = new CharmsApply(version, vk, v);
+        (CharmsInitializer initializer, address predicted) = _beginBoot();
+        CharmToken token = new CharmToken(ICharmsLedger(predicted));
+        Charms impl = new Charms(applier, address(token), metadataSigner);
+        return _finishBoot(initializer, predicted, address(impl));
+    }
+
+    /// @dev The caller creates the token, then the logic contract, then `_finishBoot` creates the
+    /// proxy. Those two creates are what `predicted` counts.
+    function _beginBoot() internal returns (CharmsInitializer initializer, address predicted) {
+        initializer = new CharmsInitializer();
+        uint64 nonce = vm.getNonce(address(this));
+        predicted = vm.computeCreateAddress(address(this), nonce + 2);
+    }
+
+    function _finishBoot(CharmsInitializer initializer, address predicted, address logic)
+        internal
+        returns (Charms)
+    {
+        CharmsProxy proxy = new CharmsProxy(
+            address(initializer), abi.encodeCall(CharmsInitializer.initialize, (admin))
+        );
+        assertEq(address(proxy), predicted);
+        vm.prank(admin);
+        Charms(payable(address(proxy))).upgradeToAndCall(logic, "");
         return Charms(payable(address(proxy)));
     }
 

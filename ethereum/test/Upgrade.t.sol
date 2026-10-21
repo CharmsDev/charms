@@ -5,14 +5,25 @@ import {ERC1967Utils} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Utils.s
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 
+import {CharmTokenNext} from "../script/CharmTokenNext.sol";
 import {CharmToken} from "../src/CharmToken.sol";
+import {CharmTokenProxy} from "../src/CharmTokenProxy.sol";
 import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
+import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
-import {ICharmsErrors} from "../src/interfaces/ICharms.sol";
+import {ICharmsErrors, ICharmsLedger} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
 contract OtherSlotImplementation {
+    address public immutable tokenImplementation;
+    address public immutable metadataSigner;
+
+    constructor(address token, address signer) {
+        tokenImplementation = token;
+        metadataSigner = signer;
+    }
+
     function proxiableUUID() external pure returns (bytes32) {
         return bytes32(uint256(1));
     }
@@ -36,26 +47,29 @@ contract UpgradeTest is CharmsTestBase {
     }
 
     function test_implementationCannotBeInitialized() public {
-        Charms impl = _implementationV16();
+        CharmsInitializer impl = new CharmsInitializer();
 
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         impl.initialize(bob);
     }
 
     function test_proxyCannotBeInitializedTwice() public {
-        vm.prank(bob);
+        CharmsInitializer impl = new CharmsInitializer();
+        CharmsProxy proxy =
+            new CharmsProxy(address(impl), abi.encodeCall(CharmsInitializer.initialize, (bob)));
+
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        charms.initialize(bob);
+        CharmsInitializer(address(proxy)).initialize(bob);
     }
 
     function test_adminIsTheInitializeArgument() public {
         address chosen = makeAddr("chosen admin");
+        CharmsInitializer impl = new CharmsInitializer();
 
-        CharmsProxy proxy = new CharmsProxy(
-            address(_implementationV16()), abi.encodeCall(Charms.initialize, (chosen))
-        );
+        CharmsProxy proxy =
+            new CharmsProxy(address(impl), abi.encodeCall(CharmsInitializer.initialize, (chosen)));
 
-        assertEq(Charms(payable(address(proxy))).admin(), chosen);
+        assertEq(CharmsInitializer(address(proxy)).admin(), chosen);
     }
 
     function test_onlyTheAdminCanUpgrade() public {
@@ -77,16 +91,13 @@ contract UpgradeTest is CharmsTestBase {
 
     function test_upgradeToAContractWithoutProxiableUuidReverts() public {
         vm.prank(admin);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                ERC1967Utils.ERC1967InvalidImplementation.selector, address(verifier)
-            )
-        );
+        vm.expectRevert(ICharmsErrors.NoTokenImplementation.selector);
         charms.upgradeToAndCall(address(verifier), "");
     }
 
     function test_upgradeToAContractWithAnotherProxiableUuidReverts() public {
-        OtherSlotImplementation other = new OtherSlotImplementation();
+        OtherSlotImplementation other =
+            new OtherSlotImplementation(charms.tokenImplementation(), charms.metadataSigner());
 
         vm.prank(admin);
         vm.expectRevert(
@@ -106,14 +117,16 @@ contract UpgradeTest is CharmsTestBase {
         charms.upgradeToAndCall{value: 1 ether}(address(next), "");
     }
 
-    function test_sharedTokenImplementationIsTheProxysFirstCreation() public view {
-        address impl = vm.computeCreateAddress(address(charms), 1);
+    function test_forwarderIsTheProxysFirstCreation() public view {
+        address forwarder = vm.computeCreateAddress(address(charms), 1);
 
-        assertGt(impl.code.length, 0);
-        assertEq(address(CharmToken(impl).charms()), address(charms));
+        assertGt(forwarder.code.length, 0);
+        assertEq(address(CharmTokenProxy(forwarder).charms()), address(charms));
+        assertTrue(forwarder != charms.tokenImplementation());
+        assertEq(address(CharmToken(charms.tokenImplementation()).charms()), address(charms));
     }
 
-    function test_everyCloneDelegatesToTheSharedImplementation() public {
+    function test_everyCloneDelegatesToTheForwarder() public {
         bytes memory runtime = charms.ensureToken(_app(T, "coin")).code;
         bytes memory forwarded = new bytes(20);
         for (uint256 i; i < 20; ++i) {
@@ -231,6 +244,47 @@ contract UpgradeTest is CharmsTestBase {
         assertEq(locked, 300e10);
     }
 
+    function test_upgradeKeepsTheCloneAndRunsTheNewTokenLogic() public {
+        App memory coin = _app(T, "coin");
+        address clone = charms.ensureToken(coin);
+        assertEq(charms.tokenAddress(coin), clone);
+        assertEq(CharmToken(clone).name(), "Charm");
+        vm.prank(bob);
+        CharmToken(clone).approve(carol, 7);
+
+        CharmTokenNext nextToken = new CharmTokenNext(ICharmsLedger(address(charms)));
+        Charms next = new Charms(
+            new CharmsApply(16, PROGRAM_VKEY, verifier), address(nextToken), charms.metadataSigner()
+        );
+        vm.prank(admin);
+        charms.upgradeToAndCall(address(next), "");
+
+        assertEq(charms.tokenAddress(coin), clone);
+        assertEq(charms.tokenImplementation(), address(nextToken));
+        assertEq(CharmToken(clone).name(), "Charm");
+        assertEq(CharmToken(clone).allowance(bob, carol), 7);
+        assertEq(CharmTokenNext(clone).revision(), 2);
+    }
+
+    function test_upgradeRejectsATokenBoundElsewhere() public {
+        CharmToken foreign = new CharmToken(ICharmsLedger(address(0xdead)));
+        Charms next = new Charms(
+            new CharmsApply(16, PROGRAM_VKEY, verifier), address(foreign), metadataSigner
+        );
+
+        vm.prank(admin);
+        vm.expectRevert(ICharmsErrors.TokenCharmsMismatch.selector);
+        charms.upgradeToAndCall(address(next), "");
+    }
+
+    function test_constructorRejectsAZeroMetadataSigner() public {
+        CharmsApply applier = new CharmsApply(16, PROGRAM_VKEY, verifier);
+        address token = charms.tokenImplementation();
+
+        vm.expectRevert(ICharmsErrors.ZeroMetadataSigner.selector);
+        new Charms(applier, token, address(0));
+    }
+
     function _phase1History() internal returns (History memory h) {
         _deployPhase1();
         vm.deal(alice, 1000e10);
@@ -249,7 +303,11 @@ contract UpgradeTest is CharmsTestBase {
     }
 
     function _implementationV16() internal returns (Charms) {
-        return new Charms(new CharmsApply(16, PROGRAM_VKEY, verifier));
+        return new Charms(
+            new CharmsApply(16, PROGRAM_VKEY, verifier),
+            charms.tokenImplementation(),
+            charms.metadataSigner()
+        );
     }
 
     function _upgradeToV16() internal returns (Charms next) {

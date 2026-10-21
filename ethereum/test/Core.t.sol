@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {CharmToken} from "../src/CharmToken.sol";
 import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
+import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {CharmsStorage} from "../src/CharmsStorage.sol";
 import {ICharmToken, ICharmsErrors} from "../src/interfaces/ICharms.sol";
@@ -169,9 +170,9 @@ contract CoreTest is CharmsTestBase {
     }
 
     function test_aZeroAdminCannotInitializeTheProxy() public {
-        Charms impl = new Charms(new CharmsApply(15, bytes32(0), ISP1Verifier(address(0))));
+        CharmsInitializer impl = new CharmsInitializer();
         vm.expectRevert(ICharmsErrors.ZeroAdmin.selector);
-        new CharmsProxy(address(impl), abi.encodeCall(Charms.initialize, (address(0))));
+        new CharmsProxy(address(impl), abi.encodeCall(CharmsInitializer.initialize, (address(0))));
     }
 
     function test_theApplyModuleRefusesADirectCall() public {

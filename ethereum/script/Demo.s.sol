@@ -54,6 +54,9 @@ contract Demo is Script {
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
     address internal constant HOLDER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
+    /// @dev Anvil account #2. Stored as `metadataSigner`. This script does not ask it to sign.
+    address internal constant METADATA_SIGNER = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
+
     /// @dev Anvil account #1. Receives the vault charm and unwraps it.
     uint256 internal constant RECIPIENT_KEY =
         0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
@@ -91,11 +94,12 @@ contract Demo is Script {
 
         console2.log("=== 2. deploy Charms ===");
         console2.log("Charms locks ETH. A native spell carries an empty proof");
-        console2.log("call Deploy.run(factory, admin)");
+        console2.log("call Deploy.run(factory, admin, metadataSigner)");
         console2.log("  factory", FACTORY);
         console2.log("  admin", HOLDER);
+        console2.log("  metadataSigner", METADATA_SIGNER);
         Deploy deployScript = new Deploy();
-        Charms charms = deployScript.run(FACTORY, HOLDER);
+        Charms charms = deployScript.run(FACTORY, HOLDER, METADATA_SIGNER);
         console2.log("Charms (the proxy you call)", address(charms));
         console2.log("admin", charms.admin());
         console2.log("spell version", uint256(charms.SPELL_VERSION()));

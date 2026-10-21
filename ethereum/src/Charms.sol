@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
-import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
-import {UUPSUpgradeable} from "@openzeppelin/contracts/proxy/utils/UUPSUpgradeable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
-import {CharmToken} from "./CharmToken.sol";
 import {CharmsApply} from "./CharmsApply.sol";
-import {CharmsStorage} from "./CharmsStorage.sol";
-import {ICharmTokenHooks, ICharms, ICharmsLedger, IUpgradeable} from "./interfaces/ICharms.sol";
+import {CharmsAuth} from "./CharmsAuth.sol";
+import {ICharmTokenHooks, ICharms, ICharmsLedger} from "./interfaces/ICharms.sol";
 import {CharmTokenClone, appKey} from "./libraries/CharmTokenClone.sol";
 import {CharmsIds} from "./libraries/CharmsIds.sol";
 import {UtxoBody} from "./libraries/UtxoBody.sol";
@@ -20,19 +17,11 @@ import {UtxoList} from "./libraries/UtxoList.sol";
 
 /// @notice The Charms implementation behind `CharmsProxy` (CHIP-0020): the consensus for Ethereum
 /// Charms transactions. It owns UTXOs, supply, balances, the vault, and anchors in the proxy's
-/// storage, builds the spells behind ERC-20 transfers and the vault, and is the UUPS upgrade
-/// target.
-/// @dev Every spell is applied by `CharmsApply`, whose address is fixed in this bytecode, so a new
-/// implementation brings its own. The split keeps both under the EIP-170 size limit.
-contract Charms is
-    CharmsStorage,
-    ICharms,
-    ICharmsLedger,
-    IUpgradeable,
-    Initializable,
-    UUPSUpgradeable,
-    ReentrancyGuardTransient
-{
+/// storage, and builds the spells behind ERC-20 transfers and the vault.
+/// @dev `tokenImplementation` and `metadataSigner` are immutables in this bytecode. A new
+/// implementation brings its own `CharmsApply`, token implementation, and metadata signer.
+/// `CharmsApply` is a separate contract so both stay under the EIP-170 size limit.
+contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using UtxoList for UtxoList.List;
 
@@ -41,6 +30,8 @@ contract Charms is
 
     CharmsApply public immutable APPLY;
     uint32 public immutable SPELL_VERSION;
+    address public immutable tokenImplementation;
+    address public immutable metadataSigner;
 
     struct Pick {
         Head head;
@@ -64,35 +55,18 @@ contract Charms is
         uint64 amount;
     }
 
-    constructor(CharmsApply applier) {
+    constructor(CharmsApply applier, address tokenImplementation_, address metadataSigner_) {
+        if (tokenImplementation_ == address(0)) revert NoTokenImplementation();
+        if (metadataSigner_ == address(0)) revert ZeroMetadataSigner();
         APPLY = applier;
         SPELL_VERSION = applier.SPELL_VERSION();
+        tokenImplementation = tokenImplementation_;
+        metadataSigner = metadataSigner_;
         _disableInitializers();
     }
 
     receive() external payable {
         revert EthRejected();
-    }
-
-    /// @notice Runs once, from the proxy constructor. Stores the admin and creates the shared
-    /// `CharmToken` implementation as the proxy's first contract, so its address is
-    /// `CREATE(proxy, nonce 1)` on every chain.
-    function initialize(address admin_) external initializer {
-        if (admin_ == address(0)) revert ZeroAdmin();
-        admin = admin_;
-        assert(address(new CharmToken()) == _charmTokenImplementation());
-    }
-
-    function upgradeToAndCall(address newImplementation, bytes memory data)
-        public
-        payable
-        override(IUpgradeable, UUPSUpgradeable)
-    {
-        super.upgradeToAndCall(newImplementation, data);
-    }
-
-    function _authorizeUpgrade(address) internal view override {
-        if (msg.sender != admin) revert NotAdmin();
     }
 
     function transact(
@@ -204,7 +178,7 @@ contract Charms is
         if (app.vk == VAULT_VK) return _vaultUnderlying(app);
         token = _tokenAddress(app);
         if (token.code.length != 0) return token;
-        bytes memory init = CharmTokenClone.initCode(_charmTokenImplementation(), app);
+        bytes memory init = CharmTokenClone.initCode(_charmTokenProxy(), app);
         bytes32 salt = appKey(app);
         address deployed;
         assembly ("memory-safe") {

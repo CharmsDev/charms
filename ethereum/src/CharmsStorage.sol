@@ -87,11 +87,11 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
     }
 
     function _tokenAddress(App memory app) internal view returns (address) {
-        return CharmTokenClone.predict(address(this), _charmTokenImplementation(), app);
+        return CharmTokenClone.predict(address(this), _charmTokenProxy(), app);
     }
 
-    /// @dev `CREATE(proxy, nonce 1)`, which `initialize` checks.
-    function _charmTokenImplementation() internal view returns (address) {
+    /// @dev `CREATE(proxy, nonce 1)`. `CharmsInitializer` creates `CharmTokenProxy` there.
+    function _charmTokenProxy() internal view returns (address) {
         return
             address(
                 uint160(uint256(keccak256(abi.encodePacked(hex"d694", address(this), hex"01"))))

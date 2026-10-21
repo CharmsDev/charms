@@ -5,10 +5,12 @@ import {Test} from "forge-std/Test.sol";
 
 import {Deploy} from "../script/Deploy.s.sol";
 import {CharmToken} from "../src/CharmToken.sol";
+import {CharmTokenProxy} from "../src/CharmTokenProxy.sol";
 import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
+import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
-import {ICharmsTypes} from "../src/interfaces/ICharms.sol";
+import {ICharmsLedger, ICharmsTypes} from "../src/interfaces/ICharms.sol";
 import {ISP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 import {CharmsIds} from "../src/libraries/CharmsIds.sol";
 import {SpellCodec} from "../src/libraries/SpellCodec.sol";
@@ -25,9 +27,15 @@ contract DeployTest is Test {
     address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
     address internal constant NEXT_OWNER = 0x3333333333333333333333333333333333333333;
     bytes32 internal constant PLACEHOLDER_TX =
+        0x779bc5a626e8fce3529fd2faaae158c358a6b57a4f7652563a646323f74eb97c;
+    /// @dev The checked-in Groth16 proof commits to a spell whose input id was
+    /// created at this proxy. The CREATE2 address moved with `CharmTokenProxy`.
+    address internal constant PREVIOUS_PROXY = 0x7269cC778B9b90EEe6717B3D3050E372E399d8E7;
+    bytes32 internal constant PREVIOUS_PLACEHOLDER =
         0x97c2b57e3d80acbe4b1d574557e61dc8737d890a029674075a98f7a892054f7c;
 
     address internal admin = makeAddr("admin");
+    address internal signer = makeAddr("metadataSigner");
     Deploy internal script;
 
     function setUp() public {
@@ -36,12 +44,14 @@ contract DeployTest is Test {
     }
 
     function test_installsSpellVersion16AtItsCreate2Address() public {
-        Charms charms = script.run(FACTORY, admin);
+        Charms charms = script.run(FACTORY, admin, signer);
 
-        address implementation = _implementation(charms);
+        address initializer = vm.computeCreate2Address(
+            script.INITIALIZER_SALT(), keccak256(type(CharmsInitializer).creationCode), FACTORY
+        );
         bytes memory proxyInit = abi.encodePacked(
             type(CharmsProxy).creationCode,
-            abi.encode(implementation, abi.encodeCall(Charms.initialize, (admin)))
+            abi.encode(initializer, abi.encodeCall(CharmsInitializer.initialize, (admin)))
         );
         assertEq(
             address(charms),
@@ -60,15 +70,17 @@ contract DeployTest is Test {
         );
         assertGt(verifier.code.length, 0);
 
-        address token = vm.computeCreateAddress(address(charms), 1);
-        assertGt(token.code.length, 0);
-        assertEq(address(CharmToken(token).charms()), address(charms));
+        address forwarder = vm.computeCreateAddress(address(charms), 1);
+        assertGt(forwarder.code.length, 0);
+        assertEq(address(CharmTokenProxy(forwarder).charms()), address(charms));
+        assertTrue(forwarder != charms.tokenImplementation());
+        assertEq(address(CharmToken(charms.tokenImplementation()).charms()), address(charms));
 
         ICharmsTypes.App memory app =
             ICharmsTypes.App(uint32(0x74), keccak256("app"), keccak256("vk"));
         assertEq(charms.tokenAddress(app).code.length, 0);
 
-        script.check(charms, admin);
+        script.check(charms, admin, signer);
     }
 
     function test_groth16HashMatchesTheVector() public view {
@@ -77,20 +89,21 @@ contract DeployTest is Test {
     }
 
     function test_rerunKeepsTheSameDeployment() public {
-        Charms first = script.run(FACTORY, admin);
-        Charms second = script.run(FACTORY, admin);
+        Charms first = script.run(FACTORY, admin, signer);
+        Charms second = script.run(FACTORY, admin, signer);
         assertEq(address(second), address(first));
         assertEq(address(second.APPLY()), address(first.APPLY()));
         assertEq(address(second.APPLY().VERIFIER()), address(first.APPLY().VERIFIER()));
     }
 
     function test_adminIsPartOfTheProxyAddress() public {
-        Charms one = script.run(FACTORY, admin);
-        Charms other = script.run(FACTORY, makeAddr("other admin"));
+        Charms one = script.run(FACTORY, admin, signer);
+        Charms other = script.run(FACTORY, makeAddr("other admin"), signer);
         assertTrue(address(one) != address(other));
         assertEq(address(one.APPLY()), address(other.APPLY()));
         assertEq(address(one.APPLY().VERIFIER()), address(other.APPLY().VERIFIER()));
-        assertEq(_implementation(one), _implementation(other));
+        assertTrue(_implementation(one) != _implementation(other));
+        assertTrue(one.tokenImplementation() != other.tokenImplementation());
     }
 
     function test_refusesAZeroAdmin() public {
@@ -98,12 +111,12 @@ contract DeployTest is Test {
             script.VERIFIER_SALT(), keccak256(vm.getCode(script.VERIFIER_ARTIFACT())), FACTORY
         );
         vm.expectRevert(bytes("admin is zero"));
-        script.run(FACTORY, address(0));
+        script.run(FACTORY, address(0), signer);
         assertEq(verifier.code.length, 0);
     }
 
     function test_nativeWrapNeedsNoProof() public {
-        Charms charms = script.run(FACTORY, admin);
+        Charms charms = script.run(FACTORY, admin, signer);
         uint64 units = uint64(1 ether / 10 ** 10);
         vm.deal(admin, 1 ether);
         vm.prank(admin);
@@ -111,18 +124,18 @@ contract DeployTest is Test {
         assertEq(address(charms).balance, 1 ether);
     }
 
-    function test_claimEncodingMatchesTheProvedSpell() public {
-        Charms charms = script.run(FACTORY, admin);
-        assertEq(address(charms), 0x7269cC778B9b90EEe6717B3D3050E372E399d8E7);
-        (, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+    function test_claimEncodingAtTheCreate2Address() public {
+        Charms charms = script.run(FACTORY, admin, signer);
+        assertEq(address(charms), 0x083f086405cCCc5cEAdC29c8Ed36bBA4d13d39Fd);
+        (, ICharmsTypes.Spell memory claim) = _placeholder(charms, PLACEHOLDER_TX);
         assertEq(
             SpellCodec.encode(claim), vm.parseBytes(vm.readFile("test/vectors/v16-claim-cbor.hex"))
         );
     }
 
     function test_realV16ProofChangesState() public {
-        Charms charms = script.run(FACTORY, admin);
-        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+        Charms charms = _proofCharms();
+        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms, PREVIOUS_PLACEHOLDER);
         bytes memory proof = _v16Proof();
         bytes memory cbor = SpellCodec.encode(claim);
         vm.expectCall(
@@ -142,8 +155,8 @@ contract DeployTest is Test {
     }
 
     function test_corruptedV16ProofLeavesStateUnchanged() public {
-        Charms charms = script.run(FACTORY, admin);
-        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms);
+        Charms charms = _proofCharms();
+        (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms, PREVIOUS_PLACEHOLDER);
         bytes memory proof = _v16Proof();
         proof[proof.length - 1] ^= 0x01;
         bytes32 created =
@@ -159,22 +172,39 @@ contract DeployTest is Test {
     }
 
     function test_checkRefusesAnOldBuild() public {
+        CharmsInitializer init = new CharmsInitializer();
+        uint64 nonce = vm.getNonce(address(this));
+        address predicted = vm.computeCreateAddress(address(this), nonce + 3);
+        CharmToken token = new CharmToken(ICharmsLedger(predicted));
+        Charms impl = new Charms(
+            new CharmsApply(15, bytes32(0), ISP1Verifier(address(0))), address(token), signer
+        );
         Charms old = Charms(
             payable(address(
                     new CharmsProxy(
-                        address(
-                            new Charms(new CharmsApply(15, bytes32(0), ISP1Verifier(address(0))))
-                        ),
-                        abi.encodeCall(Charms.initialize, (admin))
+                        address(init), abi.encodeCall(CharmsInitializer.initialize, (admin))
                     )
                 ))
         );
+        assertEq(address(old), predicted);
+        vm.prank(admin);
+        old.upgradeToAndCall(address(impl), "");
         vm.expectRevert(bytes("spell version"));
-        script.check(old, admin);
+        script.check(old, admin, signer);
+    }
+
+    /// @dev Runs this deployment's proxy runtime and implementation at the address the
+    /// checked-in proof was built for. `ethTxId` mixes in that address.
+    function _proofCharms() internal returns (Charms charms) {
+        Charms deployed = script.run(FACTORY, admin, signer);
+        vm.etch(PREVIOUS_PROXY, address(deployed).code);
+        bytes32 slot = bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+        vm.store(PREVIOUS_PROXY, slot, vm.load(address(deployed), slot));
+        charms = Charms(payable(PREVIOUS_PROXY));
     }
 
     /// @dev Chain 31337 and salt 1. Output 0 is spent. Output 1 is the reference.
-    function _placeholder(Charms charms)
+    function _placeholder(Charms charms, bytes32 expected)
         internal
         returns (bytes32 txId, ICharmsTypes.Spell memory claim)
     {
@@ -186,7 +216,7 @@ contract DeployTest is Test {
         created.outs[1].owner = REF_OWNER;
         vm.prank(CALLER);
         txId = charms.transact(created, bytes32(uint256(1)), "", new bytes[](0));
-        assertEq(txId, PLACEHOLDER_TX);
+        assertEq(txId, expected);
 
         claim.version = 16;
         claim.ins = new ICharmsTypes.Input[](1);

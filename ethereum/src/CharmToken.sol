@@ -7,11 +7,10 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
 import {ICharmToken, ICharmTokenHooks, ICharmsLedger, ICharmsTypes} from "./interfaces/ICharms.sol";
 import {appKey} from "./libraries/CharmTokenClone.sol";
 
-/// @notice The shared implementation behind every tag-`t` `CharmToken` clone. Each clone appends
-/// its packed `App` (68 bytes) and that length as a `uint16` to the calldata of every call, then
-/// `delegatecall`s here, so storage below belongs to the clone.
-/// @dev Holds allowances and permit nonces. Balances, supply, metadata, and every transfer rule
-/// live in `Charms`, which can be upgraded while this code cannot: it is part of `tokenAddress`.
+/// @notice Shared ERC-20 logic behind every non-vault tag-`t` clone.
+/// @dev The clone `delegatecall`s `CharmTokenProxy`, which `delegatecall`s here, so allowance
+/// and permit-nonce storage belong to the clone. Balances live in `Charms`. This address is
+/// not part of `tokenAddress`. A new `Charms` implementation names the replacement.
 contract CharmToken is ICharmToken, ICharmTokenHooks {
     bytes32 private constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
@@ -21,14 +20,14 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
     );
     uint256 private constant APP_ARGS_LENGTH = 70;
 
-    /// @notice The Charms proxy. It deploys this implementation, so it is `msg.sender` here.
+    /// @notice The Charms proxy this implementation calls.
     ICharmsLedger public immutable charms;
 
     mapping(address owner => mapping(address spender => uint256)) public allowance;
     mapping(address owner => uint256) public nonces;
 
-    constructor() {
-        charms = ICharmsLedger(msg.sender);
+    constructor(ICharmsLedger charms_) {
+        charms = charms_;
     }
 
     function app() public pure returns (ICharmsTypes.App memory a) {

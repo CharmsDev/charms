@@ -5,9 +5,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {console} from "forge-std/console.sol";
 
 import {CharmToken} from "../src/CharmToken.sol";
-import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
-import {CharmsProxy} from "../src/CharmsProxy.sol";
+import {CharmsInitializer} from "../src/CharmsInitializer.sol";
+import {ICharmsLedger} from "../src/interfaces/ICharms.sol";
 import {UtxoBody} from "../src/libraries/UtxoBody.sol";
 import {CharmsHarness} from "./invariant/CharmsHarness.sol";
 import {ACTORS, FIRST_VAULT, Handler, OPS, TOKENS, UNIT, VAULTS} from "./invariant/Handler.sol";
@@ -21,11 +21,12 @@ contract InvariantsTest is CharmsTestBase {
 
     function setUp() public override {
         verifier = new MockVerifier();
-        CharmsHarness impl = new CharmsHarness(new CharmsApply(16, PROGRAM_VKEY, verifier));
-        CharmsProxy proxy =
-            new CharmsProxy(address(impl), abi.encodeCall(Charms.initialize, (admin)));
-        charms = Charms(payable(address(proxy)));
-        harness = CharmsHarness(payable(address(proxy)));
+        CharmsApply applier = new CharmsApply(16, PROGRAM_VKEY, verifier);
+        (CharmsInitializer initializer, address predicted) = _beginBoot();
+        CharmToken token = new CharmToken(ICharmsLedger(predicted));
+        CharmsHarness impl = new CharmsHarness(applier, address(token), metadataSigner);
+        charms = _finishBoot(initializer, predicted, address(impl));
+        harness = CharmsHarness(payable(address(charms)));
         handler = new Handler(charms);
 
         bytes4[] memory ops = new bytes4[](OPS);

@@ -12,9 +12,9 @@ function appKey(ICharmsTypes.App memory app) pure returns (bytes32) {
 /// @notice A `CharmToken` is a clones-with-immutable-args proxy (the wighawag scheme) whose
 /// immutable args are the packed `App` (68 bytes) followed by their length as a `uint16`.
 library CharmTokenClone {
-    /// @notice 10-byte creation code, the 55-byte forwarding runtime around the implementation
-    /// address, then `abi.encodePacked(uint32 tag, bytes32 identity, bytes32 vk)` and `0x0044`.
-    function initCode(address implementation, ICharmsTypes.App memory app)
+    /// @notice 10-byte creation code, the 55-byte forwarding runtime around `CharmTokenProxy`,
+    /// then `abi.encodePacked(uint32 tag, bytes32 identity, bytes32 vk)` and `0x0044`.
+    function initCode(address forwarder, ICharmsTypes.App memory app)
         internal
         pure
         returns (bytes memory)
@@ -22,7 +22,7 @@ library CharmTokenClone {
         return abi.encodePacked(
             hex"61007d3d81600a3d39f3",
             hex"3d3d3d3d363d3d376100466037363936610046013d73",
-            implementation,
+            forwarder,
             hex"5af43d3d93803e603557fd5bf3",
             app.tag,
             app.identity,
@@ -31,12 +31,12 @@ library CharmTokenClone {
         );
     }
 
-    function predict(address deployer, address implementation, ICharmsTypes.App memory app)
+    function predict(address deployer, address forwarder, ICharmsTypes.App memory app)
         internal
         pure
         returns (address)
     {
-        bytes32 initHash = keccak256(initCode(implementation, app));
+        bytes32 initHash = keccak256(initCode(forwarder, app));
         return address(
             uint160(uint256(keccak256(abi.encodePacked(hex"ff", deployer, appKey(app), initHash))))
         );

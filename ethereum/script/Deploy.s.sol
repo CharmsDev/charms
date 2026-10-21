@@ -3,18 +3,24 @@ pragma solidity 0.8.37;
 
 import {Script, console} from "forge-std/Script.sol";
 
+import {CharmToken} from "../src/CharmToken.sol";
+import {CharmTokenProxy} from "../src/CharmTokenProxy.sol";
 import {Charms} from "../src/Charms.sol";
 import {CharmsApply} from "../src/CharmsApply.sol";
+import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
+import {ICharmsLedger} from "../src/interfaces/ICharms.sol";
 import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 
 /// @notice Installs Charms at spell version 16. The proxy address is `ETHEREUM_CHARMS`.
 /// @dev `deployer` is a CREATE2 factory that takes `salt ‖ initCode` as calldata, such as
-/// 0x4e59b44847b379578588920ca78fbf26c0b4956c. The verifier address is part of that init
-/// code. A rerun after a partial deployment finishes it.
+/// 0x4e59b44847b379578588920ca78fbf26c0b4956c. The broadcast key must be `admin`: the
+/// last call is `upgradeToAndCall`. A rerun with the same arguments leaves the deployment
+/// in place. A rerun with a new token implementation or metadata signer upgrades.
 ///
-/// forge script script/Deploy.s.sol --sig "run(address,address)" <deployer> <admin> \
-///     --rpc-url <url> --broadcast
+/// forge script script/Deploy.s.sol \
+///     --sig "run(address,address,address)" <deployer> <admin> <metadataSigner> \
+///     --rpc-url <url> --broadcast --private-key <admin key>
 contract Deploy is Script {
     uint32 public constant SPELL_VERSION = 16;
     /// @dev `charms-lib`'s `SPELL_VK`.
@@ -28,15 +34,36 @@ contract Deploy is Script {
 
     bytes32 public constant VERIFIER_SALT = keccak256("sp1-verifier-groth16");
     bytes32 public constant APPLY_SALT = keccak256("charms-apply");
+    bytes32 public constant INITIALIZER_SALT = keccak256("charms-initializer");
+    bytes32 public constant TOKEN_SALT = keccak256("charms-token");
     bytes32 public constant IMPLEMENTATION_SALT = keccak256("charms-implementation");
     bytes32 public constant PROXY_SALT = keccak256("charms-proxy-v1");
 
-    function run(address deployer, address admin) external returns (Charms charms) {
+    bytes32 internal constant IMPLEMENTATION_SLOT =
+        bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+
+    function run(address deployer, address admin, address metadataSigner)
+        external
+        returns (Charms charms)
+    {
         require(deployer.code.length != 0, "deployer has no code");
         require(admin != address(0), "admin is zero");
+        require(metadataSigner != address(0), "metadata signer is zero");
         bytes memory verifierInit = vm.getCode(VERIFIER_ARTIFACT);
 
-        vm.startBroadcast();
+        vm.startBroadcast(admin);
+        address initializer =
+            _create2(deployer, INITIALIZER_SALT, type(CharmsInitializer).creationCode);
+        bytes memory proxyInit = abi.encodePacked(
+            type(CharmsProxy).creationCode,
+            abi.encode(initializer, abi.encodeCall(CharmsInitializer.initialize, (admin)))
+        );
+        address predicted = vm.computeCreate2Address(PROXY_SALT, keccak256(proxyInit), deployer);
+        address token = _create2(
+            deployer,
+            TOKEN_SALT,
+            abi.encodePacked(type(CharmToken).creationCode, abi.encode(ICharmsLedger(predicted)))
+        );
         address verifier = _create2(deployer, VERIFIER_SALT, verifierInit);
         address applier = _create2(
             deployer,
@@ -48,32 +75,39 @@ contract Deploy is Script {
         address implementation = _create2(
             deployer,
             IMPLEMENTATION_SALT,
-            abi.encodePacked(type(Charms).creationCode, abi.encode(applier))
+            abi.encodePacked(type(Charms).creationCode, abi.encode(applier, token, metadataSigner))
         );
-        charms = Charms(
-            payable(_create2(
-                    deployer,
-                    PROXY_SALT,
-                    abi.encodePacked(
-                        type(CharmsProxy).creationCode,
-                        abi.encode(implementation, abi.encodeCall(Charms.initialize, (admin)))
-                    )
-                ))
-        );
+        charms = Charms(payable(_create2(deployer, PROXY_SALT, proxyInit)));
+        if (_implementation(address(charms)) != implementation) {
+            charms.upgradeToAndCall(implementation, "");
+        }
         vm.stopBroadcast();
 
-        check(charms, admin);
+        check(charms, admin, metadataSigner);
         console.log("SP1Verifier", verifier);
         console.log("CharmsApply", applier);
+        console.log("CharmsInitializer", initializer);
+        console.log("CharmToken", token);
+        console.log("CharmTokenProxy", vm.computeCreateAddress(address(charms), 1));
         console.log("Charms implementation", implementation);
         console.log("ETHEREUM_CHARMS", address(charms));
     }
 
     /// @notice Reverts unless `charms` is this release under `admin`.
-    function check(Charms charms, address admin) public view {
+    function check(Charms charms, address admin, address metadataSigner) public view {
         require(admin != address(0), "admin is zero");
+        require(metadataSigner != address(0), "metadata signer is zero");
         require(charms.admin() == admin, "admin");
+        require(charms.metadataSigner() == metadataSigner, "metadata signer");
         require(charms.SPELL_VERSION() == SPELL_VERSION, "spell version");
+        require(charms.tokenImplementation().code.length != 0, "token implementation");
+        require(
+            address(CharmToken(charms.tokenImplementation()).charms()) == address(charms),
+            "token charms"
+        );
+        address forwarder = vm.computeCreateAddress(address(charms), 1);
+        require(forwarder.code.length != 0, "forwarder");
+        require(address(CharmTokenProxy(forwarder).charms()) == address(charms), "forwarder charms");
         CharmsApply applier = charms.APPLY();
         require(applier.PROGRAM_VKEY() == PROGRAM_VKEY, "program vkey");
         address verifier = address(applier.VERIFIER());
@@ -92,5 +126,9 @@ contract Deploy is Script {
         if (deployed.code.length != 0) return deployed;
         (bool ok,) = deployer.call(abi.encodePacked(salt, initCode));
         require(ok && deployed.code.length != 0, "CREATE2 deployment failed");
+    }
+
+    function _implementation(address proxy) internal view returns (address) {
+        return address(uint160(uint256(vm.load(proxy, IMPLEMENTATION_SLOT))));
     }
 }
