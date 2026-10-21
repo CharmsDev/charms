@@ -3,6 +3,7 @@ pragma solidity 0.8.37;
 
 import {Test} from "forge-std/Test.sol";
 
+import {CharmTokenNext} from "../script/CharmTokenNext.sol";
 import {Deploy} from "../script/Deploy.s.sol";
 import {CharmToken} from "../src/CharmToken.sol";
 import {CharmTokenProxy} from "../src/CharmTokenProxy.sol";
@@ -94,6 +95,25 @@ contract DeployTest is Test {
         assertEq(address(second), address(first));
         assertEq(address(second.APPLY()), address(first.APPLY()));
         assertEq(address(second.APPLY().VERIFIER()), address(first.APPLY().VERIFIER()));
+    }
+
+    function test_rerunLeavesATokenUpgradeInPlace() public {
+        Charms charms = script.run(FACTORY, admin, signer);
+        ICharmsTypes.App memory coin =
+            ICharmsTypes.App(uint32(0x74), keccak256("coin"), keccak256("coin/vk"));
+        address clone = charms.ensureToken(coin);
+        CharmTokenNext nextToken = new CharmTokenNext(ICharmsLedger(address(charms)));
+        Charms next = new Charms(charms.APPLY(), address(nextToken), signer);
+        vm.prank(admin);
+        charms.upgradeToAndCall(address(next), "");
+        assertEq(CharmTokenNext(clone).revision(), 2);
+
+        Charms again = script.run(FACTORY, admin, signer);
+
+        assertEq(address(again), address(charms));
+        assertEq(_implementation(again), address(next));
+        assertEq(again.tokenImplementation(), address(nextToken));
+        assertEq(CharmTokenNext(clone).revision(), 2);
     }
 
     function test_adminIsPartOfTheProxyAddress() public {

@@ -76,7 +76,7 @@ contract Deploy is Script {
             abi.encodePacked(type(Charms).creationCode, abi.encode(applier, token, metadataSigner))
         );
         charms = Charms(payable(_create2(deployer, PROXY_SALT, proxyInit)));
-        if (_implementation(address(charms)) != implementation) {
+        if (_implementation(address(charms)) == initializer) {
             charms.upgradeToAndCall(implementation, "");
         }
         vm.stopBroadcast();
