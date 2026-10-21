@@ -14,9 +14,7 @@ import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 
 /// @notice Installs Charms at spell version 16. The proxy address is `ETHEREUM_CHARMS`.
 /// @dev `deployer` is a CREATE2 factory that takes `salt ‖ initCode` as calldata, such as
-/// 0x4e59b44847b379578588920ca78fbf26c0b4956c. The broadcast key must be `admin`: the
-/// last call is `upgradeToAndCall`. A rerun with the same arguments leaves the deployment
-/// in place. A rerun with a new token implementation or metadata signer upgrades.
+/// 0x4e59b44847b379578588920ca78fbf26c0b4956c.
 ///
 /// forge script script/Deploy.s.sol \
 ///     --sig "run(address,address,address)" <deployer> <admin> <metadataSigner> \

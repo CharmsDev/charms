@@ -90,7 +90,7 @@ abstract contract CharmsStorage is ICharmsTypes, ICharmsErrors {
         return CharmTokenClone.predict(address(this), _charmTokenProxy(), app);
     }
 
-    /// @dev `CREATE(proxy, nonce 1)`. `CharmsInitializer` creates `CharmTokenProxy` there.
+    /// @dev `CREATE(proxy, nonce 1)`.
     function _charmTokenProxy() internal view returns (address) {
         return
             address(

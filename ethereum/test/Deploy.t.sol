@@ -29,7 +29,7 @@ contract DeployTest is Test {
     bytes32 internal constant PLACEHOLDER_TX =
         0x779bc5a626e8fce3529fd2faaae158c358a6b57a4f7652563a646323f74eb97c;
     /// @dev The checked-in Groth16 proof commits to a spell whose input id was
-    /// created at this proxy. The CREATE2 address moved with `CharmTokenProxy`.
+    /// created at this proxy.
     address internal constant PREVIOUS_PROXY = 0x7269cC778B9b90EEe6717B3D3050E372E399d8E7;
     bytes32 internal constant PREVIOUS_PLACEHOLDER =
         0x97c2b57e3d80acbe4b1d574557e61dc8737d890a029674075a98f7a892054f7c;
@@ -193,8 +193,6 @@ contract DeployTest is Test {
         script.check(old, admin, signer);
     }
 
-    /// @dev Runs this deployment's proxy runtime and implementation at the address the
-    /// checked-in proof was built for. `ethTxId` mixes in that address.
     function _proofCharms() internal returns (Charms charms) {
         Charms deployed = script.run(FACTORY, admin, signer);
         vm.etch(PREVIOUS_PROXY, address(deployed).code);

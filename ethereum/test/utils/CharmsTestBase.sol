@@ -44,8 +44,6 @@ abstract contract CharmsTestBase is Test, ICharmsTypes {
         return _finishBoot(initializer, predicted, address(impl));
     }
 
-    /// @dev The caller creates the token, then the logic contract, then `_finishBoot` creates the
-    /// proxy. Those two creates are what `predicted` counts.
     function _beginBoot() internal returns (CharmsInitializer initializer, address predicted) {
         initializer = new CharmsInitializer();
         uint64 nonce = vm.getNonce(address(this));

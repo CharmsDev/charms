@@ -18,9 +18,6 @@ import {UtxoList} from "./libraries/UtxoList.sol";
 /// @notice The Charms implementation behind `CharmsProxy` (CHIP-0020): the consensus for Ethereum
 /// Charms transactions. It owns UTXOs, supply, balances, the vault, and anchors in the proxy's
 /// storage, and builds the spells behind ERC-20 transfers and the vault.
-/// @dev `tokenImplementation` and `metadataSigner` are immutables in this bytecode. A new
-/// implementation brings its own `CharmsApply`, token implementation, and metadata signer.
-/// `CharmsApply` is a separate contract so both stay under the EIP-170 size limit.
 contract Charms is CharmsAuth, ICharms, ICharmsLedger, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
     using UtxoList for UtxoList.List;

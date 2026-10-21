@@ -54,7 +54,6 @@ contract Demo is Script {
         0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
     address internal constant HOLDER = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
-    /// @dev Anvil account #2. Stored as `metadataSigner`. This script does not ask it to sign.
     address internal constant METADATA_SIGNER = 0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC;
 
     /// @dev Anvil account #1. Receives the vault charm and unwraps it.

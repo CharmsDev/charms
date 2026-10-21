@@ -90,17 +90,16 @@ interface ICharmsLedger {
     /// returns this.
     function balanceOf(bytes32 appKey, address owner) external view returns (uint256);
 
-    /// @notice The token's ERC-20 `name`. A non-vault clone forwards here because its
-    /// implementation is part of `tokenAddress` and cannot change, while this policy can.
+    /// @notice The token's ERC-20 `name`.
     /// @dev `"Charm"` until CHIP-0420 metadata is published. A vault app has no clone and no
     /// second name.
     function name(ICharmsTypes.App calldata app) external view returns (string memory);
 
-    /// @notice The token's ERC-20 `symbol`. Forwarded for the same reason as `name`.
+    /// @notice The token's ERC-20 `symbol`.
     /// @dev `"CHARM"` until CHIP-0420 `ticker` is published.
     function symbol(ICharmsTypes.App calldata app) external view returns (string memory);
 
-    /// @notice The token's ERC-20 `decimals`. Forwarded for the same reason as `name`.
+    /// @notice The token's ERC-20 `decimals`.
     /// @dev `0` until CHIP-0420 `decimals` is published.
     function decimals(ICharmsTypes.App calldata app) external view returns (uint8);
 }
@@ -205,12 +204,11 @@ interface ICharms is ICharmsErrors {
     function ensureToken(ICharmsTypes.App calldata app) external returns (address token);
 
     /// @notice `CharmToken` implementation the forwarder delegatecalls.
-    /// @dev Immutable in this bytecode. Not a proxy slot and not ERC-1967.
-    /// A clone does not store this.
+    /// @dev Immutable in this bytecode.
     function tokenImplementation() external view returns (address);
 
     /// @notice Metadata signer carried by this implementation.
-    /// @dev Immutable in this bytecode. Not a proxy slot.
+    /// @dev Immutable in this bytecode.
     function metadataSigner() external view returns (address);
 
     /// @notice Page through `owner`'s UTXOs for one app. Wallets and the CLI use this to build a
@@ -282,8 +280,7 @@ interface ICharmTokenHooks {
 /// DeFi call this. One per such app. A vault app has no clone: its ERC-20 face is the underlying
 /// token, or `address(0)` for ETH, and the charm moves through `transact`. NFT, Scroll,
 /// custom-tag, and empty UTXOs are not this interface.
-/// @dev The deployed bytecode forwards calldata plus the packed `App` and a `uint16` length, then
-/// `delegatecall`s a shared implementation. Implements IERC-20, IERC-20 metadata, and EIP-2612.
+/// @dev Implements IERC-20, IERC-20 metadata, and EIP-2612.
 /// Allowances and permit nonces live here. An infinite allowance is not decremented. The token
 /// also implements `ICharmTokenHooks`.
 interface ICharmToken {

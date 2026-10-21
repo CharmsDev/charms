@@ -12,7 +12,7 @@ function appKey(ICharmsTypes.App memory app) pure returns (bytes32) {
 /// @notice A `CharmToken` is a clones-with-immutable-args proxy (the wighawag scheme) whose
 /// immutable args are the packed `App` (68 bytes) followed by their length as a `uint16`.
 library CharmTokenClone {
-    /// @notice 10-byte creation code, the 55-byte forwarding runtime around `CharmTokenProxy`,
+    /// @notice 10-byte creation code, the 55-byte forwarding runtime around `forwarder`,
     /// then `abi.encodePacked(uint32 tag, bytes32 identity, bytes32 vk)` and `0x0044`.
     function initCode(address forwarder, ICharmsTypes.App memory app)
         internal

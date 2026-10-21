@@ -7,10 +7,6 @@ import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/Messa
 import {ICharmToken, ICharmTokenHooks, ICharmsLedger, ICharmsTypes} from "./interfaces/ICharms.sol";
 import {appKey} from "./libraries/CharmTokenClone.sol";
 
-/// @notice Shared ERC-20 logic behind every non-vault tag-`t` clone.
-/// @dev The clone `delegatecall`s `CharmTokenProxy`, which `delegatecall`s here, so allowance
-/// and permit-nonce storage belong to the clone. Balances live in `Charms`. This address is
-/// not part of `tokenAddress`. A new `Charms` implementation names the replacement.
 contract CharmToken is ICharmToken, ICharmTokenHooks {
     bytes32 private constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
@@ -20,7 +16,6 @@ contract CharmToken is ICharmToken, ICharmTokenHooks {
     );
     uint256 private constant APP_ARGS_LENGTH = 70;
 
-    /// @notice The Charms proxy this implementation calls.
     ICharmsLedger public immutable charms;
 
     mapping(address owner => mapping(address spender => uint256)) public allowance;
