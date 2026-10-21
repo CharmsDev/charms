@@ -3,6 +3,7 @@ members = [
     "src/scrolls_bitcoin",
     "src/scrolls_cardano",
     "src/scrolls_ethereum",
+    "src/charms_metadata",
 ]
 resolver = "2"
 

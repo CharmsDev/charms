@@ -28,3 +28,10 @@ canisters:
       configuration:
         package: scrolls_ethereum
         candid: src/scrolls_ethereum/scrolls_ethereum.did
+
+  - name: charms_metadata
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: charms_metadata
+        candid: src/charms_metadata/charms_metadata.did

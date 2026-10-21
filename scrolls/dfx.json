@@ -19,6 +19,11 @@
       "candid": "src/scrolls_ethereum/scrolls_ethereum.did",
       "package": "scrolls_ethereum",
       "type": "rust"
+    },
+    "charms_metadata": {
+      "candid": "src/charms_metadata/charms_metadata.did",
+      "package": "charms_metadata",
+      "type": "rust"
     }
   },
   "defaults": {

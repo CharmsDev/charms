@@ -1559,6 +1559,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "charms_metadata"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "candid",
+ "charms-data",
+ "charms-lib",
+ "getrandom 0.2.16",
+ "hex",
+ "ic-cdk",
+ "ic-cdk-management-canister 0.1.1",
+ "k256",
+ "serde",
+ "sha3 0.10.9",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "git+https://github.com/CharmsDev/chrono.git?branch=v0.4.45-nojs#5ddbe575dcffd6aa709ff2bf723ce890363c6182"
