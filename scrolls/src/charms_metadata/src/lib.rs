@@ -17,7 +17,6 @@ use ic_cdk_management_canister::{
     ecdsa_public_key, sign_with_ecdsa,
 };
 
-#[cfg(not(test))]
 use charms_lib::extract_and_verify_spell;
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
@@ -124,14 +123,12 @@ fn tx_is_final(tx: &Tx) -> bool {
     tx.proven_final() || tests::regtest_final(tx)
 }
 
-#[cfg(not(test))]
 fn open_spell(tx: &Tx) -> Result<charms_lib::NormalizedSpell, String> {
+    #[cfg(test)]
+    if tests::skip_spell_proof() {
+        return tests::spell_from_tx(tx);
+    }
     extract_and_verify_spell(tx, false).map_err(|e| format!("Input error: {e}"))
-}
-
-#[cfg(test)]
-fn open_spell(tx: &Tx) -> Result<charms_lib::NormalizedSpell, String> {
-    tests::spell_from_tx(tx)
 }
 
 async fn sign_digest(digest: &[u8; 32]) -> Result<[u8; 65], String> {
@@ -238,7 +235,25 @@ mod tests {
     use charms_lib::{NormalizedCharms, NormalizedSpell};
     use k256::ecdsa::SigningKey;
     use serde::Serialize;
+    use std::cell::Cell;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    thread_local! {
+        static SKIP_SPELL_PROOF: Cell<bool> = const { Cell::new(false) };
+        static SIGN_CALLS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub(super) fn skip_spell_proof() -> bool {
+        SKIP_SPELL_PROOF.with(|cell| cell.get())
+    }
+
+    fn use_spell_parser() {
+        SKIP_SPELL_PROOF.with(|cell| cell.set(true));
+    }
+
+    fn sign_calls() -> u32 {
+        SIGN_CALLS.with(|cell| cell.get())
+    }
 
     const SECRET: [u8; 32] = [0x11; 32];
 
@@ -298,7 +313,11 @@ mod tests {
     }
 
     fn bitcoin_tx(spell: &NormalizedSpell) -> Transaction {
-        let payload = charms_data::util::write(&(spell, Vec::<u8>::new())).unwrap();
+        bitcoin_tx_with_proof(spell, &[])
+    }
+
+    fn bitcoin_tx_with_proof(spell: &NormalizedSpell, proof: &[u8]) -> Transaction {
+        let payload = charms_data::util::write(&(spell, proof)).unwrap();
         let push = PushBytesBuf::try_from(payload).unwrap();
         let script = Builder::new()
             .push_opcode(bitcoin::opcodes::all::OP_RETURN)
@@ -357,7 +376,11 @@ mod tests {
     }
 
     fn final_tx(spell: &NormalizedSpell) -> Vec<u8> {
-        let raw = bitcoin_tx(spell);
+        final_tx_with_proof(spell, &[])
+    }
+
+    fn final_tx_with_proof(spell: &NormalizedSpell, spell_proof: &[u8]) -> Vec<u8> {
+        let raw = bitcoin_tx_with_proof(spell, spell_proof);
         let (tx, proof) = mine(&raw);
         encode(&Tx::Bitcoin(BitcoinTx::WithBlockProof {
             tx,
@@ -413,6 +436,7 @@ mod tests {
     }
 
     pub(super) fn local_signature_rs(digest: &[u8; 32]) -> Vec<u8> {
+        SIGN_CALLS.with(|cell| cell.set(cell.get() + 1));
         let key = SigningKey::from_slice(&SECRET).unwrap();
         let (signature, _) = key.sign_prehash_recoverable(digest).unwrap();
         signature.to_bytes().to_vec()
@@ -438,6 +462,7 @@ mod tests {
 
     #[test]
     fn a_final_tx_that_creates_the_reference_nft_returns_the_charm_and_signature() {
+        use_spell_parser();
         PUBLIC_KEY.with(|cell| *cell.borrow_mut() = None);
         let meta = example();
         let signed = block_on(sign_metadata(
@@ -494,6 +519,7 @@ mod tests {
 
     #[test]
     fn a_tx_that_does_not_create_the_reference_nft_is_rejected() {
+        use_spell_parser();
         let err = block_on(sign_metadata(token_app(), final_tx(&spell_with(None)))).unwrap_err();
         assert_eq!(
             err,
@@ -503,6 +529,7 @@ mod tests {
 
     #[test]
     fn two_reference_nfts_are_rejected() {
+        use_spell_parser();
         let mut spell = spell_with(Some(&example()));
         let again = spell.tx.outs[0].clone();
         spell.tx.outs.push(again);
@@ -511,6 +538,22 @@ mod tests {
             err,
             "Input error: transaction creates more than one reference NFT"
         );
+    }
+
+    #[test]
+    fn a_bad_spell_proof_is_rejected_before_signing() {
+        for spell_proof in [Vec::new(), vec![0xab; 100]] {
+            let err = block_on(sign_metadata(
+                token_app(),
+                final_tx_with_proof(&spell_with(Some(&example())), &spell_proof),
+            ))
+            .unwrap_err();
+            assert!(
+                err.starts_with("Input error: ") && err.contains("could not verify spell proof"),
+                "{err}"
+            );
+            assert_eq!(sign_calls(), 0);
+        }
     }
 
     #[test]
