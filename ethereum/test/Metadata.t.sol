@@ -4,6 +4,7 @@ pragma solidity 0.8.37;
 import {Vm} from "forge-std/Vm.sol";
 
 import {CharmToken} from "../src/CharmToken.sol";
+import {Charms} from "../src/Charms.sol";
 import {ICharmToken, ICharms, ICharmsErrors} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
@@ -211,6 +212,158 @@ contract MetadataTest is CharmsTestBase {
         assertEq(_stringField(json, "external_link"), metadata.url);
         assertEq(_numberField(json, "decimals"), metadata.decimals);
         assertEq(json, _json(charms.contractURI(coin)));
+    }
+
+    function test_signatureDoesNotReplayOnAnotherChain() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+
+        vm.chainId(1);
+        bytes memory sig = _sign(coin, metadata, 1);
+        vm.chainId(11_155_111);
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 0);
+
+        vm.chainId(1);
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 1);
+    }
+
+    function test_signatureDoesNotReplayOnAnotherProxy() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes memory sig = _sign(coin, metadata, 1);
+        Charms other = _deploy(16, PROGRAM_VKEY, verifier);
+
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        other.setMetadata(coin, metadata, 1, sig);
+        assertEq(other.metadataVersion(coin), 0);
+
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 1);
+        assertEq(other.metadataVersion(coin), 0);
+    }
+
+    function test_signatureDoesNotReplayOnAnotherApp() public {
+        App memory coin = _app(T, "coin");
+        App memory other = _app(T, "other");
+        Metadata memory metadata = _example();
+        bytes memory sig = _sign(coin, metadata, 1);
+
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(other, metadata, 1, sig);
+        assertEq(charms.metadataVersion(other), 0);
+
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 1);
+        assertEq(charms.metadataVersion(other), 0);
+    }
+
+    function test_signatureBindsTheMetadataHash() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes memory sig = _sign(coin, metadata, 1);
+        metadata.name = "Tampered";
+
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 1, sig);
+        assertEq(charms.metadataVersion(coin), 0);
+    }
+
+    function test_eip191PrefixIsRejected() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes32 digest = keccak256(
+            abi.encode(
+                keccak256(
+                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
+                ),
+                block.chainid,
+                address(charms),
+                _key(coin),
+                uint64(1),
+                _hash(metadata)
+            )
+        );
+        bytes32 prefixed = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(metadataKey, prefixed);
+
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 1, abi.encodePacked(r, s, v));
+        assertEq(charms.metadataVersion(coin), 0);
+    }
+
+    function test_versionZeroIsRejectedAndAGapIsAllowed() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+
+        vm.expectRevert(ICharmsErrors.StaleMetadataVersion.selector);
+        charms.setMetadata(coin, metadata, 0, _sign(coin, metadata, 0));
+
+        bytes memory atFour = _sign(coin, metadata, 4);
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 2, atFour);
+
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        charms.setMetadata(coin, metadata, 4, atFour);
+        assertEq(charms.metadataVersion(coin), 4);
+
+        vm.expectRevert(ICharmsErrors.StaleMetadataVersion.selector);
+        charms.setMetadata(coin, metadata, 3, _sign(coin, metadata, 3));
+        vm.expectRevert(ICharmsErrors.StaleMetadataVersion.selector);
+        charms.setMetadata(coin, metadata, 4, atFour);
+        assertEq(charms.metadataVersion(coin), 4);
+        assertEq(CharmToken(charms.ensureToken(coin)).name(), "Example");
+    }
+
+    function test_publishedZeroDecimalsStaysFrozen() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        metadata.decimals = 0;
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+
+        assertEq(token.decimals(), 0);
+        assertEq(charms.metadataVersion(coin), 1);
+
+        metadata.decimals = 8;
+        vm.expectRevert(ICharmsErrors.DecimalsFrozen.selector);
+        charms.setMetadata(coin, metadata, 2, _sign(coin, metadata, 2));
+        assertEq(token.decimals(), 0);
+        assertEq(charms.metadataVersion(coin), 1);
+
+        metadata.decimals = 0;
+        metadata.name = "Zero";
+        charms.setMetadata(coin, metadata, 2, _sign(coin, metadata, 2));
+        assertEq(token.name(), "Zero");
+        assertEq(token.decimals(), 0);
+    }
+
+    function test_setMetadataWithoutACloneEmitsOnlyFromTheProxy() public {
+        App memory coin = _app(T, "coin");
+        Metadata memory metadata = _example();
+        bytes32 hash = _hash(metadata);
+
+        vm.recordLogs();
+        charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bytes32 metaTopic = keccak256("MetadataSet(bytes32,uint64,bytes32)");
+        bytes32 uriTopic = keccak256("ContractURIUpdated()");
+        uint256 metaLogs;
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != uriTopic);
+            if (logs[i].topics[0] != metaTopic) continue;
+            assertEq(logs[i].emitter, address(charms));
+            assertEq(logs[i].topics[1], _key(coin));
+            (uint64 version, bytes32 got) = abi.decode(logs[i].data, (uint64, bytes32));
+            assertEq(version, 1);
+            assertEq(got, hash);
+            ++metaLogs;
+        }
+        assertEq(metaLogs, 1);
+        assertEq(charms.tokenAddress(coin).code.length, 0);
     }
 
     function test_permitDomainStaysCharmAfterRename() public {

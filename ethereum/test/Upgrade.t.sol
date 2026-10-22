@@ -15,6 +15,19 @@ import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmsErrors, ICharmsLedger} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
+contract ReportsZeroSigner {
+    address public immutable tokenImplementation;
+    address public immutable metadataSigner;
+
+    constructor(address token) {
+        tokenImplementation = token;
+    }
+
+    function proxiableUUID() external pure returns (bytes32) {
+        return bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+    }
+}
+
 contract OtherSlotImplementation {
     address public immutable tokenImplementation;
     address public immutable metadataSigner;
@@ -277,12 +290,130 @@ contract UpgradeTest is CharmsTestBase {
         charms.upgradeToAndCall(address(next), "");
     }
 
+    function test_upgradeSwapsTheTokenAndTheSignerAndKeepsCloneState() public {
+        App memory coin = _app(T, "coin");
+        CharmToken token = CharmToken(charms.ensureToken(coin));
+        Metadata memory metadata = _metadata();
+        (, uint256 oldKey) = makeAddrAndKey("metadataSigner");
+        assertEq(vm.addr(oldKey), metadataSigner);
+        charms.setMetadata(coin, metadata, 1, _signMetadata(oldKey, coin, metadata, 1));
+
+        (address holder, uint256 holderKey) = makeAddrAndKey("permit-holder");
+        uint256 deadline = block.timestamp + 1000;
+        bytes32 domain = token.DOMAIN_SEPARATOR();
+        bytes32 structHash = keccak256(
+            abi.encode(
+                keccak256(
+                    "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
+                ),
+                holder,
+                carol,
+                uint256(11),
+                token.nonces(holder),
+                deadline
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(holderKey, keccak256(abi.encodePacked(hex"1901", domain, structHash)));
+        token.permit(holder, carol, 11, deadline, v, r, s);
+
+        (address nextSigner, uint256 nextKey) = makeAddrAndKey("next-signer");
+        CharmTokenNext nextToken = new CharmTokenNext(ICharmsLedger(address(charms)));
+        Charms next =
+            new Charms(new CharmsApply(16, PROGRAM_VKEY, verifier), address(nextToken), nextSigner);
+        vm.prank(admin);
+        charms.upgradeToAndCall(address(next), "");
+
+        assertEq(charms.tokenAddress(coin), address(token));
+        assertEq(charms.tokenImplementation(), address(nextToken));
+        assertEq(charms.metadataSigner(), nextSigner);
+        assertEq(CharmTokenNext(address(token)).revision(), 2);
+        assertEq(token.allowance(holder, carol), 11);
+        assertEq(token.nonces(holder), 1);
+        assertEq(token.name(), "Example");
+
+        metadata.name = "After";
+        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
+        charms.setMetadata(coin, metadata, 2, _signMetadata(oldKey, coin, metadata, 2));
+        assertEq(token.name(), "Example");
+        assertEq(token.nonces(holder), 1);
+
+        charms.setMetadata(coin, metadata, 2, _signMetadata(nextKey, coin, metadata, 2));
+        assertEq(token.name(), "After");
+        assertEq(token.decimals(), 8);
+        assertEq(charms.tokenAddress(coin), address(token));
+        assertEq(token.allowance(holder, carol), 11);
+        assertEq(token.nonces(holder), 1);
+    }
+
+    function test_upgradeRejectsAReportedZeroSigner() public {
+        ReportsZeroSigner hostile = new ReportsZeroSigner(charms.tokenImplementation());
+
+        vm.prank(admin);
+        vm.expectRevert(ICharmsErrors.ZeroMetadataSigner.selector);
+        charms.upgradeToAndCall(address(hostile), "");
+    }
+
+    function test_upgradeRejectsATokenWithNoCode() public {
+        Charms next = new Charms(
+            new CharmsApply(16, PROGRAM_VKEY, verifier), address(0xBEEF), metadataSigner
+        );
+
+        vm.prank(admin);
+        vm.expectRevert(ICharmsErrors.NoTokenImplementation.selector);
+        charms.upgradeToAndCall(address(next), "");
+    }
+
     function test_constructorRejectsAZeroMetadataSigner() public {
         CharmsApply applier = new CharmsApply(16, PROGRAM_VKEY, verifier);
         address token = charms.tokenImplementation();
 
         vm.expectRevert(ICharmsErrors.ZeroMetadataSigner.selector);
         new Charms(applier, token, address(0));
+    }
+
+    function _metadata() internal pure returns (Metadata memory) {
+        return Metadata({
+            name: "Example",
+            symbol: "EX",
+            decimals: 8,
+            description: "One fungible charm.",
+            url: "https://example.com",
+            image: "ipfs://bafyexample",
+            imageHash: bytes32(uint256(1))
+        });
+    }
+
+    function _signMetadata(uint256 key, App memory app, Metadata memory metadata, uint64 version)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 metadataHash = keccak256(
+            abi.encode(
+                metadata.name,
+                metadata.symbol,
+                metadata.decimals,
+                metadata.description,
+                metadata.url,
+                metadata.image,
+                metadata.imageHash
+            )
+        );
+        bytes32 digest = keccak256(
+            abi.encode(
+                keccak256(
+                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
+                ),
+                block.chainid,
+                address(charms),
+                _key(app),
+                version,
+                metadataHash
+            )
+        );
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     function _phase1History() internal returns (History memory h) {
