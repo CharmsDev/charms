@@ -1,0 +1,12 @@
+{
+  "tag": "t",
+  "identity": "0x0796f63ed48144b4ec69fb794fbc2290ae63acf945fb035d5474648b50ee43b6",
+  "vk": "0xfd0cac892e457454be0212fa7d9a0e1517d5bd6a33aa7c66a1f10f55e375c290",
+  "name": "eBTC",
+  "symbol": "eBTC",
+  "decimals": 8,
+  "description": "Enchanted BTC: Bitcoin magically wrapped into a charm. Backed 1:1 by BTC held in a Scrolls smart contract vault.",
+  "url": "https://ebtc.charms.dev",
+  "image": "ipfs://bafkreiamp6ocmalh4uu77jhcr2yh3i5ea4knet53qnmfuupmg45326u4wa",
+  "imageHash": "0x0c7f9c260167e529ffa4e28eb07da3a40714d24fbb83585a51ec373bbd7a9cb0"
+}
