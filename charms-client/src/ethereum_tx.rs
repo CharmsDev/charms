@@ -5,8 +5,11 @@ use crate::{
 };
 use anyhow::{Context, ensure};
 use charms_data::{App, NativeOutput, TOKEN, TxId, UtxoId, util};
+use cml_chain::crypto::{Ed25519Signature, Vkey};
+use cml_core::serialization::RawBytesEncoding;
 use serde::Serialize;
 use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
+use sha2::Sha256;
 use sha3::{Digest, Keccak256};
 use std::collections::BTreeMap;
 
@@ -38,7 +41,29 @@ pub struct EthereumTx {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<IfIsHumanReadable<Hex>>")]
     pub salt: Option<[u8; 32]>,
+    /// Ed25519 signature from `scrolls_ethereum`. Absent on a record that is not final.
+    /// Omitted from CBOR when empty, so an existing envelope still decodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<IfIsHumanReadable<Hex, serde_with::Bytes>>")]
+    pub signature: Option<[u8; 64]>,
 }
+
+/// Chain, Charms proxy, and Ed25519 key a finality signature is checked against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EthereumFinality {
+    pub vkey: [u8; 32],
+    pub chain_id: u64,
+    pub charms: [u8; 20],
+}
+
+/// Unset. `vkey` and `charms` are zeros, so `proven_final` stays false.
+/// A guest build that can beam back fills in the `scrolls_ethereum` key and the proxy
+/// that key certifies. `chain_id` 1 is mainnet. A testnet build replaces all three.
+pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
+    vkey: [0u8; 32],
+    chain_id: 1,
+    charms: [0u8; 20],
+};
 
 pub struct PlaceholderRequest {
     pub chain_id: u64,
@@ -177,8 +202,44 @@ impl EnchantedTx for EthereumTx {
     }
 
     fn proven_final(&self) -> bool {
-        false
+        self.signature
+            .is_some_and(|signature| signature_proves_final(self, &signature, &ETHEREUM_FINALITY))
     }
+}
+
+/// `SHA-256("charms/ethereum/finality/v1" ‖ chainId as uint256 ‖ proxy ‖ ethTxId)`.
+pub fn finality_message(chain_id: u64, charms: &[u8; 20], eth_tx_id: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"charms/ethereum/finality/v1");
+    let mut chain = [0u8; 32];
+    chain[24..].copy_from_slice(&chain_id.to_be_bytes());
+    hasher.update(chain);
+    hasher.update(charms);
+    hasher.update(eth_tx_id);
+    hasher.finalize().into()
+}
+
+/// True when `signature` is an Ed25519 signature of [`finality_message`] under `params`.
+/// A zero verification key or a zero Charms address is unset and is not final.
+pub fn signature_proves_final(
+    tx: &EthereumTx,
+    signature: &[u8; 64],
+    params: &EthereumFinality,
+) -> bool {
+    if params.vkey == [0u8; 32] || params.charms == [0u8; 20] {
+        return false;
+    }
+    if tx.chain_id != params.chain_id || tx.charms != params.charms {
+        return false;
+    }
+    let Ok(vkey) = Vkey::from_raw_bytes(&params.vkey) else {
+        return false;
+    };
+    let Ok(signature) = Ed25519Signature::from_raw_bytes(signature) else {
+        return false;
+    };
+    let message = finality_message(tx.chain_id, &tx.charms, &tx.eth_tx_id());
+    vkey.verify(message.as_slice(), &signature)
 }
 
 /// `CHET` plus CBOR of the record.
@@ -290,6 +351,7 @@ pub fn record_with_proof(
         proof,
         caller: None,
         salt: None,
+        signature: None,
     })
 }
 
@@ -308,6 +370,7 @@ pub fn plan_placeholder(
         proof: Vec::new(),
         caller: Some(request.caller),
         salt: Some(request.salt),
+        signature: None,
     };
     let tx_id = record.tx_id();
     let mut utxo_ids = Vec::with_capacity(owners.len());
@@ -907,6 +970,7 @@ app_public_inputs: {}
             proof: Vec::new(),
             caller: None,
             salt: None,
+            signature: None,
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)
@@ -924,6 +988,7 @@ app_public_inputs: {}
             proof: Vec::new(),
             caller: None,
             salt: None,
+            signature: None,
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)
@@ -1263,6 +1328,7 @@ app_public_inputs: {}
             proof,
             caller: None,
             salt: None,
+            signature: None,
         }
     }
 
@@ -1411,6 +1477,75 @@ app_public_inputs: {}
                 other_contract.tx_id()
             )
         );
+    }
+
+    #[test]
+    fn a_finality_signature_binds_the_chain_the_proxy_and_the_id() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut record = plan_placeholder(&spell(1), &request(None)).unwrap().record;
+        assert!(record.signature.is_none());
+        assert!(!record.proven_final());
+        let without = Tx::Ethereum(record.clone()).hex();
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let vkey = signing.verifying_key().to_bytes();
+        let params = EthereumFinality {
+            vkey,
+            chain_id: record.chain_id,
+            charms: record.charms,
+        };
+        let message = finality_message(record.chain_id, &record.charms, &record.eth_tx_id());
+        let signature = signing.sign(&message).to_bytes();
+        assert!(signature_proves_final(&record, &signature, &params));
+        record.signature = Some(signature);
+        assert!(!record.proven_final());
+        assert_ne!(Tx::Ethereum(record.clone()).hex(), without);
+
+        let parsed = from_envelope_hex(&Tx::Ethereum(record.clone()).hex())
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed, record);
+        let json = serde_json::to_string(&Tx::Ethereum(record.clone())).unwrap();
+        let Tx::Ethereum(from_json) = serde_json::from_str(&json).unwrap() else {
+            panic!("json prev tx is ethereum");
+        };
+        assert_eq!(from_json.signature, Some(signature));
+
+        let mut other_chain = params;
+        other_chain.chain_id += 1;
+        assert!(!signature_proves_final(&record, &signature, &other_chain));
+        let mut other_proxy = params;
+        other_proxy.charms[0] ^= 1;
+        assert!(!signature_proves_final(&record, &signature, &other_proxy));
+        let mut other_key = params;
+        other_key.vkey[0] ^= 1;
+        assert!(!signature_proves_final(&record, &signature, &other_key));
+        let mut tampered = signature;
+        tampered[0] ^= 1;
+        assert!(!signature_proves_final(&record, &tampered, &params));
+        let mut moved = record.clone();
+        moved.spell.push(0);
+        moved.signature = None;
+        assert!(!signature_proves_final(&moved, &signature, &params));
+        assert!(!signature_proves_final(
+            &record,
+            &signature,
+            &EthereumFinality {
+                vkey: [0u8; 32],
+                chain_id: record.chain_id,
+                charms: record.charms,
+            }
+        ));
+        assert!(!signature_proves_final(
+            &record,
+            &signature,
+            &EthereumFinality {
+                vkey,
+                chain_id: record.chain_id,
+                charms: [0u8; 20],
+            }
+        ));
     }
 
     const MOCK_GROTH16_PK: &[u8] = include_bytes!("../../src/bin/mock-groth16-pk.bin");

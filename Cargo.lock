@@ -2376,6 +2376,7 @@ dependencies = [
  "cml-chain",
  "cml-core",
  "const_format",
+ "ed25519-dalek",
  "enum_dispatch",
  "hex",
  "hex-literal 1.1.0",

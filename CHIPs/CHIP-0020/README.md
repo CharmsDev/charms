@@ -100,7 +100,7 @@ The record carries `chain_id`, `charms`, `anchor`, `spell`, and `proof`. It also
 
 `charms tx build --chain ethereum` takes that hex and no other spell input. It encodes the committed spell inside that record as `transact` calldata. It prints one JSON object with `from`, `to`, `data`, and `value`. `data` is the calldata. `from` is the caller that must send the call. `to` is the Charms proxy. `value` is `0`. That call is what gets executed. The wallet adds the account nonce, the gas fields, and the signature.
 
-The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns `EthereumTx::WithFinalityProof`, and the Bitcoin or Cardano claim is an ordinary spell.
+The other direction marks `beamed_outs` on an Ethereum spell whose token sums still balance (the beamed output counts). That spell is native: no proof. After beacon finality, `charms tx fetch --chain ethereum --tx-id <id> --finality` returns the record with `signature` set, and the Bitcoin or Cardano claim is an ordinary spell.
 
 ## Contracts
 
@@ -1026,9 +1026,9 @@ A beam-in of an ordinary charm mints the ERC-20 representation and does not touc
 
 Spending a placeholder as an ordinary input before the claim consumes the id. The source chain has already beamed to that hash. The charms are not claimable anymore. The CLI warns on a native spend of an empty UTXO.
 
-**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. Token sums still balance, so the spell is native unless some other app makes it non-simple. Beamed outputs have no owner and create no UTXO. `beamSourceAt[ethTxId] = block.number`. After that execution block is beacon-finalized, `scrolls_ethereum` attests the id. The destination spell's prev tx is `EthereumTx::WithFinalityProof`. The guest checks that signature in `proven_final` and then runs the same beam checks it runs for Bitcoin and Cardano.
+**Out of Ethereum.** The Ethereum spell lists `beamed_outs`. Token sums still balance, so the spell is native unless some other app makes it non-simple. Beamed outputs have no owner and create no UTXO. `beamSourceAt[ethTxId] = block.number`. After that execution block is beacon-finalized, `scrolls_ethereum` attests the id. The destination spell's prev tx is the same `EthereumTx` with `signature` set. The guest checks that signature in `proven_final` and then runs the same beam checks it runs for Bitcoin and Cardano.
 
-The guest does not grow a beacon light client. `EthereumTx::WithFinalityProof` stays `{ tx: EthTransact, signature: [u8; 64] }`. `proven_final` is still one Ed25519 check.
+The guest does not grow a beacon light client. `signature` is an optional 64-byte field on the record. It is omitted when absent, so an envelope written before the field still decodes. A nested `{ tx, signature }` variant does not, because this CBOR decoder cannot retry an untagged enum. `proven_final` is still one Ed25519 check. It is false when `signature` is absent, when `ETHEREUM_FINALITY` is unset, or when the signature does not verify.
 
 `scrolls_ethereum` is a new canister under `scrolls/`. It is not blackholed. It has one controller, chosen at deploy and not named here. `scrolls_bitcoin` and `scrolls_cardano` stay blackholed. This canister is the exception because a beacon fork can change a generalized index or the execution payload's SSZ layout, and the verifier has to change with it. A wasm upgrade keeps the canister id. `sign_with_schnorr` with key `key_1` and derivation path `["scrolls", "ethereum", "finality"]` keeps the same public key, so `ETHEREUM_FINALITY_VKEY` does not change. A new canister at each fork would be a new id, a new key, and another guest build. That is rejected.
 
@@ -1221,7 +1221,7 @@ A v15 Groth16 proof still verifies under the pinned v15 program key. A version-1
 
 `extract_and_verify_spell` checks a non-empty `proof` with `verify_snark_proof` against `to_serialized_pv`. The public values are CBOR of `([u8; 32] spell_vk, NormalizedSpell)`. A proof that does not verify is rejected. An empty proof is the native path, and Groth16 is not run. A proved record is also rejected when its effective anchor is not zero, because `transact` writes a zero anchor once the spell spends inputs and the id hashes that anchor. The id still does not hash the proof. The contract on Ethereum still verifies Groth16 on the proved path. A later spell reads the same record, so the host check and the contract check are the same statement.
 
-The spell-checker ELF verifies an Ethereum record in `prev_txs`, including a non-empty proof, and then the wrapper commits the spell being proved. An Ethereum-hosted spell whose output coin has a nonzero amount, a destination that is not 20 bytes, or nonempty content is rejected before proving and inside the guest. A request whose chain is not the chain that created the first input is rejected before the prover runs. The spell version is 16. An empty UTXO committed at version 15 stays that version. Its bytes are not rewritten, so the transaction id does not change, and a version-16 spell can spend it. `SPELL_VK` and `SPELL_CHECKER_VK` are the keys of this guest. Version 15 keeps its pinned program key. The Cardano reference NFT and `scrolls_bitcoin_v15` stay on their v15 deployments. The first Ethereum deployment is spell version 16. Beaming is not in this guest. `proven_final` on an Ethereum record is still false.
+The spell-checker ELF verifies an Ethereum record in `prev_txs`, including a non-empty proof, and then the wrapper commits the spell being proved. An Ethereum-hosted spell whose output coin has a nonzero amount, a destination that is not 20 bytes, or nonempty content is rejected before proving and inside the guest. A request whose chain is not the chain that created the first input is rejected before the prover runs. The spell version is 16. An empty UTXO committed at version 15 stays that version. Its bytes are not rewritten, so the transaction id does not change, and a version-16 spell can spend it. `SPELL_VK` and `SPELL_CHECKER_VK` are the keys of this guest. Version 15 keeps its pinned program key. The Cardano reference NFT and `scrolls_bitcoin_v15` stay on their v15 deployments. The first Ethereum deployment is spell version 16. Beaming is not in this guest binary. The client checks `signature` against `ETHEREUM_FINALITY`, and that constant is unset, so `proven_final` on an Ethereum record is still false.
 
 ## Rust, prover, CLI
 
@@ -1237,19 +1237,15 @@ pub enum Tx {
 `TryFrom<&str>` for raw hex tries an Ethereum envelope first, and only then Bitcoin and Cardano. The envelope is CBOR of `EthereumTx` prefixed with the four bytes `CHET` (`0x43 0x48 0x45 0x54`). A failed Ethereum parse must not fall through into the empty virtual spell Bitcoin builds for a transaction that simply has no OP_RETURN. JSON prev txs use the existing externally tagged form, `{"ethereum": ...}`.
 
 ```rust
-pub enum EthereumTx {
-    Simple(EthTransact),
-    WithFinalityProof { tx: EthTransact, signature: [u8; 64] },
-}
-
-pub struct EthTransact {
+pub struct EthereumTx {
     pub chain_id: u64,
     pub charms: [u8; 20],
-    pub anchor: Option<[u8; 32]>, // set only when ins is empty
-    pub spell: Vec<u8>,           // committed CBOR, the id preimage
-    pub proof: Vec<u8>,           // empty on the native path; not in the id
-    pub caller: Option<[u8; 20]>, // anchor preimage; not in the id
-    pub salt: Option<[u8; 32]>,   // anchor preimage; not in the id
+    pub anchor: Option<[u8; 32]>,    // set only when ins is empty
+    pub spell: Vec<u8>,              // committed CBOR, the id preimage
+    pub proof: Vec<u8>,              // empty on the native path; not in the id
+    pub caller: Option<[u8; 20]>,    // anchor preimage; not in the id
+    pub salt: Option<[u8; 32]>,      // anchor preimage; not in the id
+    pub signature: Option<[u8; 64]>, // scrolls_ethereum; omitted when absent
 }
 ```
 
@@ -1258,7 +1254,7 @@ pub struct EthTransact {
 - `tx_id` reverses `eth_tx_id()` into `TxId`.
 - `extract_and_verify_spell` decodes `spell` and requires `mock` to match. A placeholder keeps an anchor, an empty proof, and canonical CBOR. Any other spell carries a proof. The function then requires a zero effective anchor (`None`, or 32 zero bytes), a non-empty `ins`, `coins.len() == outs.len()`, amount 0, empty content, and a 20-byte `dest`, and it runs `verify_snark_proof`. Any other anchor is rejected. The proof does not commit to the anchor, and `transact` writes `bytes32(0)` when `ins` is non-empty, so a nonzero anchor would name an output id the contract never creates.
 - `virtual_spell` is that decode. An Ethereum record with no spell is an error, never an empty spell.
-- `proven_final` is the Ed25519 check above. `Simple` is not final.
+- `proven_final` is the Ed25519 check above. A record with no `signature` is not final. The check uses `ETHEREUM_FINALITY` (`vkey`, `chain_id`, `charms`). That constant is unset in this tree, so the check stays false until a guest build fills it in.
 - `all_coin_outs` returns the committed `coins`.
 - `spell_ins` returns the committed `ins`.
 
@@ -1291,7 +1287,7 @@ CLI:
 | `tx build --chain ethereum` | Takes that hex and prints `{from, to, data, value}`. `data` is `transact` calldata for the spell inside the record. That call is what gets executed. The hex is not a signable Ethereum transaction. |
 | `spell check --chain ethereum` | Runs `is_correct` on the host. An Ethereum previous transaction is admissible when it is final, or when it created an input or reference of a spell hosted by the same chain and contract. A non-empty proof is checked, and a proved record whose anchor is not zero is rejected. `spell prove` for that spell runs the same check inside the guest. |
 | `tx show-spell --chain ethereum` | Decodes an envelope or a `Transaction` log. |
-| `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister. |
+| `tx fetch --chain ethereum --tx-id <id> [--finality]` | Rebuilds the record from `Transaction`. `--finality` calls the canister and sets `signature`. |
 | `util dest --chain ethereum --addr 0x…` | Raw 20 bytes. Accepts EIP-55, stores the lowercase bytes. |
 | `util eth-token <APP>` | For a non-vault app, the CREATE2 address from the same formula as `tokenAddress`. For a vault app, the underlying address, `address(0)` for ETH. Does not deploy. |
 | `util eth-vault --token <addr\|eth>` | Prints the vault `App`. The `App` does not take a decimals argument. ETH's scale is 10. An ERC-20's scale is derived from `decimals()` and printed beside the `App`. |
@@ -1304,7 +1300,7 @@ App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and 
 |---|---|---|---|
 | First deployment | Spell version 16. A native spell needs no proof. | An empty UTXO does not run the guest. The CLI writes that record at version 16. | The empty-UTXO path does not use `SPELL_VK`. The contract accepts version 16. |
 | Proved Ethereum spell | Version 16. | The guest verifies a spell in `Tx::Ethereum`, including its proof. | `SPELL_VK` is `0x00c70dad82bf2e8dfce7bfdeba9016aaadcd20cea79f3950af9c1dae74e3fb95`. Version 15 keeps `0x00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52`. Older Bitcoin and Cardano proofs verify under their pinned keys. |
-| Beaming | Later. `proven_final` stays false until a finality signature exists. | Another rebuild once `ETHEREUM_FINALITY_VKEY` is known. | That rebuild publishes the next `programVKey` into the contract. |
+| Beaming | The check is in the client. `ETHEREUM_FINALITY` is unset, so `proven_final` stays false. | Another rebuild once that constant names the key and the proxy. | That rebuild publishes the next `programVKey` into the contract. |
 
 An empty UTXO committed at version 15 stays that version. The bytes are not rewritten, and a version-16 spell can spend it.
 

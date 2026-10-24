@@ -413,6 +413,7 @@ mod tests {
                 proof: Vec::new(),
                 caller: None,
                 salt: None,
+                signature: None,
             })],
             change_address: "addr".to_string(),
             fee_rate: 1.0,

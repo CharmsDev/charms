@@ -457,6 +457,7 @@ mod tests {
             proof: Vec::new(),
             caller: None,
             salt: None,
+            signature: None,
         })
     }
 

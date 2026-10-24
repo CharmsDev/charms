@@ -308,6 +308,8 @@ DATA STRUCTURES:
       - YAML-tagged with finality proof:
           '!cardano {tx: <hex>, signature: <hex>}'
       - JSON: '{\"bitcoin\": \"<hex>\"}' or '{\"cardano\": \"<hex>\"}'
+        An Ethereum record may include \"signature\", the 64-byte
+        scrolls_ethereum signature as hex. Without it the record is not final.
 
   Beamed-from mapping (--beamed-from):
     YAML/JSON mapping: input_index -> [source_utxo, nonce]
