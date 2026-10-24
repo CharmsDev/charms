@@ -82,6 +82,25 @@ contract EbtcMetadataTest is CharmsTestBase {
         assertTrue(_has(list, "\"a\\\"b\\\\c\""));
     }
 
+    function test_exportsEscapeControlCharacters() public view {
+        ICharmsTypes.Metadata memory metadata;
+        metadata.name = "a\nb\tc";
+        metadata.symbol = string(abi.encodePacked("A\rB", bytes1(0x01)));
+        metadata.decimals = 8;
+        metadata.image = "ipfs://x\n";
+        address token = address(0x1111111111111111111111111111111111111111);
+        string memory list = tool.tokenList(1, token, metadata, "t\n");
+        string memory watch = tool.watchAsset(token, metadata);
+        vm.parseJson(list);
+        vm.parseJson(watch);
+        assertTrue(_has(list, "\"a\\nb\\tc\""));
+        assertTrue(_has(list, "\"A\\rB\\u0001\""));
+        assertTrue(_has(list, "\"ipfs://x\\n\""));
+        assertTrue(_has(list, "\"t\\n\""));
+        assertTrue(_has(watch, "\"A\\rB\\u0001\""));
+        assertTrue(_has(watch, "\"ipfs://x\\n\""));
+    }
+
     function _emptyList() internal pure returns (string memory) {
         return "{\"name\":\"Charms\",\"timestamp\":\"2026-10-24T00:00:00.000Z\",\"version\":{\"major\":1,\"minor\":0,\"patch\":0},\"tokens\":[]}";
     }

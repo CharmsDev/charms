@@ -104,7 +104,7 @@ library CharmsMetadata {
         return true;
     }
 
-    function _quote(string memory value) private pure returns (string memory) {
+    function _quote(string memory value) internal pure returns (string memory) {
         bytes memory raw = bytes(value);
         uint256 n = 2;
         for (uint256 i; i < raw.length; ++i) {

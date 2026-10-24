@@ -15,7 +15,7 @@ import {MetadataHash} from "../src/libraries/MetadataHash.sol";
 /// @dev forge script script/SetMetadata.s.sol --sig "digest(uint256,address,uint64)" <chainId> <charms> <version>
 ///      prints the eBTC digest. Sign that digest with no EIP-191 prefix, then
 ///      forge script script/SetMetadata.s.sol --sig "run(address,uint64,bytes)" <charms> <version> <sig>
-///      --rpc-url <url> --private-key <broadcaster>
+///      --rpc-url <url> --broadcast --private-key <broadcaster>
 contract SetMetadata is Script, ICharmsTypes {
     using stdJson for string;
 
@@ -70,7 +70,7 @@ contract SetMetadata is Script, ICharmsTypes {
     ) public pure returns (string memory) {
         string memory head = string.concat(
             '{"name":"Charms","timestamp":',
-            _quote(timestamp),
+            CharmsMetadata._quote(timestamp),
             ',"version":{"major":1,"minor":0,"patch":0},"tokens":['
         );
         if (token == address(0)) return string.concat(head, "]}");
@@ -84,12 +84,12 @@ contract SetMetadata is Script, ICharmsTypes {
     {
         string memory image = bytes(metadata.image).length == 0
             ? ""
-            : string.concat(',"image":', _quote(metadata.image));
+            : string.concat(',"image":', CharmsMetadata._quote(metadata.image));
         return string.concat(
             '{"type":"ERC20","options":{"address":',
-            _quote(Strings.toHexString(uint160(token), 20)),
+            CharmsMetadata._quote(Strings.toHexString(uint160(token), 20)),
             ',"symbol":',
-            _quote(metadata.symbol),
+            CharmsMetadata._quote(metadata.symbol),
             ',"decimals":',
             Strings.toString(metadata.decimals),
             image,
@@ -104,16 +104,16 @@ contract SetMetadata is Script, ICharmsTypes {
     {
         string memory logo = bytes(metadata.image).length == 0
             ? ""
-            : string.concat(',"logoURI":', _quote(metadata.image));
+            : string.concat(',"logoURI":', CharmsMetadata._quote(metadata.image));
         return string.concat(
             '{"chainId":',
             Strings.toString(chainId),
             ',"address":',
-            _quote(Strings.toHexString(uint160(token), 20)),
+            CharmsMetadata._quote(Strings.toHexString(uint160(token), 20)),
             ',"name":',
-            _quote(metadata.name),
+            CharmsMetadata._quote(metadata.name),
             ',"symbol":',
-            _quote(metadata.symbol),
+            CharmsMetadata._quote(metadata.symbol),
             ',"decimals":',
             Strings.toString(metadata.decimals),
             logo,
@@ -131,22 +131,5 @@ contract SetMetadata is Script, ICharmsTypes {
             metadata.image,
             metadata.imageHash
         );
-    }
-
-    function _quote(string memory value) private pure returns (string memory) {
-        bytes memory raw = bytes(value);
-        uint256 extra;
-        for (uint256 i; i < raw.length; ++i) {
-            if (raw[i] == '"' || raw[i] == "\\") extra += 1;
-        }
-        bytes memory out = new bytes(raw.length + extra + 2);
-        out[0] = '"';
-        uint256 n = 1;
-        for (uint256 i; i < raw.length; ++i) {
-            if (raw[i] == '"' || raw[i] == "\\") out[n++] = "\\";
-            out[n++] = raw[i];
-        }
-        out[n] = '"';
-        return string(out);
     }
 }
