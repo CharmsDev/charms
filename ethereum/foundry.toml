@@ -14,6 +14,8 @@ cbor_metadata = false
 fs_permissions = [
     { access = "read", path = "./test/vectors" },
     { access = "read", path = "./out" },
+    { access = "read", path = "./metadata" },
+    { access = "read", path = "./test/fixtures" },
 ]
 
 [profile.default.fuzz]

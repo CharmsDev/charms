@@ -17,9 +17,19 @@ library CharmsMetadata {
         view
         returns (bytes32)
     {
-        return keccak256(
-            abi.encode(TYPEHASH, block.chainid, address(this), key, version, metadataHash)
-        );
+        return digestFor(block.chainid, address(this), key, version, metadataHash);
+    }
+
+    /// @dev The script that prints a digest is not the proxy, so it passes the chain and the
+    /// proxy in. `digest` is that call with `block.chainid` and `address(this)`.
+    function digestFor(
+        uint256 chainId,
+        address charms,
+        bytes32 key,
+        uint64 version,
+        bytes32 metadataHash
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(TYPEHASH, chainId, charms, key, version, metadataHash));
     }
 
     function check(ICharmsTypes.Metadata calldata metadata) internal pure {
@@ -94,7 +104,7 @@ library CharmsMetadata {
         return true;
     }
 
-    function _quote(string memory value) private pure returns (string memory) {
+    function _quote(string memory value) internal pure returns (string memory) {
         bytes memory raw = bytes(value);
         uint256 n = 2;
         for (uint256 i; i < raw.length; ++i) {
