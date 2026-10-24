@@ -2333,7 +2333,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sp1-prover",
  "sp1-sdk",
  "tokio",
@@ -2352,7 +2352,7 @@ dependencies = [
  "charms-data",
  "rand 0.10.3",
  "secp256k1 0.29.1",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "wasmi",
 ]
 
@@ -2387,7 +2387,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serde_yaml",
- "sha2 0.10.9",
+ "sha2 0.11.1",
  "sha3 0.10.9",
  "sp1-primitives",
  "sp1-verifier",
