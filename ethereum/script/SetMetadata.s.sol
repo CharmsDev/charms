@@ -11,18 +11,22 @@ import {appKey} from "../src/libraries/CharmTokenClone.sol";
 import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {MetadataHash} from "../src/libraries/MetadataHash.sol";
 
-/// @notice Publish tag-`t` metadata. The signature is an argument. This file holds no key.
-/// @dev forge script script/SetMetadata.s.sol --sig "digest(uint256,address,uint64)" <chainId> <charms> <version>
-///      prints the eBTC digest. Sign that digest with no EIP-191 prefix, then
-///      forge script script/SetMetadata.s.sol --sig "run(address,uint64,bytes)" <charms> <version> <sig>
+/// @notice Publish metadata from a JSON file. The signature is an argument. This file holds no app.
+/// @dev forge script script/SetMetadata.s.sol --sig
+///      "digest(string,uint256,address,uint64)" <path> <chainId> <charms> <version>
+///      prints the digest. Sign it with no EIP-191 prefix, then
+///      forge script script/SetMetadata.s.sol --sig
+///      "run(string,address,uint64,bytes)" <path> <charms> <version> <sig>
 ///      --rpc-url <url> --broadcast --private-key <broadcaster>
 contract SetMetadata is Script, ICharmsTypes {
     using stdJson for string;
 
-    string internal constant EBTC_FILE = "metadata/ebtc.json";
-
-    function ebtc() public view returns (App memory app, Metadata memory metadata) {
-        string memory json = vm.readFile(EBTC_FILE);
+    function load(string memory path)
+        public
+        view
+        returns (App memory app, Metadata memory metadata)
+    {
+        string memory json = vm.readFile(path);
         bytes memory tag = bytes(json.readString(".tag"));
         require(tag.length == 1, "tag is one character");
         app = App({
@@ -41,22 +45,24 @@ contract SetMetadata is Script, ICharmsTypes {
         });
     }
 
-    /// @notice Digest for the eBTC file at `version` on `charms`. No key.
-    function digest(uint256 chainId, address charms, uint64 version)
+    /// @notice Digest for the file at `path` and `version` on `charms`. No key.
+    function digest(string memory path, uint256 chainId, address charms, uint64 version)
         external
         view
         returns (bytes32)
     {
-        (App memory app, Metadata memory metadata) = ebtc();
+        (App memory app, Metadata memory metadata) = load(path);
         bytes32 hashed = _hash(metadata);
         bytes32 message = CharmsMetadata.digestFor(chainId, charms, appKey(app), version, hashed);
         console.logBytes32(message);
         return message;
     }
 
-    /// @notice Publish the eBTC file. `signature` is 65 bytes, `r ‖ s ‖ v`, over `digest`.
-    function run(address charms, uint64 version, bytes memory signature) external {
-        (App memory app, Metadata memory metadata) = ebtc();
+    /// @notice Publish the file. `signature` is 65 bytes, `r ‖ s ‖ v`, over `digest`.
+    function run(string memory path, address charms, uint64 version, bytes memory signature)
+        external
+    {
+        (App memory app, Metadata memory metadata) = load(path);
         vm.startBroadcast();
         Charms(payable(charms)).setMetadata(app, metadata, version, signature);
         vm.stopBroadcast();

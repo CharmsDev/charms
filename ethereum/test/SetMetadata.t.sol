@@ -1,61 +1,62 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+import {stdJson} from "forge-std/StdJson.sol";
+
 import {SetMetadata} from "../script/SetMetadata.s.sol";
 import {CharmToken} from "../src/CharmToken.sol";
 import {ICharmsTypes} from "../src/interfaces/ICharms.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
-contract EbtcMetadataTest is CharmsTestBase {
+contract SetMetadataScriptTest is CharmsTestBase {
+    using stdJson for string;
+
     uint256 internal signerKey;
     SetMetadata internal tool;
+    string internal constant FIXTURE = "test/fixtures/metadata.json";
 
     function setUp() public override {
-        (metadataSigner, signerKey) = makeAddrAndKey("ebtcMetadataSigner");
+        (metadataSigner, signerKey) = makeAddrAndKey("metadataSigner");
         super.setUp();
         tool = new SetMetadata();
     }
 
-    function test_ebtcFilePublishesSymbolDecimalsAndLogo() public {
-        (ICharmsTypes.App memory app, ICharmsTypes.Metadata memory metadata) = tool.ebtc();
+    function test_filePublishesSymbolDecimalsAndLogo() public {
+        string memory json = vm.readFile(FIXTURE);
+        (ICharmsTypes.App memory app, ICharmsTypes.Metadata memory metadata) = tool.load(FIXTURE);
         assertEq(app.tag, T);
-        assertEq(
-            app.identity, hex"0796f63ed48144b4ec69fb794fbc2290ae63acf945fb035d5474648b50ee43b6"
-        );
-        assertEq(app.vk, hex"fd0cac892e457454be0212fa7d9a0e1517d5bd6a33aa7c66a1f10f55e375c290");
-        assertEq(metadata.name, "eBTC");
-        assertEq(metadata.symbol, "eBTC");
-        assertEq(metadata.decimals, 8);
-        assertEq(
-            metadata.image, "ipfs://bafkreiamp6ocmalh4uu77jhcr2yh3i5ea4knet53qnmfuupmg45326u4wa"
-        );
-        assertEq(
-            metadata.imageHash,
-            hex"0c7f9c260167e529ffa4e28eb07da3a40714d24fbb83585a51ec373bbd7a9cb0"
-        );
+        assertEq(app.identity, json.readBytes32(".identity"));
+        assertEq(app.vk, json.readBytes32(".vk"));
+        assertEq(metadata.name, json.readString(".name"));
+        assertEq(metadata.symbol, json.readString(".symbol"));
+        assertEq(metadata.decimals, uint8(json.readUint(".decimals")));
+        assertEq(metadata.name, "Example");
+        assertEq(metadata.symbol, "EX");
+        assertEq(metadata.decimals, 6);
+        assertEq(metadata.image, json.readString(".image"));
 
-        bytes32 message = tool.digest(block.chainid, address(charms), 1);
+        bytes32 message = tool.digest(FIXTURE, block.chainid, address(charms), 1);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, message);
         charms.setMetadata(app, metadata, 1, abi.encodePacked(r, s, v));
         address token = charms.ensureToken(app);
 
-        assertEq(CharmToken(token).name(), "eBTC");
-        assertEq(CharmToken(token).symbol(), "eBTC");
-        assertEq(CharmToken(token).decimals(), 8);
-        assertTrue(_has(CharmToken(token).contractURI(), "eBTC"));
+        assertEq(CharmToken(token).name(), "Example");
+        assertEq(CharmToken(token).symbol(), "EX");
+        assertEq(CharmToken(token).decimals(), 6);
+        assertTrue(_has(CharmToken(token).contractURI(), "Example"));
 
         string memory list =
             tool.tokenList(block.chainid, token, metadata, "2026-10-24T00:00:00.000Z");
-        assertTrue(_has(list, "eBTC"));
-        assertTrue(_has(list, "\"decimals\":8"));
+        assertTrue(_has(list, "Example"));
+        assertTrue(_has(list, "\"decimals\":6"));
         assertTrue(_has(list, metadata.image));
         assertTrue(_has(list, _lower(token)));
         assertEq(tool.tokenList(1, address(0), metadata, "2026-10-24T00:00:00.000Z"), _emptyList());
 
         string memory watch = tool.watchAsset(token, metadata);
         assertTrue(_has(watch, "\"type\":\"ERC20\""));
-        assertTrue(_has(watch, "\"symbol\":\"eBTC\""));
-        assertTrue(_has(watch, "\"decimals\":8"));
+        assertTrue(_has(watch, "\"symbol\":\"EX\""));
+        assertTrue(_has(watch, "\"decimals\":6"));
         assertTrue(_has(watch, metadata.image));
 
         metadata.image = "";
@@ -65,8 +66,8 @@ contract EbtcMetadataTest is CharmsTestBase {
     }
 
     function test_digestForAnotherChainIsRejected() public {
-        (ICharmsTypes.App memory app, ICharmsTypes.Metadata memory metadata) = tool.ebtc();
-        bytes32 message = tool.digest(block.chainid + 1, address(charms), 1);
+        (ICharmsTypes.App memory app, ICharmsTypes.Metadata memory metadata) = tool.load(FIXTURE);
+        bytes32 message = tool.digest(FIXTURE, block.chainid + 1, address(charms), 1);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, message);
         vm.expectRevert();
         charms.setMetadata(app, metadata, 1, abi.encodePacked(r, s, v));
@@ -76,7 +77,7 @@ contract EbtcMetadataTest is CharmsTestBase {
         ICharmsTypes.Metadata memory metadata;
         metadata.name = "a\"b\\c";
         metadata.symbol = "AB";
-        metadata.decimals = 8;
+        metadata.decimals = 6;
         string memory list =
             tool.tokenList(1, address(0x1111111111111111111111111111111111111111), metadata, "t");
         assertTrue(_has(list, "\"a\\\"b\\\\c\""));
@@ -86,8 +87,8 @@ contract EbtcMetadataTest is CharmsTestBase {
         ICharmsTypes.Metadata memory metadata;
         metadata.name = "a\nb\tc";
         metadata.symbol = string(abi.encodePacked("A\rB", bytes1(0x01)));
-        metadata.decimals = 8;
-        metadata.image = "ipfs://x\n";
+        metadata.decimals = 6;
+        metadata.image = "https://example.com/x\n";
         address token = address(0x1111111111111111111111111111111111111111);
         string memory list = tool.tokenList(1, token, metadata, "t\n");
         string memory watch = tool.watchAsset(token, metadata);
@@ -95,10 +96,10 @@ contract EbtcMetadataTest is CharmsTestBase {
         vm.parseJson(watch);
         assertTrue(_has(list, "\"a\\nb\\tc\""));
         assertTrue(_has(list, "\"A\\rB\\u0001\""));
-        assertTrue(_has(list, "\"ipfs://x\\n\""));
+        assertTrue(_has(list, "\"https://example.com/x\\n\""));
         assertTrue(_has(list, "\"t\\n\""));
         assertTrue(_has(watch, "\"A\\rB\\u0001\""));
-        assertTrue(_has(watch, "\"ipfs://x\\n\""));
+        assertTrue(_has(watch, "\"https://example.com/x\\n\""));
     }
 
     function _emptyList() internal pure returns (string memory) {

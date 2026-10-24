@@ -1,0 +1,12 @@
+{
+  "tag": "t",
+  "identity": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "vk": "0x2222222222222222222222222222222222222222222222222222222222222222",
+  "name": "Example",
+  "symbol": "EX",
+  "decimals": 6,
+  "description": "An example charm.",
+  "url": "https://example.com/charm",
+  "image": "https://example.com/token.png",
+  "imageHash": "0x0101010101010101010101010101010101010101010101010101010101010101"
+}
