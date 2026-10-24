@@ -46,6 +46,7 @@ uplc = { version = "=1.1.23" }
 
 [dev-dependencies]
 ark-ec = { workspace = true }
+ed25519-dalek = "2"
 ark-relations = { workspace = true }
 ark-std = { workspace = true }
 charms-data = { path = "../charms-data", version = "16.0.0", features = ["test"] }
