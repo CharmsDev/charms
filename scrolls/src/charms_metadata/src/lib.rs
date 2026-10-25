@@ -247,7 +247,9 @@ mod tests {
         Transaction, TxIn, TxMerkleNode, TxOut, Txid, Witness,
     };
     use charms_data::{Data, NFT, TOKEN};
-    use charms_lib::bitcoin_tx::{BitcoinTx, parse_spell_and_proof_from_op_return};
+    use charms_lib::bitcoin_tx::{
+        BitcoinTx, FINALITY_TARGET_BITS, parse_spell_and_proof_from_op_return,
+    };
     use charms_lib::{NormalizedCharms, NormalizedSpell};
     use k256::ecdsa::SigningKey;
     use serde::Serialize;
@@ -558,6 +560,28 @@ mod tests {
         ))
         .unwrap_err();
         assert_eq!(err, "Input error: bitcoin block time");
+    }
+
+    #[test]
+    fn a_header_that_only_claims_work_is_not_signed() {
+        use_spell_parser();
+        let raw = bitcoin_tx(&spell_with(Some(&example())));
+        let (tx, proof) = mine_at(&raw, u32::MAX);
+        let fake = Header {
+            version: Version::ONE,
+            prev_blockhash: proof.header.block_hash(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: u32::MAX,
+            bits: CompactTarget::from_consensus(FINALITY_TARGET_BITS),
+            nonce: 0,
+        };
+        let encoded = encode(&Tx::Bitcoin(BitcoinTx::WithBlockProof {
+            tx,
+            proof,
+            headers: vec![fake],
+        }));
+        let err = block_on(sign_metadata(token_app(), encoded)).unwrap_err();
+        assert_eq!(err, "Input error: transaction is not final");
     }
 
     #[test]

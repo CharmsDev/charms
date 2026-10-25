@@ -387,6 +387,61 @@ mod tests {
     }
 
     #[test]
+    fn claimed_work_without_proof_of_work_is_not_final() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::block::Version;
+        use bitcoin::hashes::Hash;
+        use bitcoin::{
+            Amount, Block, BlockHash, OutPoint, ScriptBuf, Sequence, TxIn, TxMerkleNode, TxOut,
+            Witness,
+        };
+
+        let tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([1; 32]), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let bits = CompactTarget::from_consensus(0x207f_ffff);
+        let mut block = Block {
+            header: Header {
+                version: Version::ONE,
+                prev_blockhash: BlockHash::all_zeros(),
+                merkle_root: TxMerkleNode::all_zeros(),
+                time: u32::MAX,
+                bits,
+                nonce: 0,
+            },
+            txdata: vec![tx.clone()],
+        };
+        block.header.merkle_root = block.compute_merkle_root().expect("merkle root");
+        let target = block.header.target();
+        while block.header.validate_pow(target).is_err() {
+            block.header.nonce = block.header.nonce.wrapping_add(1);
+        }
+        let proof = MerkleBlock::from_block_with_predicate(&block, |_| true);
+        let fake = Header {
+            version: Version::ONE,
+            prev_blockhash: block.header.block_hash(),
+            merkle_root: TxMerkleNode::all_zeros(),
+            time: u32::MAX,
+            bits: CompactTarget::from_consensus(FINALITY_TARGET_BITS),
+            nonce: 0,
+        };
+        assert!(fake.validate_pow(fake.target()).is_err());
+        let result = verify_finality_proof(&tx, &proof, &[fake]);
+        assert!(result.is_err(), "claimed work must not count: {result:?}");
+    }
+
+    #[test]
     fn cumulative_work_test() {
         let finality_target =
             Target::from_compact(CompactTarget::from_consensus(FINALITY_TARGET_BITS));
