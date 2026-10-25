@@ -894,7 +894,9 @@ The charm data is the metadata. `ticker` maps to `symbol`. The other CHIP-0420 n
 
 `version` is the `time` field of the Bitcoin block header that contains the transaction, as a `uint64`. `setMetadata` takes that `version` because `ecrecover` returns an address and the caller rebuilds the digest. The caller passes the version `sign_metadata` returned. A different version fails the signature check.
 
-A Bitcoin header has no height. The merkle block in the finality proof lists transaction ids. `proven_final` checks the header's proof of work and the inclusion of the metadata transaction. That proof does not include the coinbase, and BIP34 writes the height in the coinbase. The canister reads `time` from the header it already checked.
+A Bitcoin header has no height. The merkle block in the finality proof lists transaction ids. `proven_final` checks that the metadata transaction is in the block, that every header meets the target in its own `nBits`, and that the sum of that work reaches the finality target. A header that misses its target rejects the proof. The proof does not include the coinbase, and BIP34 writes the height in the coinbase. The canister reads `time` from the block that contains the transaction.
+
+A private chain that actually mines the finality work can still put any timestamp in that block. That is the same work bound as a forged Bitcoin beam. The canister does not keep a Bitcoin checkpoint.
 
 Two transactions in one block share that timestamp. Bitcoin requires the timestamp to be greater than the median of the previous 11 blocks. A later block can carry an earlier timestamp. `version` must be strictly greater than the stored version. The stored version starts at 0. The canister rejects a block time of 0, so the first accepted version is at least 1. A gap is allowed. An equal version reverts even when the hash matches, so a mined call cannot be replayed. A call that was not mined can be submitted again at that same version. A later update whose block time is not greater than the stored version reverts, and the stored record stays.
 
@@ -1355,7 +1357,7 @@ Which spell versions an implementation accepts, and the `programVKey` for each, 
 | Store the Groth16 proof beside the spell and require only the guest to verify it | The proof is already a field of the record and is not part of the id. The host checks a non-empty proof in `extract_and_verify_spell`. The guest checks the same proof when the record is in `prev_txs`. The contract checks it on Ethereum. |
 | Read display fields from a reference NFT | The NFT may not be on Ethereum. `setMetadata` takes a signature instead, and the contract does not track an NFT UTXO. `charms_metadata` checks that NFT in the transaction it is given. |
 | Bind the metadata signature to the chain id and the Charms proxy | The same charm is published on every chain. A digest that names one proxy fails `ecrecover` on the next chain. The signed version is what stops an old signature from replacing a newer name. |
-| Use the block height as the metadata version | A Bitcoin header has no height. The merkle proof `proven_final` checks does not include the coinbase, where BIP34 writes the height. The header `time` is the clock that proof already checks. |
+| Use the block height as the metadata version | A Bitcoin header has no height. The merkle proof `proven_final` checks does not include the coinbase, where BIP34 writes the height. The header `time` is the clock that proof checks, and only after every header meets its own target. |
 | Let the caller choose the metadata version | The caller could submit an old `metadataHash` under a higher version. The canister reads the version from the block it verified. |
 | Store the image bytes in the proxy | A remote image does not fit in contract state. The contract stores a URI and `imageHash`. |
 | ERC-1046 `tokenURI()` | That method describes one unit. A fungible charm has one document, returned by `contractURI()`. |

@@ -206,6 +206,7 @@ fn verify_finality_proof(
         (tx_block_header, tx_block_header.work()),
         |(prev_header, prev_work), header| {
             ensure!(header.prev_blockhash == prev_header.block_hash());
+            header.validate_pow(header.target())?;
             Ok((header, prev_work + header.work()))
         },
     )?;
