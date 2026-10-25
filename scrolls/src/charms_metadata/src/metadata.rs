@@ -91,6 +91,25 @@ pub(crate) fn metadata_hash(metadata: &Metadata) -> [u8; 32] {
     keccak(&abi_encode(metadata))
 }
 
+pub(crate) fn app_key(app: &App) -> [u8; 32] {
+    let mut preimage = [0u8; 96];
+    preimage[28..32].copy_from_slice(&(app.tag as u32).to_be_bytes());
+    preimage[32..64].copy_from_slice(&app.identity.0);
+    preimage[64..96].copy_from_slice(&app.vk.0);
+    keccak(&preimage)
+}
+
+pub(crate) fn metadata_digest(app: &App, version: u64, metadata_hash: &[u8; 32]) -> [u8; 32] {
+    let mut preimage = [0u8; 128];
+    preimage[..32].copy_from_slice(&keccak(
+        b"CharmsMetadata(bytes32 appKey,uint64 version,bytes32 metadataHash)",
+    ));
+    preimage[32..64].copy_from_slice(&app_key(app));
+    preimage[88..96].copy_from_slice(&version.to_be_bytes());
+    preimage[96..].copy_from_slice(metadata_hash);
+    keccak(&preimage)
+}
+
 fn check(metadata: &Metadata) -> Result<(), String> {
     if metadata.name.len() > 64 {
         return Err("Input error: name".into());

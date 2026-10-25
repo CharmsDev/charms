@@ -9,7 +9,6 @@ import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {MetadataHash} from "../src/libraries/MetadataHash.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
-/// @notice The vector is also read by `charms_metadata`. Both sides sign `digest`.
 contract MetadataDigestTest is CharmsTestBase {
     using stdJson for string;
 
@@ -44,6 +43,7 @@ contract MetadataDigestTest is CharmsTestBase {
 
         bytes32 digest = json.readBytes32(".digest");
         assertEq(CharmsMetadata.digest(appKey(app), version, metadataHash), digest);
+        assertEq(_recover(digest, json.readBytes(".signature")), json.readAddress(".address"));
 
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(metadataKey, digest);
         charms.setMetadata(app, metadata, version, abi.encodePacked(r, s, v));
@@ -53,6 +53,19 @@ contract MetadataDigestTest is CharmsTestBase {
         Charms other = _deploy(16, PROGRAM_VKEY, verifier);
         other.setMetadata(app, metadata, version, abi.encodePacked(r, s, v));
         assertEq(other.metadataVersion(app), version);
+    }
+
+    function _recover(bytes32 digest, bytes memory signature) internal pure returns (address) {
+        require(signature.length == 65, "signature");
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly ("memory-safe") {
+            r := mload(add(signature, 32))
+            s := mload(add(signature, 64))
+            v := shr(248, mload(add(signature, 96)))
+        }
+        return ecrecover(digest, v, r, s);
     }
 
     function _metadata(string memory json) internal pure returns (Metadata memory) {

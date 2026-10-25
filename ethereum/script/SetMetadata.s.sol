@@ -11,13 +11,6 @@ import {appKey} from "../src/libraries/CharmTokenClone.sol";
 import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {MetadataHash} from "../src/libraries/MetadataHash.sol";
 
-/// @notice Publish metadata from a JSON file. The signature is an argument. This file holds no app.
-/// @dev forge script script/SetMetadata.s.sol --sig
-///      "digest(string,uint256,address,uint64)" <path> <chainId> <charms> <version>
-///      prints the digest. Sign it with no EIP-191 prefix, then
-///      forge script script/SetMetadata.s.sol --sig
-///      "run(string,address,uint64,bytes)" <path> <charms> <version> <sig>
-///      --rpc-url <url> --broadcast --private-key <broadcaster>
 contract SetMetadata is Script, ICharmsTypes {
     using stdJson for string;
 
@@ -45,15 +38,10 @@ contract SetMetadata is Script, ICharmsTypes {
         });
     }
 
-    /// @notice Digest for the file at `path` and `version` on `charms`. No key.
-    function digest(string memory path, uint256 chainId, address charms, uint64 version)
-        external
-        view
-        returns (bytes32)
-    {
+    function digest(string memory path, uint64 version) external view returns (bytes32) {
         (App memory app, Metadata memory metadata) = load(path);
         bytes32 hashed = _hash(metadata);
-        bytes32 message = CharmsMetadata.digestFor(chainId, charms, appKey(app), version, hashed);
+        bytes32 message = CharmsMetadata.digest(appKey(app), version, hashed);
         console.logBytes32(message);
         return message;
     }

@@ -13,6 +13,7 @@ import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmsErrors, ICharmsLedger} from "../src/interfaces/ICharms.sol";
+import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
 contract ReportsZeroSigner {
@@ -386,7 +387,7 @@ contract UpgradeTest is CharmsTestBase {
 
     function _signMetadata(uint256 key, App memory app, Metadata memory metadata, uint64 version)
         internal
-        view
+        pure
         returns (bytes memory)
     {
         bytes32 metadataHash = keccak256(
@@ -400,18 +401,7 @@ contract UpgradeTest is CharmsTestBase {
                 metadata.imageHash
             )
         );
-        bytes32 digest = keccak256(
-            abi.encode(
-                keccak256(
-                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
-                ),
-                block.chainid,
-                address(charms),
-                _key(app),
-                version,
-                metadataHash
-            )
-        );
+        bytes32 digest = CharmsMetadata.digest(_key(app), version, metadataHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         return abi.encodePacked(r, s, v);
     }

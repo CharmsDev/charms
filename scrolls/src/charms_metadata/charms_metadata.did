@@ -2,7 +2,7 @@ type AppId = record { vk : blob; tag : text; identity : blob };
 type Charm = record { app : AppId; data : blob };
 type Result = variant { Ok : Signer; Err : text };
 type Result_1 = variant { Ok : SignedCharm; Err : text };
-type SignedCharm = record { signature : blob; charm : Charm };
+type SignedCharm = record { signature : blob; charm : Charm; version : nat64 };
 type Signer = record { public_key : blob; address : blob };
 service : {
   public_key : () -> (Result);

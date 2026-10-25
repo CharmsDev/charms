@@ -35,7 +35,7 @@ contract SetMetadataScriptTest is CharmsTestBase {
         assertEq(metadata.decimals, 6);
         assertEq(metadata.image, json.readString(".image"));
 
-        bytes32 message = tool.digest(FIXTURE, block.chainid, address(charms), 1);
+        bytes32 message = tool.digest(FIXTURE, 1);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, message);
         charms.setMetadata(app, metadata, 1, abi.encodePacked(r, s, v));
         address token = charms.ensureToken(app);
@@ -65,12 +65,13 @@ contract SetMetadataScriptTest is CharmsTestBase {
         assertFalse(_has(tool.tokenList(1, token, metadata, "2026-10-24T00:00:00.000Z"), "logoURI"));
     }
 
-    function test_digestForAnotherChainIsRejected() public {
+    function test_digestPublishesAfterTheChainIdChanges() public {
         (ICharmsTypes.App memory app, ICharmsTypes.Metadata memory metadata) = tool.load(FIXTURE);
-        bytes32 message = tool.digest(FIXTURE, block.chainid + 1, address(charms), 1);
+        bytes32 message = tool.digest(FIXTURE, 1);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, message);
-        vm.expectRevert();
+        vm.chainId(block.chainid + 1);
         charms.setMetadata(app, metadata, 1, abi.encodePacked(r, s, v));
+        assertEq(charms.metadataVersion(app), 1);
     }
 
     function test_tokenListEscapesQuotes() public view {

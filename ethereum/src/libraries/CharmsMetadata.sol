@@ -5,31 +5,15 @@ import {ICharmsErrors, ICharmsTypes} from "../interfaces/ICharms.sol";
 
 /// @notice CHIP-0020 metadata digest, field rules, and ERC-7572 `contractURI`.
 library CharmsMetadata {
-    bytes32 internal constant TYPEHASH = keccak256(
-        "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
-    );
+    bytes32 internal constant TYPEHASH =
+        keccak256("CharmsMetadata(bytes32 appKey,uint64 version,bytes32 metadataHash)");
 
-    /// @dev `address(this)` is the proxy. The signed message is this digest, with no EIP-191 prefix.
-    /// `metadataHash` is `MetadataHash.digest`. This wrapper binds that hash to the chain, the
-    /// proxy, the app key, and the version. `charms_metadata` does not sign this digest.
     function digest(bytes32 key, uint64 version, bytes32 metadataHash)
         internal
-        view
+        pure
         returns (bytes32)
     {
-        return digestFor(block.chainid, address(this), key, version, metadataHash);
-    }
-
-    /// @dev The script that prints a digest is not the proxy, so it passes the chain and the
-    /// proxy in. `digest` is that call with `block.chainid` and `address(this)`.
-    function digestFor(
-        uint256 chainId,
-        address charms,
-        bytes32 key,
-        uint64 version,
-        bytes32 metadataHash
-    ) internal pure returns (bytes32) {
-        return keccak256(abi.encode(TYPEHASH, chainId, charms, key, version, metadataHash));
+        return keccak256(abi.encode(TYPEHASH, key, version, metadataHash));
     }
 
     function check(ICharmsTypes.Metadata calldata metadata) internal pure {

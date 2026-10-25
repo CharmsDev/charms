@@ -233,8 +233,9 @@ interface ICharms is ICharmsErrors {
     event MetadataSet(bytes32 indexed appKey, uint64 version, bytes32 metadataHash);
 
     /// @notice Publish CHIP-0420 display fields for a non-vault tag-`t` app.
-    /// @dev Anyone may call. `version` must exceed the stored version.
-    /// The first success freezes `decimals`.
+    /// @dev Anyone may call. `version` is the Bitcoin block time `sign_metadata`
+    /// returned. It must exceed the stored version. The first success freezes
+    /// `decimals`.
     function setMetadata(
         ICharmsTypes.App calldata app,
         ICharmsTypes.Metadata calldata metadata,

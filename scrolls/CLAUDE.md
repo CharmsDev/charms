@@ -51,7 +51,7 @@ The Cargo workspace contains four crates (`scrolls-api` is excluded — it has i
 - **`src/scrolls_bitcoin/`** — ICP canister for Bitcoin transaction signing (P2WPKH, Secp256k1 ECDSA)
 - **`src/scrolls_cardano/`** — ICP canister for Cardano transaction signing (Ed25519 Schnorr)
 - **`src/scrolls_ethereum/`** — ICP canister that certifies Ethereum beam finality (Ed25519 Schnorr). Upgradeable, one controller. `helios-consensus-core` 0.11.1 is vendored at `vendor/helios-consensus-core`.
-- **`src/charms_metadata/`** — ICP canister. `sign_metadata` signs `metadataHash` for the CHIP-0420 reference NFT of a tag-`t` app. Threshold ECDSA, key `key_1`, derivation path `["scrolls", "metadata"]`.
+- **`src/charms_metadata/`** — ICP canister. `sign_metadata` signs the CHIP-0020 digest of the app key, the Bitcoin block time, and `metadataHash` for the reference NFT of a tag-`t` app. Threshold ECDSA, key `key_1`, derivation path `["scrolls", "metadata"]`.
 - **`src/scrolls-api/`** — Cloudflare Workers HTTP API wrapping the Bitcoin canister (axum + ic-agent)
 
 ### Key Concepts

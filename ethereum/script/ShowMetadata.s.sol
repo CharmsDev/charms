@@ -9,6 +9,8 @@ import {CharmsApply} from "../src/CharmsApply.sol";
 import {CharmsInitializer} from "../src/CharmsInitializer.sol";
 import {CharmsProxy} from "../src/CharmsProxy.sol";
 import {ICharmsLedger, ICharmsTypes} from "../src/interfaces/ICharms.sol";
+import {appKey} from "../src/libraries/CharmTokenClone.sol";
+import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {MockVerifier} from "../test/utils/Mocks.sol";
 
 /// @notice Anvil walk of tag-`t` `setMetadata`. Spell version stays 16.
@@ -110,18 +112,7 @@ contract ShowMetadata is Script, ICharmsTypes {
                 metadata.imageHash
             )
         );
-        bytes32 digest = keccak256(
-            abi.encode(
-                keccak256(
-                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
-                ),
-                block.chainid,
-                address(charms),
-                keccak256(abi.encode(coin.tag, coin.identity, coin.vk)),
-                version,
-                metadataHash
-            )
-        );
+        bytes32 digest = CharmsMetadata.digest(appKey(coin), version, metadataHash);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
         return abi.encodePacked(r, s, v);
     }

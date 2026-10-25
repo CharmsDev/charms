@@ -5,11 +5,12 @@ use std::cell::RefCell;
 
 use candid::{CandidType, Deserialize};
 use charms_data::{App, B32};
+use charms_lib::bitcoin_tx::BitcoinTx;
 use charms_lib::tx::{EnchantedTx, Tx};
 use getrandom::register_custom_getrandom;
 
 use ecdsa::{ethereum_address, signature_65};
-use metadata::{created_reference, metadata_from, metadata_hash, reference_nft};
+use metadata::{created_reference, metadata_digest, metadata_from, metadata_hash, reference_nft};
 
 #[cfg(not(test))]
 use ic_cdk_management_canister::{
@@ -35,6 +36,7 @@ struct Charm {
 #[derive(CandidType, Clone, Debug)]
 struct SignedCharm {
     charm: Charm,
+    version: u64,
     signature: Vec<u8>,
 }
 
@@ -56,17 +58,31 @@ async fn sign_metadata(app: AppId, tx: Vec<u8>) -> Result<SignedCharm, String> {
     if !tx_is_final(&tx) {
         return Err("Input error: transaction is not final".into());
     }
+    let version = bitcoin_block_time(&tx)?;
     let spell = open_spell(&tx)?;
     let data = created_reference(&spell, &nft)?;
-    let digest = metadata_hash(&metadata_from(data)?);
+    let hash = metadata_hash(&metadata_from(data)?);
+    let digest = metadata_digest(&token, version, &hash);
     let signature = sign_digest(&digest).await?;
     Ok(SignedCharm {
         charm: Charm {
             app: app_id(&nft),
             data: data.bytes(),
         },
+        version,
         signature: signature.to_vec(),
     })
+}
+
+fn bitcoin_block_time(tx: &Tx) -> Result<u64, String> {
+    let Tx::Bitcoin(BitcoinTx::WithBlockProof { proof, .. }) = tx else {
+        return Err("Input error: metadata version is the bitcoin block time".into());
+    };
+    let time = proof.header.time;
+    if time == 0 {
+        return Err("Input error: bitcoin block time".into());
+    }
+    Ok(u64::from(time))
 }
 
 #[ic_cdk::update]
@@ -347,13 +363,17 @@ mod tests {
     }
 
     fn mine(tx: &Transaction) -> (Transaction, MerkleBlock) {
+        mine_at(tx, 1_700_000_000)
+    }
+
+    fn mine_at(tx: &Transaction, time: u32) -> (Transaction, MerkleBlock) {
         let bits = CompactTarget::from_consensus(0x207f_ffff);
         let mut block = Block {
             header: Header {
                 version: Version::ONE,
                 prev_blockhash: BlockHash::all_zeros(),
                 merkle_root: TxMerkleNode::all_zeros(),
-                time: 1_700_000_000,
+                time,
                 bits,
                 nonce: 0,
             },
@@ -377,6 +397,16 @@ mod tests {
 
     fn final_tx(spell: &NormalizedSpell) -> Vec<u8> {
         final_tx_with_proof(spell, &[])
+    }
+
+    fn final_tx_at(spell: &NormalizedSpell, time: u32) -> Vec<u8> {
+        let raw = bitcoin_tx(spell);
+        let (tx, proof) = mine_at(&raw, time);
+        encode(&Tx::Bitcoin(BitcoinTx::WithBlockProof {
+            tx,
+            proof,
+            headers: vec![],
+        }))
     }
 
     fn final_tx_with_proof(spell: &NormalizedSpell, spell_proof: &[u8]) -> Vec<u8> {
@@ -476,21 +506,20 @@ mod tests {
         assert_eq!(signed.signature.len(), 65);
         assert!(signed.signature[64] == 27 || signed.signature[64] == 28);
 
+        assert_eq!(signed.version, 1_700_000_000);
         let signer = block_on(public_key()).unwrap();
-        let digest = metadata_hash(
+        let hash = metadata_hash(
             &metadata_from(&charms_data::util::read(signed.charm.data.as_slice()).unwrap())
                 .unwrap(),
         );
+        let digest = metadata_digest(&parse_app(&token_app()).unwrap(), signed.version, &hash);
         let recovered = signature_65(&signer.public_key, &digest, &signed.signature[..64]).unwrap();
         assert_eq!(recovered.as_slice(), signed.signature.as_slice());
-        assert_eq!(
-            hex::encode(digest),
-            "2050d68fefa2c30fd38f00048b06f1aaf8c4b02299adb9d5a258943835049530"
-        );
+        assert_eq!(hex::encode(hash), hex::encode(shared_bytes("metadataHash")));
+        assert_eq!(hex::encode(digest), hex::encode(shared_bytes("digest")));
         assert_eq!(
             hex::encode(&signed.signature),
-            "1f66ab9438e8121d7bb37dd6c29539ecdd39f3d18cdad958511badef90a19fe0\
-             0180d9c3429a499d5bbfd95bae57517f684d0ee6a200f8a7c11b47dddd2720d31b"
+            hex::encode(shared_hex("signature"))
         );
         assert_eq!(
             hex::encode(signer.address),
@@ -510,12 +539,45 @@ mod tests {
         .expect("signed");
         let digest = shared_bytes("digest");
         let signer = block_on(public_key()).unwrap();
+        assert_eq!(signed.version, 1_700_000_000);
         let recovered = signature_65(&signer.public_key, &digest, &signed.signature[..64])
             .expect("shared digest");
         assert_eq!(recovered.as_slice(), signed.signature.as_slice());
+        assert_eq!(
+            hex::encode(signer.address),
+            hex::encode(shared_hex("address"))
+        );
+    }
+
+    #[test]
+    fn a_zero_block_time_is_rejected() {
+        use_spell_parser();
+        let err = block_on(sign_metadata(
+            token_app(),
+            final_tx_at(&spell_with(Some(&example())), 0),
+        ))
+        .unwrap_err();
+        assert_eq!(err, "Input error: bitcoin block time");
+    }
+
+    #[test]
+    fn a_transaction_without_a_bitcoin_block_has_no_metadata_version() {
+        let tx = Tx::Bitcoin(BitcoinTx::Simple(bitcoin_tx(&spell_with(Some(&example())))));
+        let err = bitcoin_block_time(&tx).unwrap_err();
+        assert_eq!(
+            err,
+            "Input error: metadata version is the bitcoin block time"
+        );
     }
 
     fn shared_bytes(key: &str) -> [u8; 32] {
+        let bytes = shared_hex(key);
+        bytes
+            .try_into()
+            .unwrap_or_else(|bytes: Vec<u8>| panic!("short {key}: {}", bytes.len()))
+    }
+
+    fn shared_hex(key: &str) -> Vec<u8> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../ethereum/test/vectors/metadata-digest.json"
@@ -529,11 +591,11 @@ mod tests {
         let start = rest
             .find("0x")
             .unwrap_or_else(|| panic!("missing hex {key}"));
-        let hex = &rest[start + 2..start + 2 + 64];
-        hex::decode(hex)
-            .unwrap()
-            .try_into()
-            .unwrap_or_else(|_| panic!("short {key}"))
+        let rest = &rest[start + 2..];
+        let end = rest
+            .find('"')
+            .unwrap_or_else(|| panic!("unterminated {key}"));
+        hex::decode(&rest[..end]).unwrap_or_else(|_| panic!("bad hex {key}"))
     }
 
     #[test]

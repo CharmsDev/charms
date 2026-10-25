@@ -21,7 +21,7 @@ The contract is the consensus for Ethereum Charms transactions, in the same role
 | UTXO id | Content-addressed. Not the Ethereum transaction hash and not a counter. `TxId.0` is the reverse of that id, matching `UtxoId::to_bytes` and Cardano's `tx_id`. |
 | Simple transfer | The contract checks it. The proof is empty. A proof on a spell the contract can check itself is rejected. |
 | Anything else | Groth16 is verified on Ethereum, against the same public values Bitcoin and Cardano already use: CBOR of `([u8; 32] spell_vk, NormalizedSpell)` with `ins` and `coins` filled. |
-| Token metadata | `setMetadata` on the proxy, checked against `metadataSigner()`. That signer is an immutable in the `Charms` implementation. Fields follow CHIP-0420. `decimals` freezes on the first accepted call. `name`, `symbol`, and `image` may change later. The clone's `contractURI()` reads the proxy. `charms_metadata` signs `metadataHash` for the CHIP-0420 reference NFT. `setMetadata` still binds that hash to the chain, the contract, the app key, and the version. |
+| Token metadata | `setMetadata` on the proxy, checked against `metadataSigner()`. That signer is an immutable in the `Charms` implementation. Fields follow CHIP-0420. `decimals` freezes on the first accepted call. `name`, `symbol`, and `image` may change later. The clone's `contractURI()` reads the proxy. `charms_metadata` signs a digest of the app key, the Bitcoin block time, and `metadataHash`. The same signature is valid on every chain. |
 | ERC-20 facade | One `CharmToken` per non-vault tag-`t` app. A vault app has no `CharmToken`, and neither does any other tag. For a non-vault app, `tokenAddress` is the CREATE2 address and does not deploy, and `ensureToken` deploys the minimal-proxy clone. That clone `delegatecall`s `CharmTokenProxy`. For a vault app, both return the underlying ERC-20 recorded for that vault, or `address(0)` for ETH, and `ensureToken` does not deploy. `balanceOf`, `transfer`, and `transferFrom` apply only to a non-vault clone. `balanceOf` is the sum of that token across all of the address's unspent, non-beamed UTXOs. `transfer` spends whole UTXOs through the same apply path as `transact`. A vault charm moves through `transact`. The underlying token's `transfer` is unchanged. `_apply` does not deploy a clone. |
 | ETH and foreign ERC-20s | Contract policy, not an app wasm. Vault `vk` is a constant with no wasm and no BIP-340 preimage, so other chains can only transfer and beam it. |
 | Finality into Ethereum | Inside the v16 proof, via the existing `proven_final` (Bitcoin work, Cardano Scrolls signature). Solidity does not grow a light client. |
@@ -292,8 +292,9 @@ interface ICharms {
     event MetadataSet(bytes32 indexed appKey, uint64 version, bytes32 metadataHash);
 
     /// @notice Publish CHIP-0420 display fields for a non-vault tag-`t` app.
-    /// @dev Anyone may call. `version` must exceed the stored version.
-    /// The first success freezes `decimals`.
+    /// @dev Anyone may call. `version` is the Bitcoin block time `sign_metadata`
+    /// returned. It must exceed the stored version. The first success freezes
+    /// `decimals`.
     function setMetadata(
         ICharmsTypes.App calldata app,
         ICharmsTypes.Metadata calldata metadata,
@@ -887,16 +888,19 @@ Anyone may submit `setMetadata`. The contract accepts it only when `ecrecover` o
 
 `metadataSigner` is one secp256k1 address, an immutable set by the `Charms` constructor, and never the zero address. It is not a proxy slot. Replacing it is a new `Charms` implementation and `upgradeToAndCall`. The key is the ICP threshold ECDSA key from `sign_with_ecdsa`, key name `key_1`, derivation path `["scrolls", "metadata"]`. That key is separate from `ETHEREUM_FINALITY_VKEY`. The Ethereum address of the key is fixed when `charms_metadata` is created. The contract checks the signature, the version, and the decimals rule.
 
-`charms_metadata` holds that key. `sign_metadata` takes a tag-`t` app and one transaction, and it rejects every other tag. For `{tag: t, identity, vk}` the metadata charm is `{tag: n, identity, vk}`: the same identity and the same vk. That pair is the CHIP-0420 reference NFT. The transaction must be final under its proof, and exactly one output must carry that charm. The canister checks only the transaction passed into the call. It does not read earlier transactions, and it does not follow a `ref` field. Charms does not read or store an NFT UTXO.
+`charms_metadata` holds that key. `sign_metadata` takes a tag-`t` app and one Bitcoin transaction. It rejects every other tag and every other chain. For `{tag: t, identity, vk}` the metadata charm is `{tag: n, identity, vk}`, with the same identity and the same vk. That pair is the CHIP-0420 reference NFT. The transaction must be final under its proof, and exactly one output must carry that charm. The canister checks only the transaction passed into the call. It does not read earlier transactions, and it does not follow a `ref` field. Charms does not read or store an NFT UTXO.
 
-The charm data is the metadata. `ticker` maps to `symbol`. The other CHIP-0420 names are the names in the table above. The canister signs `metadataHash`, the value of `_metadataHash` below. There is no EIP-191 prefix. `sign_with_ecdsa` returns `r || s`. The method returns the metadata charm and 65 bytes, `r || s || v`, with `v` equal to 27 or 28. `ecrecover` of `metadataHash` and that signature is the Ethereum address of the canister public key. The caller attaches the cycle cost of `sign_with_ecdsa`.
+The charm data is the metadata. `ticker` maps to `symbol`. The other CHIP-0420 names are the names in the table above. `metadataHash` is `_metadataHash` below. The canister signs `_metadataDigest`. There is no EIP-191 prefix. `sign_with_ecdsa` returns `r || s`. The method returns the metadata charm, the version, and 65 bytes, `r || s || v`, with `v` equal to 27 or 28. `ecrecover` of `_metadataDigest` and that signature is the Ethereum address of the canister public key. The caller attaches the cycle cost of `sign_with_ecdsa`.
 
-`setMetadata` still recovers `_metadataDigest`. That digest binds `metadataHash` to the chain id, the Charms address, the app key, and the version. The canister does not sign `_metadataDigest`.
+`version` is the `time` field of the Bitcoin block header that contains the transaction, as a `uint64`. `setMetadata` takes that `version` because `ecrecover` returns an address and the caller rebuilds the digest. The caller passes the version `sign_metadata` returned. A different version fails the signature check.
+
+A Bitcoin header has no height. The merkle block in the finality proof lists transaction ids. `proven_final` checks the header's proof of work and the inclusion of the metadata transaction. That proof does not include the coinbase, and BIP34 writes the height in the coinbase. The canister reads `time` from the header it already checked.
+
+Two transactions in one block share that timestamp. Bitcoin requires the timestamp to be greater than the median of the previous 11 blocks. A later block can carry an earlier timestamp. `version` must be strictly greater than the stored version. The stored version starts at 0. The canister rejects a block time of 0, so the first accepted version is at least 1. A gap is allowed. An equal version reverts even when the hash matches, so a mined call cannot be replayed. A call that was not mined can be submitted again at that same version. A later update whose block time is not greater than the stored version reverts, and the stored record stays.
 
 ```solidity
 bytes32 constant METADATA_TYPEHASH = keccak256(
-    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,"
-    "uint64 version,bytes32 metadataHash)"
+    "CharmsMetadata(bytes32 appKey,uint64 version,bytes32 metadataHash)"
 );
 
 function _metadataHash(Metadata calldata m)
@@ -919,11 +923,9 @@ function _metadataDigest(
     bytes32 appKey,
     uint64 version,
     bytes32 metadataHash
-) internal view returns (bytes32) {
+) internal pure returns (bytes32) {
     return keccak256(abi.encode(
         METADATA_TYPEHASH,
-        block.chainid,
-        address(this),
         appKey,
         version,
         metadataHash
@@ -932,8 +934,6 @@ function _metadataDigest(
 ```
 
 `appKey` is `keccak256(abi.encode(uint32 tag, bytes32 identity, bytes32 vk))`, the same key `tokenAddress` uses.
-
-`version` must be strictly greater than the stored version. The stored version starts at 0, so the first accepted version is at least 1. A gap is allowed. An equal version reverts even when the hash matches, so a mined call cannot be replayed. A call that was not mined can be submitted again at that same version.
 
 The first accepted call stores `decimals` and freezes it. A later call with a different `decimals` reverts and leaves the stored record as it was. `name`, `symbol`, `description`, `url`, `image`, and `imageHash` may change on a higher version.
 
@@ -1354,6 +1354,9 @@ Which spell versions an implementation accepts, and the `programVKey` for each, 
 | Wei on `NativeOutput.amount` | `u64` overflows near 18 ETH, native coins are not beamable, and ETH would have two representations. The vault charm is the one representation. |
 | Store the Groth16 proof beside the spell and require only the guest to verify it | The proof is already a field of the record and is not part of the id. The host checks a non-empty proof in `extract_and_verify_spell`. The guest checks the same proof when the record is in `prev_txs`. The contract checks it on Ethereum. |
 | Read display fields from a reference NFT | The NFT may not be on Ethereum. `setMetadata` takes a signature instead, and the contract does not track an NFT UTXO. `charms_metadata` checks that NFT in the transaction it is given. |
+| Bind the metadata signature to the chain id and the Charms proxy | The same charm is published on every chain. A digest that names one proxy fails `ecrecover` on the next chain. The signed version is what stops an old signature from replacing a newer name. |
+| Use the block height as the metadata version | A Bitcoin header has no height. The merkle proof `proven_final` checks does not include the coinbase, where BIP34 writes the height. The header `time` is the clock that proof already checks. |
+| Let the caller choose the metadata version | The caller could submit an old `metadataHash` under a higher version. The canister reads the version from the block it verified. |
 | Store the image bytes in the proxy | A remote image does not fit in contract state. The contract stores a URI and `imageHash`. |
 | ERC-1046 `tokenURI()` | That method describes one unit. A fungible charm has one document, returned by `contractURI()`. |
 | Put `contractURI` in the clone bytecode | A new implementation address in that bytecode changes `tokenAddress`. `contractURI` is a method on the `CharmToken` implementation named by the `Charms` constructor. `upgradeToAndCall` installs a later `Charms`. The clone keeps `CharmTokenProxy`. |
@@ -1381,7 +1384,7 @@ A stolen metadata key can rename a charm and can freeze a wrong `decimals` on th
 
 The admin address, the `scrolls_ethereum` controller, the beacon API URL, and the execution API URL are chosen at deploy. The design does not name them.
 
-The Ethereum address of the metadata key is fixed when `charms_metadata` is deployed. The design names the canister, the derivation path, and the signed `metadataHash`. It does not name that address.
+The Ethereum address of the metadata key is fixed when `charms_metadata` is deployed. The design names the canister, the derivation path, and the signed digest. It does not name that address.
 
 The bootstrap checkpoint, the `beamSourceAt` slot index, and the expected `Charms` implementation address are fixed when that implementation is deployed. `ws_period_epochs` starts from the Electra spec period for the stake at that time.
 

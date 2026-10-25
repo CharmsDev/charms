@@ -6,6 +6,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {CharmToken} from "../src/CharmToken.sol";
 import {Charms} from "../src/Charms.sol";
 import {ICharmToken, ICharms, ICharmsErrors} from "../src/interfaces/ICharms.sol";
+import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
 contract MetadataTest is CharmsTestBase {
@@ -214,35 +215,29 @@ contract MetadataTest is CharmsTestBase {
         assertEq(json, _json(charms.contractURI(coin)));
     }
 
-    function test_signatureDoesNotReplayOnAnotherChain() public {
+    function test_signatureIsValidOnAnotherChain() public {
         App memory coin = _app(T, "coin");
         Metadata memory metadata = _example();
 
         vm.chainId(1);
         bytes memory sig = _sign(coin, metadata, 1);
         vm.chainId(11_155_111);
-        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
-        charms.setMetadata(coin, metadata, 1, sig);
-        assertEq(charms.metadataVersion(coin), 0);
-
-        vm.chainId(1);
         charms.setMetadata(coin, metadata, 1, sig);
         assertEq(charms.metadataVersion(coin), 1);
     }
 
-    function test_signatureDoesNotReplayOnAnotherProxy() public {
+    function test_signatureIsValidOnAnotherProxy() public {
         App memory coin = _app(T, "coin");
         Metadata memory metadata = _example();
         bytes memory sig = _sign(coin, metadata, 1);
         Charms other = _deploy(16, PROGRAM_VKEY, verifier);
 
-        vm.expectRevert(ICharmsErrors.InvalidMetadataSignature.selector);
         other.setMetadata(coin, metadata, 1, sig);
-        assertEq(other.metadataVersion(coin), 0);
+        assertEq(other.metadataVersion(coin), 1);
+        assertEq(charms.metadataVersion(coin), 0);
 
         charms.setMetadata(coin, metadata, 1, sig);
         assertEq(charms.metadataVersion(coin), 1);
-        assertEq(other.metadataVersion(coin), 0);
     }
 
     function test_signatureDoesNotReplayOnAnotherApp() public {
@@ -274,18 +269,7 @@ contract MetadataTest is CharmsTestBase {
     function test_eip191PrefixIsRejected() public {
         App memory coin = _app(T, "coin");
         Metadata memory metadata = _example();
-        bytes32 digest = keccak256(
-            abi.encode(
-                keccak256(
-                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
-                ),
-                block.chainid,
-                address(charms),
-                _key(coin),
-                uint64(1),
-                _hash(metadata)
-            )
-        );
+        bytes32 digest = CharmsMetadata.digest(_key(coin), 1, _hash(metadata));
         bytes32 prefixed = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(metadataKey, prefixed);
 
@@ -536,18 +520,7 @@ contract MetadataTest is CharmsTestBase {
         view
         returns (bytes memory)
     {
-        bytes32 digest = keccak256(
-            abi.encode(
-                keccak256(
-                    "CharmsMetadata(uint256 chainId,address charms,bytes32 appKey,uint64 version,bytes32 metadataHash)"
-                ),
-                block.chainid,
-                address(charms),
-                _key(app),
-                version,
-                _hash(metadata)
-            )
-        );
+        bytes32 digest = CharmsMetadata.digest(_key(app), version, _hash(metadata));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(metadataKey, digest);
         return abi.encodePacked(r, s, v);
     }
