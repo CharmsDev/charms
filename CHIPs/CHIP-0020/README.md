@@ -1299,7 +1299,7 @@ App contracts are unchanged. `app_contract` sees `coin_outs[i].amount == 0` and 
 | Record | Spell version | Guest | Keys |
 |---|---|---|---|
 | First deployment | Spell version 16. A native spell needs no proof. | An empty UTXO does not run the guest. The CLI writes that record at version 16. | The empty-UTXO path does not use `SPELL_VK`. The contract accepts version 16. |
-| Proved Ethereum spell | Version 16. | The guest verifies a spell in `Tx::Ethereum`, including its proof. | `SPELL_VK` is `0x00c70dad82bf2e8dfce7bfdeba9016aaadcd20cea79f3950af9c1dae74e3fb95`. Version 15 keeps `0x00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52`. Older Bitcoin and Cardano proofs verify under their pinned keys. |
+| Proved Ethereum spell | Version 16. | The guest verifies a spell in `Tx::Ethereum`, including its proof. | `SPELL_VK` is `0x001a111b6bb33afb441abfce5fef266f789855ab6eba5522c6ea41265e66de95`. Version 15 keeps `0x00425796f4c4fa050043eee14d801b4f935244e44aad6a28de0cd5cb3de0ae52`. Older Bitcoin and Cardano proofs verify under their pinned keys. |
 | Beaming | The check is in the client. `ETHEREUM_FINALITY` is unset, so `proven_final` stays false. | Another rebuild once that constant names the key and the proxy. | That rebuild publishes the next `programVKey` into the contract. |
 
 An empty UTXO committed at version 15 stays that version. The bytes are not rewritten, and a version-16 spell can spend it.
