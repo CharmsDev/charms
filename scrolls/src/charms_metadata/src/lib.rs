@@ -499,6 +499,44 @@ mod tests {
     }
 
     #[test]
+    fn the_signature_recovers_on_the_shared_digest() {
+        use_spell_parser();
+        PUBLIC_KEY.with(|cell| *cell.borrow_mut() = None);
+        let meta = example();
+        let signed = block_on(sign_metadata(
+            token_app(),
+            final_tx(&spell_with(Some(&meta))),
+        ))
+        .expect("signed");
+        let digest = shared_bytes("digest");
+        let signer = block_on(public_key()).unwrap();
+        let recovered = signature_65(&signer.public_key, &digest, &signed.signature[..64])
+            .expect("shared digest");
+        assert_eq!(recovered.as_slice(), signed.signature.as_slice());
+    }
+
+    fn shared_bytes(key: &str) -> [u8; 32] {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ethereum/test/vectors/metadata-digest.json"
+        );
+        let file = std::fs::read_to_string(path).unwrap();
+        let needle = format!("\"{key}\"");
+        let at = file
+            .find(&needle)
+            .unwrap_or_else(|| panic!("missing {key}"));
+        let rest = &file[at + needle.len()..];
+        let start = rest
+            .find("0x")
+            .unwrap_or_else(|| panic!("missing hex {key}"));
+        let hex = &rest[start + 2..start + 2 + 64];
+        hex::decode(hex)
+            .unwrap()
+            .try_into()
+            .unwrap_or_else(|_| panic!("short {key}"))
+    }
+
+    #[test]
     fn a_non_final_tx_is_rejected() {
         let err = block_on(sign_metadata(
             token_app(),
