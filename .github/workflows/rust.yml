@@ -1,0 +1,66 @@
+name: Rust tests
+
+on:
+  pull_request:
+  push:
+    branches: ['main']
+
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1.9.0
+        with:
+          cache-workspaces: .
+          # The action default exports RUSTFLAGS=-D warnings. Leave it unset.
+          rustflags: ''
+
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test the workspace
+        run: cargo test --locked --workspace
+
+  scrolls:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1.9.0
+        with:
+          cache-workspaces: scrolls
+          # The action default exports RUSTFLAGS=-D warnings. Leave it unset.
+          rustflags: ''
+
+      - name: Test charms_metadata and scrolls_ethereum
+        run: cargo test --locked --manifest-path scrolls/Cargo.toml -p charms_metadata -p scrolls_ethereum
+
+  spell-checker-vk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1.9.0
+        with:
+          cache-workspaces: charms-proof-wrapper/vk
+          # The action default exports RUSTFLAGS=-D warnings. Leave it unset.
+          rustflags: ''
+
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
+        with:
+          version: '34.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test spell-checker-vk
+        run: cargo test --locked --manifest-path charms-proof-wrapper/vk/Cargo.toml

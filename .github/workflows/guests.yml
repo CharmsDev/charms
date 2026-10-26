@@ -1,0 +1,42 @@
+name: Guest artifacts
+
+on:
+  pull_request:
+    paths:
+      - 'charms-spell-checker/**'
+      - 'charms-client/**'
+      - 'charms-data/**'
+      - 'charms-app-runner/**'
+      - 'charms-lib/src/lib.rs'
+      - 'charms-proof-wrapper/src/**'
+      - 'charms-proof-wrapper/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.dockerignore'
+      - '.github/workflows/guests.yml'
+  push:
+    branches: ['main']
+
+concurrency:
+  group: guests-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install file
+        run: |
+          if ! command -v file >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes file
+          fi
+
+      - name: Rebuild the guests and fail on byte drift
+        run: charms-spell-checker/check-guests.sh
