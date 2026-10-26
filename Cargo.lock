@@ -2313,7 +2313,7 @@ dependencies = [
  "clap_complete",
  "cml-chain",
  "cml-core",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "hex",
  "hex-literal 1.1.0",
  "ic-agent",
