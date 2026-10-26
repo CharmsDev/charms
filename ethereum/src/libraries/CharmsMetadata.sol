@@ -9,9 +9,6 @@ library CharmsMetadata {
         keccak256("CharmsMetadata(bytes32 appKey,uint64 version,bytes32 metadataHash)");
     uint256 private constant IMAGE_SVG_MAX = 256;
     uint256 private constant IMAGE_REMOTE_MAX = 128;
-    string private constant BASE58_ALPHABET =
-        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    string private constant BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
     function digest(bytes32 key, uint64 version, bytes32 metadataHash)
         internal
@@ -86,64 +83,126 @@ library CharmsMetadata {
         revert ICharmsErrors.InvalidMetadata();
     }
 
-    function _ipfsContentCommitment(bytes memory image) private pure returns (bool) {
-        if (image.length < 7 || !_hasPrefix(image, "ipfs://")) return false;
-        bytes memory rest = new bytes(image.length - 7);
-        for (uint256 i; i < rest.length; ++i) {
-            rest[i] = image[i + 7];
-        }
-        return _cidV0(rest) || _cidV1(rest);
-    }
+    function _ipfsContentCommitment(bytes memory image) private pure returns (bool ok) {
+        assembly ("memory-safe") {
+            ok := committed(image)
 
-    function _cidV0(bytes memory rest) private pure returns (bool) {
-        if (rest.length != 46) return false;
-        bytes memory acc = new bytes(34);
-        for (uint256 k; k < rest.length; ++k) {
-            (bool ok, uint256 carry) = _alphabetIndex(rest[k], bytes(BASE58_ALPHABET));
-            if (!ok) return false;
-            for (uint256 i = 34; i > 0; --i) {
-                uint256 j = i - 1;
-                carry = carry + 58 * uint256(uint8(acc[j]));
-                acc[j] = bytes1(uint8(carry % 256));
-                carry = carry / 256;
+            function loadByte(data, i) -> b {
+                b := byte(and(i, 31), mload(add(data, and(i, not(31)))))
             }
-            if (carry != 0) return false;
-        }
-        return acc[0] == 0x12 && acc[1] == 0x20;
-    }
 
-    function _cidV1(bytes memory rest) private pure returns (bool) {
-        if (rest.length != 59 || rest[0] != 0x62) return false;
-        uint256 acc;
-        uint256 bits;
-        uint256 n;
-        bytes memory out = new bytes(36);
-        for (uint256 i = 1; i < rest.length; ++i) {
-            (bool ok, uint256 v) = _alphabetIndex(rest[i], bytes(BASE32_ALPHABET));
-            if (!ok) return false;
-            acc = (acc << 5) + v;
-            bits = bits + 5;
-            if (bits >= 8) {
-                bits = bits - 8;
-                out[n] = bytes1(uint8((acc >> bits) & 0xff));
-                n = n + 1;
-                acc = acc & ((1 << bits) - 1);
+            // Base58btc, with 0, I, O, and l removed. Indices match the 58-character alphabet.
+            function b58(c) -> found, v {
+                if and(lt(0x30, c), lt(c, 0x3a)) {
+                    found := 1
+                    v := sub(c, 0x31)
+                    leave
+                }
+                if and(lt(0x40, c), lt(c, 0x49)) {
+                    found := 1
+                    v := add(sub(c, 0x41), 9)
+                    leave
+                }
+                if and(lt(0x49, c), lt(c, 0x4f)) {
+                    found := 1
+                    v := add(sub(c, 0x4a), 17)
+                    leave
+                }
+                if and(lt(0x4f, c), lt(c, 0x5b)) {
+                    found := 1
+                    v := add(sub(c, 0x50), 22)
+                    leave
+                }
+                if and(lt(0x60, c), lt(c, 0x6c)) {
+                    found := 1
+                    v := add(sub(c, 0x61), 33)
+                    leave
+                }
+                if and(lt(0x6c, c), lt(c, 0x7b)) {
+                    found := 1
+                    v := add(sub(c, 0x6d), 44)
+                }
+            }
+
+            // Lowercase RFC 4648 base32, no padding characters.
+            function b32(c) -> found, v {
+                if and(lt(0x60, c), lt(c, 0x7b)) {
+                    found := 1
+                    v := sub(c, 0x61)
+                    leave
+                }
+                if and(lt(0x31, c), lt(c, 0x38)) {
+                    found := 1
+                    v := add(sub(c, 0x32), 26)
+                }
+            }
+
+            function accByte(buf, j) -> b {
+                b := byte(and(j, 31), mload(add(buf, and(j, not(31)))))
+            }
+
+            function cidV0(data, base) -> good {
+                let acc := mload(0x40)
+                mstore(0x40, add(acc, 96))
+                mstore(acc, 0)
+                mstore(add(acc, 32), 0)
+                mstore(add(acc, 64), 0)
+                for { let k := 0 } lt(k, 46) { k := add(k, 1) } {
+                    let found, carry := b58(loadByte(data, add(base, k)))
+                    if iszero(found) { leave }
+                    for { let i := 34 } gt(i, 0) { i := sub(i, 1) } {
+                        let j := sub(i, 1)
+                        carry := add(carry, mul(58, accByte(acc, j)))
+                        mstore8(add(acc, j), and(carry, 0xff))
+                        carry := shr(8, carry)
+                    }
+                    if carry { leave }
+                }
+                let word := mload(acc)
+                if and(eq(byte(0, word), 0x12), eq(byte(1, word), 0x20)) { good := 1 }
+            }
+
+            function cidV1(data, base) -> good {
+                if iszero(eq(loadByte(data, base), 0x62)) { leave }
+                let out := mload(0x40)
+                mstore(0x40, add(out, 96))
+                mstore(out, 0)
+                mstore(add(out, 32), 0)
+                mstore(add(out, 64), 0)
+                let acc := 0
+                let bits := 0
+                let n := 0
+                for { let i := 1 } lt(i, 59) { i := add(i, 1) } {
+                    let found, v := b32(loadByte(data, add(base, i)))
+                    if iszero(found) { leave }
+                    acc := add(shl(5, acc), v)
+                    bits := add(bits, 5)
+                    if iszero(lt(bits, 8)) {
+                        bits := sub(bits, 8)
+                        mstore8(add(out, n), and(shr(bits, acc), 0xff))
+                        n := add(n, 1)
+                        acc := and(acc, sub(shl(1, bits), 1))
+                    }
+                }
+                if iszero(and(eq(bits, 2), and(iszero(and(acc, 3)), eq(n, 36)))) { leave }
+                let word := mload(out)
+                let codec := byte(1, word)
+                if and(
+                    and(eq(byte(0, word), 0x01), and(gt(codec, 0), lt(codec, 0x80))),
+                    and(eq(byte(2, word), 0x12), eq(byte(3, word), 0x20))
+                ) { good := 1 }
+            }
+
+            function committed(imagePtr) -> good {
+                let len := mload(imagePtr)
+                if lt(len, 7) { leave }
+                let data := add(imagePtr, 32)
+                if iszero(eq(shr(200, mload(data)), 0x697066733a2f2f)) { leave }
+                switch sub(len, 7)
+                case 46 { good := cidV0(data, 7) }
+                case 59 { good := cidV1(data, 7) }
             }
         }
-        if (bits != 2 || (acc & 3) != 0 || n != 36) return false;
-        uint8 codec = uint8(out[1]);
-        return out[0] == 0x01 && codec >= 0x01 && codec <= 0x7f && out[2] == 0x12 && out[3] == 0x20;
-    }
-
-    function _alphabetIndex(bytes1 c, bytes memory alphabet)
-        private
-        pure
-        returns (bool ok, uint256 index)
-    {
-        for (uint256 i; i < alphabet.length; ++i) {
-            if (alphabet[i] == c) return (true, i);
-        }
-        return (false, 0);
     }
 
     function _hasPrefix(bytes memory value, bytes memory prefix) private pure returns (bool) {
