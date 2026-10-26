@@ -252,7 +252,7 @@ mod tests {
     };
     use charms_lib::{NormalizedCharms, NormalizedSpell};
     use k256::ecdsa::SigningKey;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use std::cell::Cell;
     use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
@@ -314,7 +314,7 @@ mod tests {
         }
     }
 
-    fn spell_with(meta: Option<&Meta>) -> NormalizedSpell {
+    fn spell_with<T: Serialize>(meta: Option<&T>) -> NormalizedSpell {
         let nft = App {
             tag: NFT,
             identity: identity(),
@@ -644,7 +644,11 @@ mod tests {
     #[test]
     fn a_tx_that_does_not_create_the_reference_nft_is_rejected() {
         use_spell_parser();
-        let err = block_on(sign_metadata(token_app(), final_tx(&spell_with(None)))).unwrap_err();
+        let err = block_on(sign_metadata(
+            token_app(),
+            final_tx(&spell_with(None::<&Meta>)),
+        ))
+        .unwrap_err();
         assert_eq!(
             err,
             "Input error: transaction does not create the reference NFT"
@@ -685,5 +689,125 @@ mod tests {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/charms_metadata.did");
         let on_disk = std::fs::read_to_string(path).unwrap_or_default();
         assert_eq!(on_disk, __export_service());
+    }
+
+    #[derive(Deserialize)]
+    struct ImageAdmission {
+        nonzero_hash: String,
+        count: usize,
+        cases: Vec<ImageCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct ImageCase {
+        image: String,
+        hash: String,
+        admit: bool,
+        note: String,
+    }
+
+    #[derive(Serialize)]
+    struct MetaText<'a> {
+        name: &'a str,
+        description: &'a str,
+        ticker: &'a str,
+        url: &'a str,
+        image: &'a str,
+        image_hash: &'a str,
+        decimals: u8,
+    }
+
+    #[derive(Serialize)]
+    struct MetaAbsent<'a> {
+        name: &'a str,
+        description: &'a str,
+        ticker: &'a str,
+        url: &'a str,
+        image: &'a str,
+        decimals: u8,
+    }
+
+    #[derive(Serialize)]
+    struct MetaNull<'a> {
+        name: &'a str,
+        description: &'a str,
+        ticker: &'a str,
+        url: &'a str,
+        image: &'a str,
+        image_hash: Option<&'a str>,
+        decimals: u8,
+    }
+
+    fn text_meta<'a>(base: &'a Meta, image: &'a str, image_hash: &'a str) -> MetaText<'a> {
+        MetaText {
+            name: base.name,
+            description: base.description,
+            ticker: base.ticker,
+            url: base.url,
+            image,
+            image_hash,
+            decimals: base.decimals,
+        }
+    }
+
+    fn absent_meta<'a>(base: &'a Meta, image: &'a str) -> MetaAbsent<'a> {
+        MetaAbsent {
+            name: base.name,
+            description: base.description,
+            ticker: base.ticker,
+            url: base.url,
+            image,
+            decimals: base.decimals,
+        }
+    }
+
+    fn null_meta<'a>(base: &'a Meta, image: &'a str) -> MetaNull<'a> {
+        MetaNull {
+            name: base.name,
+            description: base.description,
+            ticker: base.ticker,
+            url: base.url,
+            image,
+            image_hash: None,
+            decimals: base.decimals,
+        }
+    }
+
+    fn sign_record(meta: &impl Serialize) -> Result<SignedCharm, String> {
+        block_on(sign_metadata(
+            token_app(),
+            final_tx(&spell_with(Some(meta))),
+        ))
+    }
+
+    #[test]
+    fn image_admission_vectors_match_sign_metadata() {
+        use_spell_parser();
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../ethereum/test/vectors/image-admission.json"
+        );
+        let file = std::fs::read_to_string(path).unwrap();
+        let admission: ImageAdmission = serde_json::from_str(&file).unwrap();
+        assert_eq!(admission.cases.len(), admission.count);
+        let base = example();
+        let zeros = "0".repeat(64);
+        for case in &admission.cases {
+            let outcome = match case.hash.as_str() {
+                "nonzero" => sign_record(&text_meta(&base, &case.image, &admission.nonzero_hash)),
+                "zero" => sign_record(&text_meta(&base, &case.image, &zeros)),
+                "empty" => sign_record(&text_meta(&base, &case.image, "")),
+                "0x" => sign_record(&text_meta(&base, &case.image, "0x")),
+                "absent" => sign_record(&absent_meta(&base, &case.image)),
+                "null" => sign_record(&null_meta(&base, &case.image)),
+                other => panic!("unknown hash {other} ({})", case.note),
+            };
+            match (case.admit, outcome) {
+                (true, Ok(signed)) => assert_eq!(signed.signature.len(), 65, "{}", case.note),
+                (false, Err(err)) => assert_eq!(err, "Input error: image", "{}", case.note),
+                (true, Err(err)) => panic!("admit {}: {err}", case.note),
+                (false, Ok(_)) => panic!("reject {}", case.note),
+            }
+        }
     }
 }

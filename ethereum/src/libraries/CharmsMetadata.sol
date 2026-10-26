@@ -7,6 +7,11 @@ import {ICharmsErrors, ICharmsTypes} from "../interfaces/ICharms.sol";
 library CharmsMetadata {
     bytes32 internal constant TYPEHASH =
         keccak256("CharmsMetadata(bytes32 appKey,uint64 version,bytes32 metadataHash)");
+    uint256 private constant IMAGE_SVG_MAX = 256;
+    uint256 private constant IMAGE_REMOTE_MAX = 128;
+    string private constant BASE58_ALPHABET =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    string private constant BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
 
     function digest(bytes32 key, uint64 version, bytes32 metadataHash)
         internal
@@ -63,21 +68,82 @@ library CharmsMetadata {
             return;
         }
         if (_hasPrefix(image, "data:image/svg+xml")) {
-            if (image.length > 256 || imageHash != bytes32(0)) {
+            if (image.length > IMAGE_SVG_MAX || imageHash != bytes32(0)) {
                 revert ICharmsErrors.InvalidMetadata();
             }
             return;
+        }
+        if (imageHash == bytes32(0)) {
+            if (image.length <= IMAGE_REMOTE_MAX && _ipfsContentCommitment(image)) return;
+            revert ICharmsErrors.InvalidMetadata();
         }
         if (
-            _hasPrefix(image, "https://") || _hasPrefix(image, "ipfs://")
-                || _hasPrefix(image, "ar://")
-        ) {
-            if (image.length > 128 || imageHash == bytes32(0)) {
-                revert ICharmsErrors.InvalidMetadata();
-            }
-            return;
-        }
+            image.length <= IMAGE_REMOTE_MAX
+                && (_hasPrefix(image, "https://")
+                    || _hasPrefix(image, "ipfs://")
+                    || _hasPrefix(image, "ar://"))
+        ) return;
         revert ICharmsErrors.InvalidMetadata();
+    }
+
+    function _ipfsContentCommitment(bytes memory image) private pure returns (bool) {
+        if (image.length < 7 || !_hasPrefix(image, "ipfs://")) return false;
+        bytes memory rest = new bytes(image.length - 7);
+        for (uint256 i; i < rest.length; ++i) {
+            rest[i] = image[i + 7];
+        }
+        return _cidV0(rest) || _cidV1(rest);
+    }
+
+    function _cidV0(bytes memory rest) private pure returns (bool) {
+        if (rest.length != 46) return false;
+        bytes memory acc = new bytes(34);
+        for (uint256 k; k < rest.length; ++k) {
+            (bool ok, uint256 carry) = _alphabetIndex(rest[k], bytes(BASE58_ALPHABET));
+            if (!ok) return false;
+            for (uint256 i = 34; i > 0; --i) {
+                uint256 j = i - 1;
+                carry = carry + 58 * uint256(uint8(acc[j]));
+                acc[j] = bytes1(uint8(carry % 256));
+                carry = carry / 256;
+            }
+            if (carry != 0) return false;
+        }
+        return acc[0] == 0x12 && acc[1] == 0x20;
+    }
+
+    function _cidV1(bytes memory rest) private pure returns (bool) {
+        if (rest.length != 59 || rest[0] != 0x62) return false;
+        uint256 acc;
+        uint256 bits;
+        uint256 n;
+        bytes memory out = new bytes(36);
+        for (uint256 i = 1; i < rest.length; ++i) {
+            (bool ok, uint256 v) = _alphabetIndex(rest[i], bytes(BASE32_ALPHABET));
+            if (!ok) return false;
+            acc = (acc << 5) + v;
+            bits = bits + 5;
+            if (bits >= 8) {
+                bits = bits - 8;
+                out[n] = bytes1(uint8((acc >> bits) & 0xff));
+                n = n + 1;
+                acc = acc & ((1 << bits) - 1);
+            }
+        }
+        if (bits != 2 || (acc & 3) != 0 || n != 36) return false;
+        uint8 codec = uint8(out[1]);
+        return out[0] == 0x01 && codec >= 0x01 && codec <= 0x7f && out[2] == 0x12 && out[3] == 0x20;
+    }
+
+    function _alphabetIndex(bytes1 c, bytes memory alphabet)
+        private
+        pure
+        returns (bool ok, uint256 index)
+    {
+        for (uint256 i; i < alphabet.length; ++i) {
+            if (alphabet[i] == c) return (true, i);
+        }
+        return (false, 0);
     }
 
     function _hasPrefix(bytes memory value, bytes memory prefix) private pure returns (bool) {

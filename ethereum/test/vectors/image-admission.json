@@ -1,0 +1,300 @@
+{
+  "nonzero_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "count": 49,
+  "cases": [
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "zero",
+      "admit": true,
+      "note": "raw cid of sha256 of empty"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "absent",
+      "admit": true,
+      "note": "missing image_hash is zero"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "null",
+      "admit": true,
+      "note": "cbor null is zero"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "empty",
+      "admit": true,
+      "note": "empty string hash is zero"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "0x",
+      "admit": true,
+      "note": "0x hash is zero"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "same cid with a supplied hash"
+    },
+    {
+      "image": "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG",
+      "hash": "zero",
+      "admit": true,
+      "note": "independent cidv0"
+    },
+    {
+      "image": "ipfs://QmTtkuYKPc8qknPKYe6jxRRbwd8y6pehsNd3siLChfH7rS",
+      "hash": "zero",
+      "admit": true,
+      "note": "cidv0 of sha256 of charms-image"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm",
+      "hash": "zero",
+      "admit": true,
+      "note": "cidv1 dag-pb"
+    },
+    {
+      "image": "ipfs://bafkreicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm",
+      "hash": "zero",
+      "admit": true,
+      "note": "cidv1 raw synthetic"
+    },
+    {
+      "image": "ipfs://bafkreiaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash": "zero",
+      "admit": true,
+      "note": "digest of 32 zero bytes"
+    },
+    {
+      "image": "ipfs://bafyexample",
+      "hash": "zero",
+      "admit": false,
+      "note": "not a cid"
+    },
+    {
+      "image": "ipfs://bafyexample",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "hashed loose ipfs"
+    },
+    {
+      "image": "ipfs://bafy/\"img",
+      "hash": "zero",
+      "admit": false,
+      "note": "quote is not a cid"
+    },
+    {
+      "image": "ipfs://bafy/\"img",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "hashed loose ipfs keeps the quote"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "zero",
+      "admit": false,
+      "note": "https requires a hash"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "https with a hash"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "absent",
+      "admit": false,
+      "note": "https missing hash"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "null",
+      "admit": false,
+      "note": "https null hash"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "empty",
+      "admit": false,
+      "note": "https empty hash"
+    },
+    {
+      "image": "https://example.com/icon.png",
+      "hash": "0x",
+      "admit": false,
+      "note": "https 0x hash"
+    },
+    {
+      "image": "ar://renamed",
+      "hash": "zero",
+      "admit": false,
+      "note": "arweave scheme still needs a hash"
+    },
+    {
+      "image": "ar://renamed",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "hashed ar uri"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm/a",
+      "hash": "zero",
+      "admit": false,
+      "note": "path"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm/a",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "path on the loose arm"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm?x=1",
+      "hash": "zero",
+      "admit": false,
+      "note": "query"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm#f",
+      "hash": "zero",
+      "admit": false,
+      "note": "fragment"
+    },
+    {
+      "image": "ipfs:// bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm",
+      "hash": "zero",
+      "admit": false,
+      "note": "space after scheme"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku\n",
+      "hash": "zero",
+      "admit": false,
+      "note": "trailing newline"
+    },
+    {
+      "image": "ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku\n",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "trailing newline on the loose arm"
+    },
+    {
+      "image": "ipfs://",
+      "hash": "zero",
+      "admit": false,
+      "note": "empty remainder"
+    },
+    {
+      "image": "ipfs://",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "empty remainder with a hash"
+    },
+    {
+      "image": "IPFS://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "zero",
+      "admit": false,
+      "note": "scheme case"
+    },
+    {
+      "image": "IPFS://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "nonzero",
+      "admit": false,
+      "note": "scheme case on the loose arm"
+    },
+    {
+      "image": "ipfs://Qm22222222222222222222222222222222222222222222",
+      "hash": "zero",
+      "admit": false,
+      "note": "46 base58 chars, prefix is not 0x1220"
+    },
+    {
+      "image": "ipfs://Qm22222222222222222222222222222222222222222222",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "fake cidv0 on the loose arm"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfb",
+      "hash": "zero",
+      "admit": false,
+      "note": "nonzero base32 leftover"
+    },
+    {
+      "image": "ipfs://bafybeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfb",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "nonzero base32 leftover on the loose arm"
+    },
+    {
+      "image": "ipfs://baeabeicsqqdrih4ran7qqsgpcgwchilrrzmcltlvuph3rny6pfzeop7pfm",
+      "hash": "zero",
+      "admit": false,
+      "note": "codec byte 0x00"
+    },
+    {
+      "image": "ipfs://zdj7Waz1GyPF5cSdVhFHP4MpoGAZqLQpN4qjh2aYWisX6r22N",
+      "hash": "zero",
+      "admit": false,
+      "note": "multibase z"
+    },
+    {
+      "image": "ipfs://zdj7Waz1GyPF5cSdVhFHP4MpoGAZqLQpN4qjh2aYWisX6r22N",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "multibase z on the loose arm"
+    },
+    {
+      "image": "https://ipfs.io/ipfs/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "zero",
+      "admit": false,
+      "note": "https gateway"
+    },
+    {
+      "image": "https://ipfs.io/ipfs/bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+      "hash": "nonzero",
+      "admit": true,
+      "note": "https gateway with a hash"
+    },
+    {
+      "image": "",
+      "hash": "zero",
+      "admit": true,
+      "note": "empty image"
+    },
+    {
+      "image": "",
+      "hash": "nonzero",
+      "admit": false,
+      "note": "empty image with a hash"
+    },
+    {
+      "image": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+      "hash": "zero",
+      "admit": true,
+      "note": "svg"
+    },
+    {
+      "image": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>",
+      "hash": "nonzero",
+      "admit": false,
+      "note": "svg requires a zero hash"
+    },
+    {
+      "image": "data:image/png;base64,aaaa",
+      "hash": "zero",
+      "admit": false,
+      "note": "png data uri"
+    },
+    {
+      "image": "http://example.com/a.png",
+      "hash": "nonzero",
+      "admit": false,
+      "note": "http"
+    }
+  ]
+}

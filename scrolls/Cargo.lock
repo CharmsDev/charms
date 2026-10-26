@@ -1581,6 +1581,7 @@ dependencies = [
  "ic-cdk-management-canister 0.1.1",
  "k256",
  "serde",
+ "serde_json",
  "sha3 0.10.9",
 ]
 

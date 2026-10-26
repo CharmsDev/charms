@@ -139,6 +139,11 @@ fn check_url(url: &str) -> Result<(), String> {
     Err("Input error: url".into())
 }
 
+const IMAGE_SVG_MAX: usize = 256;
+const IMAGE_REMOTE_MAX: usize = 128;
+const BASE58: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+const BASE32: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
+
 fn check_image(image: &str, hash: &[u8; 32]) -> Result<(), String> {
     let zero = hash == &[0u8; 32];
     if image.is_empty() {
@@ -149,17 +154,86 @@ fn check_image(image: &str, hash: &[u8; 32]) -> Result<(), String> {
         };
     }
     if image.starts_with("data:image/svg+xml") {
-        if image.len() > 256 || !zero {
-            return Err("Input error: image".into());
-        }
-        return Ok(());
+        return if image.len() <= IMAGE_SVG_MAX && zero {
+            Ok(())
+        } else {
+            Err("Input error: image".into())
+        };
     }
-    let remote =
+    if zero {
+        return if image.len() <= IMAGE_REMOTE_MAX && ipfs_content_commitment(image.as_bytes()) {
+            Ok(())
+        } else {
+            Err("Input error: image".into())
+        };
+    }
+    let loose =
         image.starts_with("https://") || image.starts_with("ipfs://") || image.starts_with("ar://");
-    if remote && image.len() <= 128 && !zero {
-        return Ok(());
+    if image.len() <= IMAGE_REMOTE_MAX && loose {
+        Ok(())
+    } else {
+        Err("Input error: image".into())
     }
-    Err("Input error: image".into())
+}
+
+fn ipfs_content_commitment(image: &[u8]) -> bool {
+    let Some(rest) = image.strip_prefix(b"ipfs://") else {
+        return false;
+    };
+    cid_v0(rest) || cid_v1(rest)
+}
+
+fn cid_v0(rest: &[u8]) -> bool {
+    if rest.len() != 46 {
+        return false;
+    }
+    let mut acc = [0u8; 34];
+    for &c in rest {
+        let Some(mut carry) = alphabet_index(BASE58, c) else {
+            return false;
+        };
+        for i in (0..acc.len()).rev() {
+            carry += 58 * u32::from(acc[i]);
+            acc[i] = (carry % 256) as u8;
+            carry /= 256;
+        }
+        if carry != 0 {
+            return false;
+        }
+    }
+    acc[0] == 0x12 && acc[1] == 0x20
+}
+
+fn cid_v1(rest: &[u8]) -> bool {
+    if rest.len() != 59 || rest[0] != b'b' {
+        return false;
+    }
+    let mut acc = 0u32;
+    let mut bits = 0u32;
+    let mut n = 0usize;
+    let mut out = [0u8; 36];
+    for &c in &rest[1..] {
+        let Some(v) = alphabet_index(BASE32, c) else {
+            return false;
+        };
+        acc = (acc << 5) + v;
+        bits += 5;
+        if bits >= 8 {
+            bits -= 8;
+            out[n] = ((acc >> bits) & 0xff) as u8;
+            n += 1;
+            acc &= (1u32 << bits) - 1;
+        }
+    }
+    if bits != 2 || (acc & 3) != 0 || n != 36 {
+        return false;
+    }
+    out[0] == 0x01 && (0x01..=0x7f).contains(&out[1]) && out[2] == 0x12 && out[3] == 0x20
+}
+
+fn alphabet_index(alphabet: &[u8], byte: u8) -> Option<u32> {
+    let index = alphabet.iter().position(|&candidate| candidate == byte)?;
+    u32::try_from(index).ok()
 }
 
 fn parse_hash(field: Option<HashField>) -> Result<[u8; 32], String> {

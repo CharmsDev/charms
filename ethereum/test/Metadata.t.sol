@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.37;
 
+import {stdJson} from "forge-std/StdJson.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 import {CharmToken} from "../src/CharmToken.sol";
@@ -10,6 +11,8 @@ import {CharmsMetadata} from "../src/libraries/CharmsMetadata.sol";
 import {CharmsTestBase} from "./utils/CharmsTestBase.sol";
 
 contract MetadataTest is CharmsTestBase {
+    using stdJson for string;
+
     uint256 internal metadataKey;
 
     bytes32 internal constant IMAGE_HASH = bytes32(uint256(1));
@@ -180,6 +183,39 @@ contract MetadataTest is CharmsTestBase {
         vm.expectRevert(ICharmsErrors.InvalidMetadata.selector);
         charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
         assertEq(charms.metadataVersion(coin), 0);
+    }
+
+    function test_imageAdmission() public {
+        string memory json = vm.readFile("test/vectors/image-admission.json");
+        bytes32 nonzero = vm.parseBytes32(string.concat("0x", json.readString(".nonzero_hash")));
+        uint256 count = json.readUint(".count");
+        for (uint256 i; i < count; ++i) {
+            string memory row = string.concat(".cases[", vm.toString(i), "]");
+            string memory image = json.readString(string.concat(row, ".image"));
+            string memory spelling = json.readString(string.concat(row, ".hash"));
+            bool admit = json.readBool(string.concat(row, ".admit"));
+            string memory note = json.readString(string.concat(row, ".note"));
+            App memory coin = _app(T, string.concat("image-", vm.toString(i)));
+            Metadata memory metadata = _example();
+            metadata.image = image;
+            metadata.imageHash =
+                keccak256(bytes(spelling)) == keccak256("nonzero") ? nonzero : bytes32(0);
+            if (admit) {
+                charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+                assertEq(uint256(charms.metadataVersion(coin)), 1, note);
+                if (keccak256(bytes(note)) == keccak256("raw cid of sha256 of empty")) {
+                    bytes32 base = keccak256(abi.encode(_key(coin), uint256(11)));
+                    assertEq(vm.load(address(charms), bytes32(uint256(base) + 1)), bytes32(0));
+                    bytes memory decoded = _json(charms.contractURI(coin));
+                    assertEq(_stringField(decoded, "image"), image, note);
+                    assertFalse(_contains(decoded, bytes("imageHash")), note);
+                }
+            } else {
+                vm.expectRevert(ICharmsErrors.InvalidMetadata.selector);
+                charms.setMetadata(coin, metadata, 1, _sign(coin, metadata, 1));
+                assertEq(uint256(charms.metadataVersion(coin)), 0, note);
+            }
+        }
     }
 
     function test_metadataRecordUsesSlotEleven() public {
@@ -513,6 +549,21 @@ contract MetadataTest is CharmsTestBase {
             out[i] = buf[i];
         }
         return string(out);
+    }
+
+    function _contains(bytes memory hay, bytes memory needle) internal pure returns (bool) {
+        if (needle.length > hay.length) return false;
+        for (uint256 i; i + needle.length <= hay.length; ++i) {
+            bool matched = true;
+            for (uint256 j; j < needle.length; ++j) {
+                if (hay[i + j] != needle[j]) {
+                    matched = false;
+                    break;
+                }
+            }
+            if (matched) return true;
+        }
+        return false;
     }
 
     function _sign(App memory app, Metadata memory metadata, uint64 version)

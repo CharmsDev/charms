@@ -865,16 +865,24 @@ A non-vault tag-`t` charm is an ERC-20. Its display fields are the CHIP-0420 fie
 | `description` | `description` | 0 to 256 bytes. |
 | `url` | `url` | 0 to 128 bytes. |
 | `image` | `image` | A URI. The contract does not store image bytes. |
-| `imageHash` | `image_hash` | SHA-256 of a remote image, or zero. |
+| `imageHash` | `image_hash` | SHA-256 of a remote image, or 32 zero bytes. Zero admits an empty image, an SVG, or an ipfs:// image that is one sha2-256 CID. |
 | `version` | none | A `uint64`. Zero means the app is unpublished. |
 
 Until the first accepted `setMetadata`, `name()` returns `Charm`, `symbol()` returns `CHARM`, and `decimals()` returns `0`.
 
-`image` is empty, a remote URI, or a tiny SVG.
+`image` is empty, a remote URI, or a tiny SVG. Lengths are UTF-8 byte lengths. Prefixes are case-sensitive. `CharmsMetadata.check` and `sign_metadata` do not trim, percent-decode, or fetch.
 
 - An empty image requires `imageHash` to be zero.
-- A remote image starts with `https://`, `ipfs://`, or `ar://`, is at most 128 bytes, and requires a nonzero `imageHash`.
 - An SVG starts with `data:image/svg+xml`, is at most 256 bytes, and requires `imageHash` to be zero.
+- An IPFS content image is at most 128 bytes. It is the seven bytes `ipfs://` plus one CID and nothing else. `imageHash` may be zero. The CID is a sha2-256 CIDv0 or a base32 sha2-256 CIDv1, as specified below. The digest inside the CID is not compared to `imageHash`.
+- Any other remote image starts with `https://`, `ipfs://`, or `ar://`, is at most 128 bytes, and requires a nonzero `imageHash`. That arm does not parse a CID. With a nonzero `imageHash` it admits `ipfs://bafyexample`, `ipfs://bafy/"img`, a CID followed by a path, and `ar://renamed`.
+- Any other string is rejected.
+
+A zero `imageHash` does not fall through to the nonzero remote rule. `https://` and `ar://` with a zero `imageHash` are rejected. `ipns://`, `http://`, and a different-case scheme are rejected on either arm.
+
+The remainder after `ipfs://` is a CIDv0 when it is 46 bytes and base58btc-decodes to 34 bytes starting `0x12 0x20`. Base58btc is `123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz`. It is a CIDv1 when it is `b` plus 58 characters from `abcdefghijklmnopqrstuvwxyz234567`, base32-decodes to 36 bytes, the two leftover bits are zero, and those bytes are `0x01`, a codec byte from `0x01` through `0x7f`, `0x12`, `0x20`, and 32 digest bytes. The digest bytes are not inspected. Multibase `z`, uppercase base32, and a codec that does not fit in one byte are not this form. They stay remote images and need a nonzero `imageHash`.
+
+`ipfs://bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku` with a zero `imageHash` is accepted. That CID is the raw sha2-256 of the empty byte string. `ipfs://bafyexample` with a zero `imageHash` is rejected.
 
 CHIP-0420 asks that a remote image be `image/png`, `image/jpeg`, or `image/svg+xml`. The contract does not fetch the URI, so it does not check that media type.
 
