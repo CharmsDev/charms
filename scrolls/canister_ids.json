@@ -7,5 +7,11 @@
   },
   "scrolls_cardano": {
     "ic": "tty7k-waaaa-aaaak-qvngq-cai"
+  },
+  "charms_metadata": {
+    "ic": "z4e4c-oqaaa-aaaak-qzlqq-cai"
+  },
+  "scrolls_ethereum": {
+    "ic": "zvhx6-yyaaa-aaaak-qzlra-cai"
   }
 }

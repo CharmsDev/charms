@@ -36,7 +36,7 @@ pub async fn prove(req: ProveRequest) -> anyhow::Result<Vec<Tx>> {
 mod test {
     use super::*;
     use charms_client::{
-        NormalizedCharms, NormalizedSpell, SpellProverInput,
+        NormalizedCharms, NormalizedSpell, NormalizedTransaction, SpellProverInput,
         ethereum_tx::EthereumTx,
         tx::{EnchantedTx, Tx},
     };
@@ -277,6 +277,96 @@ app_public_inputs: {}
         }
     }
 
+    pub(crate) fn v16_deploy_claim() -> (NormalizedSpell, EthereumTx) {
+        let caller = [0x11; 20];
+        let reference = [0x22; 20];
+        let next = [0x33; 20];
+        let charms = [
+            0x72, 0x69, 0xcc, 0x77, 0x8b, 0x9b, 0x90, 0xee, 0xe6, 0x71, 0x7b, 0x3d, 0x30, 0x50,
+            0xe3, 0x72, 0xe3, 0x99, 0xd8, 0xe7,
+        ];
+        let mut salt = [0u8; 32];
+        salt[31] = 1;
+        let carried = NormalizedSpell {
+            version: 16,
+            tx: NormalizedTransaction {
+                outs: vec![NormalizedCharms::new(), NormalizedCharms::new()],
+                coins: Some(vec![
+                    NativeOutput {
+                        amount: 0,
+                        dest: caller.to_vec(),
+                        content: None,
+                    },
+                    NativeOutput {
+                        amount: 0,
+                        dest: reference.to_vec(),
+                        content: None,
+                    },
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let plan = charms_client::ethereum_tx::plan_placeholder(
+            &carried,
+            &charms_client::ethereum_tx::PlaceholderRequest {
+                chain_id: 31_337,
+                charms,
+                caller,
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        let tx_id = plan.record.tx_id();
+        let claim = NormalizedSpell {
+            version: 16,
+            tx: NormalizedTransaction {
+                ins: Some(vec![UtxoId(tx_id, 0)]),
+                refs: Some(vec![UtxoId(tx_id, 1)]),
+                outs: vec![NormalizedCharms::new()],
+                coins: Some(vec![NativeOutput {
+                    amount: 0,
+                    dest: next.to_vec(),
+                    content: None,
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let expected = hex::decode(include_str!(
+            "../ethereum/test/vectors/v16-deploy-claim.hex"
+        ))
+        .unwrap();
+        assert_eq!(util::write(&claim).unwrap(), expected);
+        (claim, plan.record)
+    }
+
+    #[tokio::test]
+    async fn guest_accepts_the_v16_deploy_claim() {
+        let (claim, record) = v16_deploy_claim();
+        let input = SpellProverInput {
+            self_spell_vk: SPELL_VK,
+            prev_txs: vec![Tx::Ethereum(record)],
+            spell: claim.clone(),
+            tx_ins_beamed_source_utxos: BTreeMap::new(),
+            app_input: None,
+            scroll_outputs: None,
+        };
+        let mut stdin = SP1Stdin::new();
+        stdin.write_vec(util::write(&input).unwrap());
+        let client = ProverClient::builder().light().build().await;
+        let (pv, report) = client
+            .execute(Elf::Static(SPELL_CHECKER_BINARY), stdin)
+            .await
+            .expect("guest execution returns a report");
+        assert_eq!(report.exit_code, 0);
+        let (committed_vk, committed_spell): ([u8; 32], NormalizedSpell) =
+            util::read(pv.as_slice()).unwrap();
+        assert_eq!(committed_vk, SPELL_VK);
+        assert_eq!(committed_spell, claim);
+    }
+
     fn v15_placeholder_spend() -> (NormalizedSpell, EthereumTx, Vec<u8>) {
         let mut salt = [0u8; 32];
         salt[31] = 15;
@@ -416,5 +506,32 @@ app_public_inputs: {}
         let path = "charms-lib/test/ethereum-spell.hex";
         std::fs::write(path, record.hex()).unwrap();
         println!("wrote {path} proof_bytes {}", record.proof.len());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "network Groth16 proof; CHARMS_PROVE_DEPLOY=1"]
+    async fn prove_the_v16_deploy_claim() {
+        if std::env::var("CHARMS_PROVE_DEPLOY").ok().as_deref() != Some("1") {
+            return;
+        }
+        let (claim, record) = crate::test::v16_deploy_claim();
+        let prover = crate::cli::prove_impl(false);
+        let (committed, proof, _) = prover
+            .prove(
+                claim,
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                vec![Tx::Ethereum(record)],
+                Default::default(),
+                None,
+            )
+            .expect("network proof");
+        assert_eq!(committed.version, charms_client::CURRENT_VERSION);
+        assert_eq!(&proof[..4], &hex_literal::hex!("4388a21c"));
+        let json = format!("{{\n  \"proof\": \"0x{}\"\n}}\n", hex::encode(proof));
+        let path = "ethereum/test/vectors/v16-deploy-proof.json";
+        std::fs::write(path, json).unwrap();
+        println!("wrote {path}");
     }
 }

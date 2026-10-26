@@ -23,7 +23,7 @@ contract DeployTest is Test {
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
     bytes32 internal constant PROGRAM_VKEY =
-        0x001a111b6bb33afb441abfce5fef266f789855ab6eba5522c6ea41265e66de95;
+        0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d;
     address internal constant CALLER = 0x1111111111111111111111111111111111111111;
     address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
     address internal constant NEXT_OWNER = 0x3333333333333333333333333333333333333333;
@@ -142,6 +142,15 @@ contract DeployTest is Test {
         vm.prank(admin);
         charms.wrap{value: 1 ether}(address(0), units, admin, bytes32(uint256(1)));
         assertEq(address(charms).balance, 1 ether);
+    }
+
+    function test_previousProxyClaimMatchesTheGuestSpell() public {
+        Charms charms = _proofCharms();
+        (, ICharmsTypes.Spell memory claim) = _placeholder(charms, PREVIOUS_PLACEHOLDER);
+        assertEq(
+            SpellCodec.encode(claim),
+            vm.parseBytes(vm.readFile("test/vectors/v16-deploy-claim.hex"))
+        );
     }
 
     function test_claimEncodingAtTheCreate2Address() public {

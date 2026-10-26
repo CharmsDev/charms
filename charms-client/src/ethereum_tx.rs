@@ -7,6 +7,7 @@ use anyhow::{Context, ensure};
 use charms_data::{App, NativeOutput, TOKEN, TxId, UtxoId, util};
 use cml_chain::crypto::{Ed25519Signature, Vkey};
 use cml_core::serialization::RawBytesEncoding;
+use hex_literal::hex;
 use serde::Serialize;
 use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
 use sha2::Sha256;
@@ -56,13 +57,11 @@ pub struct EthereumFinality {
     pub charms: [u8; 20],
 }
 
-/// Unset. `vkey` and `charms` are zeros, so `proven_final` stays false.
-/// A guest build that can beam back fills in the `scrolls_ethereum` key and the proxy
-/// that key certifies. `chain_id` 1 is mainnet. A testnet build replaces all three.
+/// `scrolls_ethereum` (`zvhx6-yyaaa-aaaak-qzlra-cai`) Ed25519 finality key, mainnet, and the live Charms proxy.
 pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
-    vkey: [0u8; 32],
+    vkey: hex!("864bdfb6bbfc5497e23314caab4accda88f6adb34c7e33b278961a6f5c9d2514"),
     chain_id: 1,
-    charms: [0u8; 20],
+    charms: hex!("02177ffa1d7fbb35f2c444ee89b1f9de7b270b4f"),
 };
 
 pub struct PlaceholderRequest {
@@ -1196,6 +1195,80 @@ app_public_inputs: {}
             err.to_string(),
             "coins[0].dest must be the zero address exactly when output 0 is beamed"
         );
+    }
+
+    #[test]
+    fn deploy_fixture_placeholder_has_the_contract_id() {
+        let caller = [0x11; 20];
+        let reference = [0x22; 20];
+        let next = [0x33; 20];
+        let charms: [u8; 20] = hex::decode("7269cc778b9b90eee6717b3d3050e372e399d8e7")
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let mut salt = [0u8; 32];
+        salt[31] = 1;
+        let carried = NormalizedSpell {
+            version: 16,
+            tx: crate::NormalizedTransaction {
+                outs: vec![NormalizedCharms::new(), NormalizedCharms::new()],
+                coins: Some(vec![
+                    NativeOutput {
+                        amount: 0,
+                        dest: caller.to_vec(),
+                        content: None,
+                    },
+                    NativeOutput {
+                        amount: 0,
+                        dest: reference.to_vec(),
+                        content: None,
+                    },
+                ]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let plan = plan_placeholder(
+            &carried,
+            &PlaceholderRequest {
+                chain_id: 31_337,
+                charms,
+                caller,
+                salt,
+                nonce: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.tx_id,
+            "97c2b57e3d80acbe4b1d574557e61dc8737d890a029674075a98f7a892054f7c"
+        );
+
+        let tx_id = plan.record.tx_id();
+        let claim = NormalizedSpell {
+            version: 16,
+            tx: crate::NormalizedTransaction {
+                ins: Some(vec![UtxoId(tx_id, 0)]),
+                refs: Some(vec![UtxoId(tx_id, 1)]),
+                outs: vec![NormalizedCharms::new()],
+                coins: Some(vec![NativeOutput {
+                    amount: 0,
+                    dest: next.to_vec(),
+                    content: None,
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let prev_txs = vec![Tx::Ethereum(plan.record)];
+        assert!(
+            is_correct(&claim, &prev_txs, None, &[0; 32], &BTreeMap::new(), None)
+                .expect("host accepts the deploy claim")
+        );
+        let expected =
+            hex::decode(include_str!("../../ethereum/test/vectors/v16-deploy-claim.hex").trim())
+                .unwrap();
+        assert_eq!(charms_data::util::write(&claim).unwrap(), expected);
     }
 
     #[test]
