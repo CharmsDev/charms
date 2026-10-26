@@ -139,6 +139,18 @@ mod tests {
     }
 
     #[test]
+    fn program_vkey_matches_spell_vk() {
+        let hex = spell_vk_hex(include_str!("../../../charms-lib/src/lib.rs"));
+        let needle = format!("PROGRAM_VKEY =\n        0x{hex};");
+        for src in [
+            include_str!("../../../ethereum/script/Deploy.s.sol"),
+            include_str!("../../../ethereum/test/Deploy.t.sol"),
+        ] {
+            assert!(src.contains(&needle));
+        }
+    }
+
+    #[test]
     fn spell_vk_replacement_writes_lowercase_hex() {
         let src = include_str!("../../../charms-lib/src/lib.rs");
         let vk = [0xab; 32];

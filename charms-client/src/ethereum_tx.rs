@@ -57,7 +57,6 @@ pub struct EthereumFinality {
     pub charms: [u8; 20],
 }
 
-/// `scrolls_ethereum` (`zvhx6-yyaaa-aaaak-qzlra-cai`) Ed25519 finality key, mainnet, and the live Charms proxy.
 pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
     vkey: hex!("864bdfb6bbfc5497e23314caab4accda88f6adb34c7e33b278961a6f5c9d2514"),
     chain_id: 1,

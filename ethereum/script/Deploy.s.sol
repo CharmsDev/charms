@@ -21,10 +21,8 @@ import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 ///     --rpc-url <url> --broadcast --private-key <admin key>
 contract Deploy is Script {
     uint32 public constant SPELL_VERSION = 16;
-    /// @dev `charms-lib`'s `SPELL_VK`.
     bytes32 public constant PROGRAM_VKEY =
         0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d;
-    /// @dev SHA-256 of the Groth16 verifying key. Same value as `$.sp1.groth16VkHash`.
     bytes32 public constant GROTH16_VK_HASH =
         0x4388a21c687fdd5f218d7e3d13190cac4c5355818d3605fd5fb811df468ee696;
 
