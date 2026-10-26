@@ -3,6 +3,10 @@ name: Guest artifacts
 on:
   pull_request:
     paths:
+      - 'src/bin/charms-spell-checker'
+      - 'src/bin/charms-proof-wrapper'
+      - 'src/bin/charms-spell-checker-vk.bin'
+      - 'src/bin/charms-proof-wrapper-vk.bin'
       - 'charms-spell-checker/**'
       - 'charms-client/**'
       - 'charms-data/**'
