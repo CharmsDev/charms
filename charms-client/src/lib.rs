@@ -448,6 +448,10 @@ pub fn is_correct(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
+    let direct = direct_prev_txids(spell, tx_ins_beamed_source_utxos);
+    let prev_owned = ethereum_tx::bind_native_sources(&direct, prev_txs)?;
+    let prev_txs = &prev_owned;
+
     ensure_ethereum_prev_txs_admissible(spell, prev_txs)?;
     if hosting_ethereum_record(spell, prev_txs).is_some() {
         ethereum_tx::ensure_ethereum_output_coins(spell)?;
@@ -457,7 +461,7 @@ pub fn is_correct(
         tx_ins_beamed_source_utxos
     ));
 
-    let prev_spells = prev_spells(&prev_txs, spell_vk, &spell)?;
+    let prev_spells = prev_spells(prev_txs, spell_vk, &spell)?;
 
     ensure!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 
@@ -488,7 +492,7 @@ pub fn is_correct(
         !hosting_chain_is_bitcoin(spell, prev_txs) || check_scroll_outputs(spell, scroll_outputs)?;
 
     let apps = apps(spell);
-    let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, &prev_txs);
+    let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, prev_txs);
 
     check_app_version_continuity(spell, &prev_spells, tx_ins_beamed_source_utxos)?;
 
@@ -929,6 +933,21 @@ fn hosting_ethereum_record<'a>(
         Tx::Ethereum(record) if record.tx_id() == first.0 => Some(record),
         _ => None,
     })
+}
+
+fn direct_prev_txids(
+    spell: &NormalizedSpell,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+) -> BTreeSet<TxId> {
+    let mut direct = BTreeSet::new();
+    if let Some(ins) = &spell.tx.ins {
+        direct.extend(ins.iter().map(|utxo| utxo.0));
+    }
+    if let Some(refs) = &spell.tx.refs {
+        direct.extend(refs.iter().map(|utxo| utxo.0));
+    }
+    direct.extend(tx_ins_beamed_source_utxos.values().map(|source| source.0.0));
+    direct
 }
 
 fn spell_input_and_ref_txids(spell: &NormalizedSpell) -> BTreeSet<TxId> {

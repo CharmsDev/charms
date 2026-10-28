@@ -68,7 +68,12 @@ const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
 /// Each hop appends its own canister ID to the `seen` list passed downstream, so a
 /// misconfigured chain (A → B → A, A → B → C → A, etc.) is detected before the
 /// forwarding inter-canister call is made.
-const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = "";
+///
+/// Unset at compile time, this is `""`. A build that should forward a version this
+/// binary does not know sets `NEXT_SCROLLS_BITCOIN_CANISTER_ID` to that canister id.
+/// `dfx build` passes the variable through to `cargo`, which is what `option_env!` reads.
+const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str =
+    option_env!("NEXT_SCROLLS_BITCOIN_CANISTER_ID").unwrap_or("");
 
 /// mempool.space REST endpoint for broadcasting a raw transaction on mainnet.
 const MEMPOOL_MAINNET_BROADCAST_URL: &str = "https://mempool.space/api/tx";

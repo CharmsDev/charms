@@ -414,6 +414,7 @@ mod tests {
                 caller: None,
                 salt: None,
                 signature: None,
+                input_sources: Vec::new(),
             })],
             change_address: "addr".to_string(),
             fee_rate: 1.0,

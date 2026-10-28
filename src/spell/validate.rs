@@ -458,6 +458,7 @@ mod tests {
             caller: None,
             salt: None,
             signature: None,
+            input_sources: Vec::new(),
         })
     }
 

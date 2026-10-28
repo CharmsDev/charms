@@ -60,7 +60,7 @@ impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
         if params.chain == Chain::Ethereum {
             let spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(&params.spell)?)?;
-            if charms_client::ethereum_tx::is_placeholder(&spell) {
+            if spell.tx.ins.as_ref().is_none_or(|ins| ins.is_empty()) {
                 println!("{}", ethereum_placeholder_json(&params)?);
                 return Ok(());
             }
@@ -80,6 +80,43 @@ impl Prove for SpellCli {
                 params.collateral_utxo.is_none(),
                 "--collateral-utxo is not used on Ethereum"
             );
+            let prev = from_strings(&params.prev_txs)?;
+            match charms_client::ethereum_tx::plan_native(&spell, &prev) {
+                Ok(plan) => {
+                    ensure!(!params.payload, "a native Ethereum spell is built locally");
+                    ensure!(
+                        params.app_bins.is_empty(),
+                        "a native Ethereum spell has no app binaries"
+                    );
+                    ensure!(
+                        params.private_inputs.is_none(),
+                        "a native Ethereum spell has no private inputs"
+                    );
+                    ensure!(
+                        params.app_signatures.is_none(),
+                        "a native Ethereum spell has no app signatures"
+                    );
+                    ensure!(
+                        params.beamed_from.is_none(),
+                        "--beamed-from is the claim side, not the Ethereum beam-out"
+                    );
+                    ensure!(!params.mock, "a native Ethereum spell has no proof to mock");
+                    let hex = Tx::Ethereum(plan.record).hex();
+                    println!("{}", serde_json::to_string(&vec![hex])?);
+                    return Ok(());
+                }
+                Err(err) => {
+                    if let Some(failure) =
+                        err.downcast_ref::<charms_client::ethereum_tx::NativeFailure>()
+                    {
+                        if failure.blocks_prove() {
+                            return Err(err);
+                        }
+                    } else {
+                        return Err(err);
+                    }
+                }
+            }
         } else {
             reject_ethereum_only_options(&params)?;
             ensure!(params.fee_rate >= 1.0, "fee rate must be >= 1.0");

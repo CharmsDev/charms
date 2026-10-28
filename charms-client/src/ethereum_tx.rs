@@ -4,15 +4,16 @@ use crate::{
     utxo_id_hash_with_nonce,
 };
 use anyhow::{Context, ensure};
-use charms_data::{App, NativeOutput, TOKEN, TxId, UtxoId, util};
+use charms_data::{App, B32, Data, NFT, NativeOutput, TOKEN, TxId, UtxoId, VersionedApp, util};
 use cml_chain::crypto::{Ed25519Signature, Vkey};
 use cml_core::serialization::RawBytesEncoding;
 use hex_literal::hex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_with::{IfIsHumanReadable, hex::Hex, serde_as};
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use thiserror::Error;
 
 pub const ENVELOPE_PREFIX: &[u8] = b"CHET";
 
@@ -47,6 +48,30 @@ pub struct EthereumTx {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<IfIsHumanReadable<Hex, serde_with::Bytes>>")]
     pub signature: Option<[u8; 64]>,
+    /// Creator preimage of each input. Not part of `ethTxId` or the finality message.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_sources: Vec<InputSource>,
+}
+
+/// Creator of one input. `eth_tx_id(chain_id, charms, anchor, spell)` is that input's id.
+#[serde_as]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputSource {
+    pub chain_id: u64,
+    #[serde_as(as = "IfIsHumanReadable<Hex>")]
+    pub charms: [u8; 20],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde_as(as = "Option<IfIsHumanReadable<Hex>>")]
+    pub anchor: Option<[u8; 32]>,
+    #[serde_as(as = "IfIsHumanReadable<Hex>")]
+    pub spell: Vec<u8>,
+}
+
+/// Openings `transact` sends. Charm indices are into the spending spell's app list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Opening {
+    pub charms: NormalizedCharms,
+    pub pins: BTreeMap<B32, VersionedApp>,
 }
 
 /// Chain, Charms proxy, and Ed25519 key a finality signature is checked against.
@@ -62,6 +87,498 @@ pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
     chain_id: 1,
     charms: hex!("02177ffa1d7fbb35f2c444ee89b1f9de7b270b4f"),
 };
+
+#[cfg(test)]
+thread_local! {
+    static FINALITY_OVERRIDE: std::cell::Cell<Option<EthereumFinality>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub struct FinalityGuard;
+
+#[cfg(test)]
+pub fn set_finality_override(params: EthereumFinality) -> FinalityGuard {
+    FINALITY_OVERRIDE.with(|cell| cell.set(Some(params)));
+    FinalityGuard
+}
+
+#[cfg(test)]
+impl Drop for FinalityGuard {
+    fn drop(&mut self) {
+        FINALITY_OVERRIDE.with(|cell| cell.set(None));
+    }
+}
+
+fn ethereum_finality() -> EthereumFinality {
+    #[cfg(test)]
+    if let Some(params) = FINALITY_OVERRIDE.with(|cell| cell.get()) {
+        return params;
+    }
+    ETHEREUM_FINALITY
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum NativeFailure {
+    #[error("app {index} has tag {tag}, not t or n")]
+    NotTokenOrNft { index: u32, tag: char },
+    #[error("public input {index} is not null")]
+    PublicInput { index: u32 },
+    #[error("a native spell has no reference inputs")]
+    Refs,
+    #[error("a native spell has no scroll outputs")]
+    Scrolls,
+    #[error("pins differ from the inputs")]
+    PinsChanged,
+    #[error("token sums for app {app} do not fit in u64")]
+    SumOverflow { app: u32 },
+    #[error("app {app} moves {input} in and {output} out")]
+    Unbalanced { app: u32, input: u128, output: u128 },
+    #[error("nft multiset for app {app} changed")]
+    NftMismatch { app: u32 },
+    #[error("input {index} has no creator in the witness")]
+    MissingSource { index: usize },
+    #[error("input {index} creator id does not match")]
+    SourceId { index: usize },
+    #[error("input {index} creator has no output at that index")]
+    SourceOutput { index: usize },
+    #[error("input {index} carries an app the spending spell does not list")]
+    AppMissing { index: usize },
+    #[error("creators are not all on the same chain and contract")]
+    HostMismatch,
+    #[error("embedded creator disagrees with the prev-tx pool")]
+    SourceConflict { index: usize },
+    #[error("native transact sends from one input owner")]
+    OneSender,
+    #[error("a native spell is version 16, not {version}")]
+    Version { version: u32 },
+    #[error("a native spell is not a mock")]
+    Mock,
+}
+
+impl NativeFailure {
+    /// Missing or contradictory witness. A shape miss is not this.
+    pub fn blocks_prove(&self) -> bool {
+        matches!(
+            self,
+            Self::MissingSource { .. }
+                | Self::SourceId { .. }
+                | Self::SourceOutput { .. }
+                | Self::AppMissing { .. }
+                | Self::HostMismatch
+                | Self::SourceConflict { .. }
+                | Self::OneSender
+        )
+    }
+}
+
+pub struct NativePlan {
+    pub record: EthereumTx,
+    pub tx_id: String,
+    pub call: EthCall,
+}
+
+/// `_isNative` with vault delta 0. Beamed outputs count. A wrap or unwrap is not native here.
+pub fn native_spell(spell: &NormalizedSpell, sources: &[InputSource]) -> Result<(), NativeFailure> {
+    if spell.version != CURRENT_VERSION {
+        return Err(NativeFailure::Version {
+            version: spell.version,
+        });
+    }
+    if spell.mock {
+        return Err(NativeFailure::Mock);
+    }
+    let apps: Vec<&App> = spell.app_public_inputs.keys().collect();
+    for (index, app) in apps.iter().enumerate() {
+        if app.tag != TOKEN && app.tag != NFT {
+            return Err(NativeFailure::NotTokenOrNft {
+                index: index as u32,
+                tag: app.tag,
+            });
+        }
+    }
+    for (index, input) in spell.app_public_inputs.values().enumerate() {
+        if !input.is_empty() {
+            return Err(NativeFailure::PublicInput {
+                index: index as u32,
+            });
+        }
+    }
+    if spell.tx.refs.as_ref().is_some_and(|refs| !refs.is_empty()) {
+        return Err(NativeFailure::Refs);
+    }
+    if spell
+        .tx
+        .scrolls
+        .as_ref()
+        .is_some_and(|scrolls| !scrolls.is_empty())
+    {
+        return Err(NativeFailure::Scrolls);
+    }
+    let Some(ins) = spell.tx.ins.as_ref().filter(|ins| !ins.is_empty()) else {
+        return Err(NativeFailure::MissingSource { index: 0 });
+    };
+    if sources.len() != ins.len() {
+        return Err(NativeFailure::MissingSource {
+            index: sources.len().min(ins.len()),
+        });
+    }
+    for (index, (utxo, source)) in ins.iter().zip(sources).enumerate() {
+        if source_tx_id(source) != utxo.0 {
+            return Err(NativeFailure::SourceId { index });
+        }
+    }
+    let host = &sources[0];
+    if sources
+        .iter()
+        .any(|source| source.chain_id != host.chain_id || source.charms != host.charms)
+    {
+        return Err(NativeFailure::HostMismatch);
+    }
+    let input_openings = openings(spell, sources)?;
+    pins_unchanged(spell, &input_openings)?;
+    check_native_sums(spell, &input_openings)
+}
+
+pub fn openings(
+    spell: &NormalizedSpell,
+    sources: &[InputSource],
+) -> Result<Vec<Opening>, NativeFailure> {
+    let ins = spell.tx.ins.as_deref().unwrap_or(&[]);
+    if sources.len() != ins.len() {
+        return Err(NativeFailure::MissingSource {
+            index: sources.len().min(ins.len()),
+        });
+    }
+    let spend_apps: Vec<App> = spell.app_public_inputs.keys().cloned().collect();
+    let mut result = Vec::with_capacity(ins.len());
+    for (index, (utxo, source)) in ins.iter().zip(sources).enumerate() {
+        if source_tx_id(source) != utxo.0 {
+            return Err(NativeFailure::SourceId { index });
+        }
+        let creator: NormalizedSpell = util::read(source.spell.as_slice())
+            .map_err(|_| NativeFailure::SourceOutput { index })?;
+        let Some(output) = creator.tx.outs.get(utxo.1 as usize) else {
+            return Err(NativeFailure::SourceOutput { index });
+        };
+        let creator_apps: Vec<App> = creator.app_public_inputs.keys().cloned().collect();
+        let mut charms = NormalizedCharms::new();
+        for (&creator_index, data) in output {
+            let Some(app) = creator_apps.get(creator_index as usize) else {
+                return Err(NativeFailure::AppMissing { index });
+            };
+            let Some(spend_index) = spend_apps.iter().position(|candidate| candidate == app) else {
+                return Err(NativeFailure::AppMissing { index });
+            };
+            charms.insert(spend_index as u32, data.clone());
+        }
+        result.push(Opening {
+            charms,
+            pins: pins_on_output(&creator, output),
+        });
+    }
+    Ok(result)
+}
+
+pub fn plan_native(spell: &NormalizedSpell, prev: &[Tx]) -> anyhow::Result<NativePlan> {
+    let by_id = index_prev(prev);
+    let mut used = BTreeSet::new();
+    let sources = sources_from_pool(spell, &by_id, &BTreeSet::new(), &mut used)?;
+    native_spell(spell, &sources)?;
+    let record = EthereumTx {
+        chain_id: sources[0].chain_id,
+        charms: sources[0].charms,
+        anchor: None,
+        spell: util::write(spell).expect("spell CBOR"),
+        proof: Vec::new(),
+        caller: None,
+        salt: None,
+        signature: None,
+        input_sources: sources,
+    };
+    let call = transact_call(&record)?;
+    let tx_id = record.tx_id().to_string();
+    Ok(NativePlan {
+        record,
+        tx_id,
+        call,
+    })
+}
+
+pub(crate) fn bind_native_sources(
+    direct: &BTreeSet<TxId>,
+    prev: &[Tx],
+) -> Result<Vec<Tx>, NativeFailure> {
+    let by_id = index_prev(prev);
+    let mut used = BTreeSet::new();
+    let mut bound = Vec::new();
+    for tx in prev {
+        if !direct.contains(&tx.tx_id()) {
+            continue;
+        }
+        bound.push(fill_direct(tx, &by_id, direct, &mut used)?);
+    }
+    for tx in prev {
+        let id = tx.tx_id();
+        if direct.contains(&id) || used.contains(&id) {
+            continue;
+        }
+        bound.push(tx.clone());
+    }
+    Ok(bound)
+}
+
+fn fill_direct(
+    tx: &Tx,
+    by_id: &BTreeMap<TxId, &Tx>,
+    direct: &BTreeSet<TxId>,
+    used: &mut BTreeSet<TxId>,
+) -> Result<Tx, NativeFailure> {
+    let Tx::Ethereum(record) = tx else {
+        return Ok(tx.clone());
+    };
+    if !record.proof.is_empty() {
+        return Ok(tx.clone());
+    }
+    let Ok(spell) = record.decode() else {
+        return Ok(tx.clone());
+    };
+    if spell.tx.ins.as_ref().is_none_or(|ins| ins.is_empty()) {
+        return Ok(tx.clone());
+    }
+    if record.input_sources.is_empty() {
+        let sources = sources_from_pool(&spell, by_id, direct, used)?;
+        let mut filled = record.clone();
+        filled.input_sources = sources;
+        return Ok(Tx::Ethereum(filled));
+    }
+    sources_match_pool(record, by_id)?;
+    Ok(tx.clone())
+}
+
+fn sources_from_pool(
+    spell: &NormalizedSpell,
+    by_id: &BTreeMap<TxId, &Tx>,
+    direct: &BTreeSet<TxId>,
+    used: &mut BTreeSet<TxId>,
+) -> Result<Vec<InputSource>, NativeFailure> {
+    let ins = spell.tx.ins.as_deref().unwrap_or(&[]);
+    let mut sources = Vec::with_capacity(ins.len());
+    for (index, utxo) in ins.iter().enumerate() {
+        let Some(Tx::Ethereum(creator)) = by_id.get(&utxo.0).copied() else {
+            return Err(NativeFailure::MissingSource { index });
+        };
+        if !direct.contains(&utxo.0) {
+            used.insert(utxo.0);
+        }
+        sources.push(InputSource {
+            chain_id: creator.chain_id,
+            charms: creator.charms,
+            anchor: creator.anchor,
+            spell: creator.spell.clone(),
+        });
+    }
+    Ok(sources)
+}
+
+fn sources_match_pool(
+    record: &EthereumTx,
+    by_id: &BTreeMap<TxId, &Tx>,
+) -> Result<(), NativeFailure> {
+    for (index, source) in record.input_sources.iter().enumerate() {
+        let Some(tx) = by_id.get(&source_tx_id(source)) else {
+            continue;
+        };
+        let Tx::Ethereum(pool) = *tx else {
+            return Err(NativeFailure::SourceConflict { index });
+        };
+        if pool.chain_id != source.chain_id
+            || pool.charms != source.charms
+            || pool.anchor != source.anchor
+            || pool.spell != source.spell
+        {
+            return Err(NativeFailure::SourceConflict { index });
+        }
+    }
+    Ok(())
+}
+
+fn index_prev(prev: &[Tx]) -> BTreeMap<TxId, &Tx> {
+    prev.iter().map(|tx| (tx.tx_id(), tx)).collect()
+}
+
+fn source_tx_id(source: &InputSource) -> TxId {
+    let mut raw = eth_tx_id(
+        source.chain_id,
+        &source.charms,
+        source.anchor,
+        &source.spell,
+    );
+    raw.reverse();
+    TxId(raw)
+}
+
+fn pins_on_output(
+    creator: &NormalizedSpell,
+    output: &NormalizedCharms,
+) -> BTreeMap<B32, VersionedApp> {
+    let apps: Vec<&App> = creator.app_public_inputs.keys().collect();
+    let mut pins = BTreeMap::new();
+    for &index in output.keys() {
+        let Some(app) = apps.get(index as usize) else {
+            continue;
+        };
+        if let Some(pin) = creator.versioned_apps.get(&app.vk) {
+            pins.insert(app.vk.clone(), pin.clone());
+        }
+    }
+    pins
+}
+
+fn pins_unchanged(
+    spell: &NormalizedSpell,
+    input_openings: &[Opening],
+) -> Result<(), NativeFailure> {
+    let apps: Vec<&App> = spell.app_public_inputs.keys().collect();
+    let mut seen = BTreeSet::new();
+    for opening in input_openings {
+        for (vk, pin) in &opening.pins {
+            let Some(expected) = spell.versioned_apps.get(vk) else {
+                return Err(NativeFailure::PinsChanged);
+            };
+            if expected != pin {
+                return Err(NativeFailure::PinsChanged);
+            }
+            seen.insert(vk);
+        }
+        for &index in opening.charms.keys() {
+            let Some(app) = apps.get(index as usize) else {
+                return Err(NativeFailure::PinsChanged);
+            };
+            if spell.versioned_apps.contains_key(&app.vk) && !opening.pins.contains_key(&app.vk) {
+                return Err(NativeFailure::PinsChanged);
+            }
+        }
+    }
+    if seen.len() != spell.versioned_apps.len() {
+        return Err(NativeFailure::PinsChanged);
+    }
+    Ok(())
+}
+
+fn check_native_sums(
+    spell: &NormalizedSpell,
+    input_openings: &[Opening],
+) -> Result<(), NativeFailure> {
+    let apps: Vec<&App> = spell.app_public_inputs.keys().collect();
+    for (index, app) in apps.iter().enumerate() {
+        let app_index = index as u32;
+        if app.tag == TOKEN {
+            let input = token_sum(
+                input_openings.iter().map(|opening| &opening.charms),
+                app_index,
+            )?;
+            let output = token_sum(spell.tx.outs.iter(), app_index)?;
+            if input > u128::from(u64::MAX) || output > u128::from(u64::MAX) {
+                return Err(NativeFailure::SumOverflow { app: app_index });
+            }
+            if input != output {
+                return Err(NativeFailure::Unbalanced {
+                    app: app_index,
+                    input,
+                    output,
+                });
+            }
+        } else if app.tag == NFT {
+            let input = nft_items(
+                input_openings.iter().map(|opening| &opening.charms),
+                app_index,
+            );
+            let output = nft_items(spell.tx.outs.iter(), app_index);
+            if input != output {
+                return Err(NativeFailure::NftMismatch { app: app_index });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn token_sum<'a>(
+    groups: impl Iterator<Item = &'a NormalizedCharms>,
+    app: u32,
+) -> Result<u128, NativeFailure> {
+    let mut sum = 0u128;
+    for charms in groups {
+        if let Some(data) = charms.get(&app) {
+            let amount = data
+                .value::<u64>()
+                .map_err(|_| NativeFailure::SumOverflow { app })?;
+            sum = sum.saturating_add(u128::from(amount));
+        }
+    }
+    Ok(sum)
+}
+
+fn nft_items<'a>(groups: impl Iterator<Item = &'a NormalizedCharms>, app: u32) -> Vec<Vec<u8>> {
+    let mut items: Vec<Vec<u8>> = groups
+        .filter_map(|charms| charms.get(&app).map(Data::bytes))
+        .collect();
+    items.sort();
+    items
+}
+
+fn one_sender(spell: &NormalizedSpell, sources: &[InputSource]) -> Result<[u8; 20], NativeFailure> {
+    let Some(ins) = spell.tx.ins.as_ref() else {
+        return Err(NativeFailure::OneSender);
+    };
+    let mut from = None;
+    for (index, utxo) in ins.iter().enumerate() {
+        let owner = output_owner(&sources[index], utxo.1, index)?;
+        if owner == [0u8; 20] {
+            return Err(NativeFailure::OneSender);
+        }
+        if let Some(prev) = from {
+            if prev != owner {
+                return Err(NativeFailure::OneSender);
+            }
+        } else {
+            from = Some(owner);
+        }
+    }
+    from.ok_or(NativeFailure::OneSender)
+}
+
+fn output_owner(
+    source: &InputSource,
+    output: u32,
+    index: usize,
+) -> Result<[u8; 20], NativeFailure> {
+    let creator: NormalizedSpell =
+        util::read(source.spell.as_slice()).map_err(|_| NativeFailure::SourceOutput { index })?;
+    let coins = creator
+        .tx
+        .coins
+        .as_ref()
+        .ok_or(NativeFailure::SourceOutput { index })?;
+    let coin = coins
+        .get(output as usize)
+        .ok_or(NativeFailure::SourceOutput { index })?;
+    coin.dest
+        .as_slice()
+        .try_into()
+        .map_err(|_| NativeFailure::SourceOutput { index })
+}
+
+fn ensure_beam_destinations(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let beamed = spell.tx.beamed_outs.as_ref();
+    for (index, coin) in spell.tx.coins.iter().flatten().enumerate() {
+        ensure!(
+            beamed.is_some_and(|outs| outs.contains_key(&(index as u32)))
+                == (coin.dest.as_slice() == [0u8; 20]),
+            "coins[{index}].dest must be the zero address exactly when output {index} is beamed"
+        );
+    }
+    Ok(())
+}
 
 pub struct PlaceholderRequest {
     pub chain_id: u64,
@@ -139,9 +656,28 @@ impl EthereumTx {
             self.spell == canonical,
             "ethereum spell CBOR is not canonical"
         );
-        let vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
-        let public_values = tx::to_serialized_pv(spell.version, vk, spell);
-        tx::verify_snark_proof(&self.proof, &public_values, vk, spell.version, spell.mock)?;
+        tx::verify_committed_proof(spell, &self.proof, spell_vk, spell.mock)?;
+        Ok(spell.clone())
+    }
+
+    fn accept_native(&self, spell: &NormalizedSpell) -> anyhow::Result<NormalizedSpell> {
+        ensure!(
+            self.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
+            "a native ethereum spell's anchor must be zero"
+        );
+        let canonical = util::write(spell)?;
+        ensure!(
+            self.spell == canonical,
+            "ethereum spell CBOR is not canonical"
+        );
+        ensure_ethereum_output_coins(spell)?;
+        native_spell(spell, &self.input_sources)?;
+        if let Some(source) = self.input_sources.first()
+            && (source.chain_id != self.chain_id || source.charms != self.charms)
+        {
+            return Err(NativeFailure::HostMismatch.into());
+        }
+        ensure_beam_destinations(spell)?;
         Ok(spell.clone())
     }
 }
@@ -156,11 +692,17 @@ impl EnchantedTx for EthereumTx {
         if !mock {
             ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
         }
-        match committed_placeholder(&spell) {
-            Ok((committed, _)) => self.accept_placeholder(committed),
-            Err(err) if self.proof.is_empty() => Err(err),
-            Err(_) => self.verify_proved_spell(&spell, spell_vk),
+        if let Ok((committed, _)) = committed_placeholder(&spell) {
+            return self.accept_placeholder(committed);
         }
+        let ins_empty = spell.tx.ins.as_ref().is_none_or(|ins| ins.is_empty());
+        if self.proof.is_empty() && !ins_empty {
+            return self.accept_native(&spell);
+        }
+        if self.proof.is_empty() {
+            return Err(committed_placeholder(&spell).expect_err("placeholder checks failed"));
+        }
+        self.verify_proved_spell(&spell, spell_vk)
     }
 
     fn virtual_spell(
@@ -201,7 +743,7 @@ impl EnchantedTx for EthereumTx {
 
     fn proven_final(&self) -> bool {
         self.signature
-            .is_some_and(|signature| signature_proves_final(self, &signature, &ETHEREUM_FINALITY))
+            .is_some_and(|signature| signature_proves_final(self, &signature, &ethereum_finality()))
     }
 }
 
@@ -350,6 +892,7 @@ pub fn record_with_proof(
         caller: None,
         salt: None,
         signature: None,
+        input_sources: Vec::new(),
     })
 }
 
@@ -369,6 +912,7 @@ pub fn plan_placeholder(
         caller: Some(request.caller),
         salt: Some(request.salt),
         signature: None,
+        input_sources: Vec::new(),
     };
     let tx_id = record.tx_id();
     let mut utxo_ids = Vec::with_capacity(owners.len());
@@ -390,21 +934,65 @@ pub fn plan_placeholder(
     })
 }
 
-/// `transact` calldata for `record`: a placeholder sent by its caller with its salt, or a
-/// proved spell sent by its first output owner with a zero salt.
-pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
-    let (spell, from, salt) = if record.proof.is_empty() {
-        placeholder_sender(record)?
+enum RecordKind {
+    Placeholder,
+    Native,
+    Proved,
+}
+
+fn record_kind(record: &EthereumTx) -> anyhow::Result<RecordKind> {
+    let spell = record.decode()?;
+    let ins_empty = spell.tx.ins.as_ref().is_none_or(|ins| ins.is_empty());
+    if record.proof.is_empty() && ins_empty {
+        Ok(RecordKind::Placeholder)
+    } else if record.proof.is_empty() {
+        Ok(RecordKind::Native)
     } else {
-        proved_sender(record)?
+        Ok(RecordKind::Proved)
+    }
+}
+
+/// `transact` calldata for `record`. A placeholder is sent by its caller with its salt.
+/// A native spell is sent by its single input owner with a zero salt and the openings
+/// derived from `input_sources`. A proved spell with empty `input_sources` still encodes
+/// empty openings.
+pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
+    let (spell, from, salt, openings) = match record_kind(record)? {
+        RecordKind::Placeholder => {
+            let (spell, from, salt) = placeholder_sender(record)?;
+            let openings = empty_openings(&spell);
+            (spell, from, salt, openings)
+        }
+        RecordKind::Native => native_sender(record)?,
+        RecordKind::Proved => proved_sender(record)?,
     };
-    let data = transact_calldata(&spell, salt, &record.proof)?;
+    let data = transact_calldata_with(&spell, salt, &record.proof, &openings)?;
     Ok(EthCall {
         from: format!("0x{}", hex::encode(from)),
         to: format!("0x{}", hex::encode(record.charms)),
         data: format!("0x{}", hex::encode(data)),
         value: "0".to_string(),
     })
+}
+
+fn native_sender(
+    record: &EthereumTx,
+) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32], Vec<Opening>)> {
+    ensure!(
+        record.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
+        "a native ethereum spell's anchor must be zero"
+    );
+    ensure!(
+        record.caller.is_none() && record.salt.is_none(),
+        "a native ethereum record has no caller or salt"
+    );
+    let spell = record.decode()?;
+    native_spell(&spell, &record.input_sources)?;
+    ensure_ethereum_output_coins(&spell)?;
+    ensure_beam_destinations(&spell)?;
+    let input_openings = openings(&spell, &record.input_sources)?;
+    let from = one_sender(&spell, &record.input_sources)?;
+    Ok((spell, from, [0u8; 32], input_openings))
 }
 
 fn placeholder_sender(
@@ -424,7 +1012,9 @@ fn placeholder_sender(
     Ok((spell, caller, salt))
 }
 
-fn proved_sender(record: &EthereumTx) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32])> {
+fn proved_sender(
+    record: &EthereumTx,
+) -> anyhow::Result<(NormalizedSpell, [u8; 20], [u8; 32], Vec<Opening>)> {
     ensure!(
         record.anchor.unwrap_or([0u8; 32]) == [0u8; 32],
         "a proved ethereum spell's anchor must be zero"
@@ -439,14 +1029,7 @@ fn proved_sender(record: &EthereumTx) -> anyhow::Result<(NormalizedSpell, [u8; 2
         "a proved ethereum spell spends an input"
     );
     ensure_ethereum_output_coins(&spell)?;
-    let beamed = spell.tx.beamed_outs.as_ref();
-    for (index, coin) in spell.tx.coins.iter().flatten().enumerate() {
-        ensure!(
-            beamed.is_some_and(|outs| outs.contains_key(&(index as u32)))
-                == (coin.dest.as_slice() == [0u8; 20]),
-            "coins[{index}].dest must be the zero address exactly when output {index} is beamed"
-        );
-    }
+    ensure_beam_destinations(&spell)?;
     let owner = spell
         .tx
         .coins
@@ -455,7 +1038,12 @@ fn proved_sender(record: &EthereumTx) -> anyhow::Result<(NormalizedSpell, [u8; 2
         .find(|coin| coin.dest.as_slice() != [0u8; 20])
         .context("a proved ethereum spell needs an output owner to send it")?;
     let from = owner.dest.as_slice().try_into()?;
-    Ok((spell, from, [0u8; 32]))
+    let input_openings = if record.input_sources.is_empty() {
+        empty_openings(&spell)
+    } else {
+        openings(&spell, &record.input_sources)?
+    };
+    Ok((spell, from, [0u8; 32], input_openings))
 }
 
 fn committed_placeholder(
@@ -564,9 +1152,18 @@ pub fn transact_calldata(
     salt: [u8; 32],
     proof: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
+    transact_calldata_with(spell, salt, proof, &empty_openings(spell))
+}
+
+fn transact_calldata_with(
+    spell: &NormalizedSpell,
+    salt: [u8; 32],
+    proof: &[u8],
+    openings: &[Opening],
+) -> anyhow::Result<Vec<u8>> {
     let mut data = selector(TRANSACT_SIGNATURE).to_vec();
     data.extend(tuple(vec![
-        encode_spell(spell)?,
+        encode_spell(spell, openings)?,
         Abi::Static(salt.to_vec()),
         Abi::Dynamic(encode_bytes(proof)),
         array(Vec::new()),
@@ -574,7 +1171,18 @@ pub fn transact_calldata(
     Ok(data)
 }
 
-fn encode_spell(spell: &NormalizedSpell) -> anyhow::Result<Abi> {
+fn empty_openings(spell: &NormalizedSpell) -> Vec<Opening> {
+    let count = spell.tx.ins.as_ref().map(|ins| ins.len()).unwrap_or(0);
+    vec![
+        Opening {
+            charms: NormalizedCharms::new(),
+            pins: BTreeMap::new(),
+        };
+        count
+    ]
+}
+
+fn encode_spell(spell: &NormalizedSpell, openings: &[Opening]) -> anyhow::Result<Abi> {
     let tx = &spell.tx;
     let apps: Vec<&App> = spell.app_public_inputs.keys().collect();
     let app_heads = apps
@@ -601,11 +1209,21 @@ fn encode_spell(spell: &NormalizedSpell) -> anyhow::Result<Abi> {
         .ins
         .iter()
         .flatten()
-        .map(|utxo| {
-            let opening = vec![utxo_ref(utxo), array(Vec::new()), array(Vec::new())];
-            Abi::Dynamic(tuple(opening))
+        .zip(openings)
+        .map(|(utxo, opening)| {
+            let pins = opening
+                .pins
+                .iter()
+                .map(|(vk, pin)| words(&[vk.0, word(u64::from(pin.version)), pin.wasm_hash.0]))
+                .collect();
+            let encoded = vec![
+                utxo_ref(utxo),
+                encode_charms(&apps, &opening.charms)?,
+                array(pins),
+            ];
+            Ok(Abi::Dynamic(tuple(encoded)))
         })
-        .collect();
+        .collect::<anyhow::Result<_>>()?;
     let refs = tx.refs.iter().flatten().map(utxo_ref).collect();
     let outs = tx
         .outs
@@ -737,6 +1355,7 @@ fn address_word(addr: [u8; 20]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bitcoin_tx::BitcoinTx;
     use crate::tx::{Chain, EnchantedTx, Tx};
     use crate::{NormalizedCharms, V14, is_correct};
     use ark_bls12_381::Bls12_381;
@@ -969,11 +1588,15 @@ app_public_inputs: {}
             caller: None,
             salt: None,
             signature: None,
+            input_sources: Vec::new(),
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)
             .unwrap_err();
-        assert_eq!(err.to_string(), "a placeholder has no inputs");
+        assert_eq!(
+            err.to_string(),
+            "a native ethereum spell's anchor must be zero"
+        );
 
         let mut charm_only = spell(1);
         charm_only.tx.outs[0].insert(0, charms_data::Data::from(&1u64));
@@ -987,6 +1610,7 @@ app_public_inputs: {}
             caller: None,
             salt: None,
             signature: None,
+            input_sources: Vec::new(),
         };
         let err = record
             .extract_and_verify_spell(&[0u8; 32], false)
@@ -1184,7 +1808,10 @@ app_public_inputs: {}
         record.anchor = None;
         record.proof = Vec::new();
         let err = transact_call(&record).unwrap_err();
-        assert_eq!(err.to_string(), "a placeholder has no apps");
+        assert!(matches!(
+            err.downcast_ref::<NativeFailure>(),
+            Some(NativeFailure::MissingSource { index: 0 })
+        ));
 
         let mut beamed = claim.clone();
         beamed.tx.beamed_outs = Some(BTreeMap::from([(0, B32([5; 32]))]));
@@ -1401,6 +2028,7 @@ app_public_inputs: {}
             caller: None,
             salt: None,
             signature: None,
+            input_sources: Vec::new(),
         }
     }
 
@@ -1549,6 +2177,261 @@ app_public_inputs: {}
                 other_contract.tx_id()
             )
         );
+    }
+
+    fn token_app() -> App {
+        App {
+            tag: TOKEN,
+            identity: B32([1; 32]),
+            vk: B32([2; 32]),
+        }
+    }
+
+    fn eth_coin(dest: [u8; 20]) -> NativeOutput {
+        NativeOutput {
+            amount: 0,
+            dest: dest.to_vec(),
+            content: None,
+        }
+    }
+
+    fn token_output(amount: u64) -> NormalizedCharms {
+        let mut charms = NormalizedCharms::new();
+        charms.insert(0, Data::from(&amount));
+        charms
+    }
+
+    fn creator_record(
+        amount: u64,
+        dest: [u8; 20],
+        anchor: [u8; 32],
+        charms: [u8; 20],
+    ) -> EthereumTx {
+        let mut spell = NormalizedSpell::default();
+        spell.app_public_inputs.insert(token_app(), Data::empty());
+        spell.tx.ins = Some(Vec::new());
+        spell.tx.outs = vec![token_output(amount)];
+        spell.tx.coins = Some(vec![eth_coin(dest)]);
+        EthereumTx {
+            chain_id: 1,
+            charms,
+            anchor: Some(anchor),
+            spell: util::write(&spell).unwrap(),
+            proof: Vec::new(),
+            caller: None,
+            salt: None,
+            signature: None,
+            input_sources: Vec::new(),
+        }
+    }
+
+    fn source_of(record: &EthereumTx) -> InputSource {
+        InputSource {
+            chain_id: record.chain_id,
+            charms: record.charms,
+            anchor: record.anchor,
+            spell: record.spell.clone(),
+        }
+    }
+
+    fn native_record(spell: &NormalizedSpell, creator: &EthereumTx) -> EthereumTx {
+        EthereumTx {
+            chain_id: creator.chain_id,
+            charms: creator.charms,
+            anchor: None,
+            spell: util::write(spell).unwrap(),
+            proof: Vec::new(),
+            caller: None,
+            salt: None,
+            signature: None,
+            input_sources: vec![source_of(creator)],
+        }
+    }
+
+    #[test]
+    fn a_bitcoin_spell_claims_a_proof_free_ethereum_beam_out() {
+        use crate::{BeamSource, utxo_id_hash_with_nonce};
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::Hash;
+        use bitcoin::{
+            Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let charms = [0x33; 20];
+        let creator = creator_record(8_000, [0x44; 20], [9; 32], charms);
+        let funding = BitcoinTx::Simple(Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([1; 32]), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        });
+        let claim_input = UtxoId(funding.tx_id(), 0);
+        let mut beam_spell = NormalizedSpell::default();
+        beam_spell
+            .app_public_inputs
+            .insert(token_app(), Data::empty());
+        beam_spell.tx.ins = Some(vec![UtxoId(source_tx_id(&source_of(&creator)), 0)]);
+        beam_spell.tx.outs = vec![token_output(8_000)];
+        beam_spell.tx.coins = Some(vec![eth_coin([0; 20])]);
+        beam_spell.tx.beamed_outs = Some(BTreeMap::from([(
+            0,
+            utxo_id_hash_with_nonce(&claim_input, None),
+        )]));
+        let mut beam = native_record(&beam_spell, &creator);
+        assert!(native_spell(&beam_spell, &beam.input_sources).is_ok());
+        let plan = plan_native(&beam_spell, &[Tx::Ethereum(creator.clone())]).unwrap();
+        assert!(plan.record.proof.is_empty());
+        assert_eq!(plan.record.input_sources, beam.input_sources);
+        assert_eq!(plan.call.from, "0x4444444444444444444444444444444444444444");
+        assert!(plan.call.data.starts_with("0x27485a93"));
+        assert_eq!(plan.call.value, "0");
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let message = finality_message(beam.chain_id, &beam.charms, &beam.eth_tx_id());
+        let signature = signing.sign(&message).to_bytes();
+        assert!(!signature_proves_final(
+            &beam,
+            &signature,
+            &ETHEREUM_FINALITY
+        ));
+        beam.signature = Some(signature);
+        assert!(!beam.proven_final());
+
+        let mut claim = NormalizedSpell::default();
+        claim.app_public_inputs.insert(token_app(), Data::empty());
+        claim.tx.ins = Some(vec![claim_input]);
+        claim.tx.outs = vec![token_output(8_000)];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount: 1_000,
+            dest: vec![0x51; 22],
+            content: None,
+        }]);
+        let beamed = BTreeMap::from([(0, BeamSource(UtxoId(beam.tx_id(), 0), None))]);
+        let _guard = set_finality_override(EthereumFinality {
+            vkey: signing.verifying_key().to_bytes(),
+            chain_id: 1,
+            charms,
+        });
+        let ok = is_correct(
+            &claim,
+            &vec![Tx::Bitcoin(funding.clone()), Tx::Ethereum(beam.clone())],
+            None,
+            &[0; 32],
+            &beamed,
+            None,
+        )
+        .expect("beam claim");
+        assert!(ok);
+
+        let mut bare = beam;
+        bare.input_sources.clear();
+        let ok = is_correct(
+            &claim,
+            &vec![
+                Tx::Bitcoin(funding),
+                Tx::Ethereum(bare),
+                Tx::Ethereum(creator),
+            ],
+            None,
+            &[0; 32],
+            &beamed,
+            None,
+        )
+        .expect("beam claim filled from the creator");
+        assert!(ok);
+    }
+
+    #[test]
+    fn a_proved_ethereum_spell_spends_a_proof_free_transfer() {
+        let creator = creator_record(8_000, [0x44; 20], [4; 32], [0x33; 20]);
+        let mut transfer = NormalizedSpell::default();
+        transfer
+            .app_public_inputs
+            .insert(token_app(), Data::empty());
+        transfer.tx.ins = Some(vec![UtxoId(source_tx_id(&source_of(&creator)), 0)]);
+        transfer.tx.outs = vec![token_output(8_000), NormalizedCharms::new()];
+        transfer.tx.coins = Some(vec![eth_coin([0x55; 20]), eth_coin([0x66; 20])]);
+        let transfer_record = native_record(&transfer, &creator);
+        assert!(native_spell(&transfer, &transfer_record.input_sources).is_ok());
+        assert!(transfer_record.signature.is_none());
+
+        let mut spend = NormalizedSpell::default();
+        spend.app_public_inputs.insert(token_app(), Data::empty());
+        spend.tx.ins = Some(vec![UtxoId(transfer_record.tx_id(), 0)]);
+        spend.tx.refs = Some(vec![UtxoId(transfer_record.tx_id(), 1)]);
+        spend.tx.outs = vec![token_output(8_000)];
+        spend.tx.coins = Some(vec![eth_coin([0x77; 20])]);
+        assert!(matches!(
+            native_spell(&spend, &[]).unwrap_err(),
+            NativeFailure::Refs
+        ));
+        let ok = is_correct(
+            &spend,
+            &vec![Tx::Ethereum(transfer_record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("proved spend of a proof-free transfer");
+        assert!(ok);
+    }
+
+    #[test]
+    fn a_proof_free_record_that_breaks_native_rules_is_rejected() {
+        let creator = creator_record(8_000, [0x44; 20], [5; 32], [0x33; 20]);
+        let mut spell = NormalizedSpell::default();
+        spell.app_public_inputs.insert(token_app(), Data::empty());
+        spell.tx.ins = Some(vec![UtxoId(source_tx_id(&source_of(&creator)), 0)]);
+        spell.tx.outs = vec![token_output(1)];
+        spell.tx.coins = Some(vec![eth_coin([0x55; 20])]);
+        let record = native_record(&spell, &creator);
+        let decoded: EthereumTx = util::read(util::write(&record).unwrap().as_slice()).unwrap();
+        assert_eq!(decoded, record);
+        assert_eq!(record.decode().unwrap(), spell);
+
+        let err = record
+            .extract_and_verify_spell(&[0; 32], false)
+            .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<NativeFailure>(),
+            Some(NativeFailure::Unbalanced {
+                app: 0,
+                input: 8_000,
+                output: 1
+            })
+        ));
+        let text = err.to_string();
+        assert!(!text.contains("placeholder"));
+        assert!(!text.to_lowercase().contains("cbor"));
+
+        let mut claim = NormalizedSpell::default();
+        claim.app_public_inputs.insert(token_app(), Data::empty());
+        claim.tx.ins = Some(vec![UtxoId(record.tx_id(), 0)]);
+        claim.tx.outs = vec![NormalizedCharms::new()];
+        claim.tx.coins = Some(vec![eth_coin([0x77; 20])]);
+        let err = is_correct(
+            &claim,
+            &vec![Tx::Ethereum(record)],
+            None,
+            &[0; 32],
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<NativeFailure>(),
+            Some(NativeFailure::Unbalanced { .. })
+        ));
     }
 
     #[test]

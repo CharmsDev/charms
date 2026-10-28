@@ -132,11 +132,7 @@ impl EnchantedTx for CardanoTx {
 
         native_outs_comply(&spell, self)?;
 
-        let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
-
-        let public_values = tx::to_serialized_pv(spell.version, spell_vk, &spell);
-
-        tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
+        tx::verify_committed_proof(&spell, &proof, spell_vk, spell.mock)?;
 
         Ok(spell)
     }

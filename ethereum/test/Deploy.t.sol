@@ -23,6 +23,9 @@ contract DeployTest is Test {
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
     bytes32 internal constant PROGRAM_VKEY =
+        0x00b26f435baecb7396b8b42cc09524897b59236c90c3a290d35a40739337a5ee;
+    /// @dev Key committed by `test/vectors/v16-deploy-proof.json`.
+    bytes32 internal constant FROZEN_PROGRAM_VKEY =
         0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d;
     address internal constant CALLER = 0x1111111111111111111111111111111111111111;
     address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
@@ -163,7 +166,7 @@ contract DeployTest is Test {
     }
 
     function test_realV16ProofChangesState() public {
-        Charms charms = _proofCharms();
+        Charms charms = _proofCharmsWith(FROZEN_PROGRAM_VKEY);
         (bytes32 txId, ICharmsTypes.Spell memory claim) = _placeholder(charms, PREVIOUS_PLACEHOLDER);
         bytes memory proof = _v16Proof();
         bytes memory cbor = SpellCodec.encode(claim);
@@ -171,7 +174,7 @@ contract DeployTest is Test {
             address(charms.APPLY().VERIFIER()),
             abi.encodeCall(
                 ISP1Verifier.verifyProof,
-                (PROGRAM_VKEY, SpellCodec.publicValues(PROGRAM_VKEY, cbor), proof)
+                (FROZEN_PROGRAM_VKEY, SpellCodec.publicValues(FROZEN_PROGRAM_VKEY, cbor), proof)
             )
         );
 
@@ -181,6 +184,16 @@ contract DeployTest is Test {
         assertEq(_owner(charms, txId, 0), address(0));
         assertEq(_owner(charms, txId, 1), REF_OWNER);
         assertEq(_owner(charms, created, 0), NEXT_OWNER);
+    }
+
+    function test_checkedInV16ProofIsInvalidUnderTheLiveKey() public {
+        Charms charms = _proofCharms();
+        assertEq(charms.APPLY().PROGRAM_VKEY(), PROGRAM_VKEY);
+        (, ICharmsTypes.Spell memory claim) = _placeholder(charms, PREVIOUS_PLACEHOLDER);
+
+        vm.prank(CALLER);
+        vm.expectRevert();
+        charms.transact(claim, bytes32(0), _v16Proof(), new bytes[](0));
     }
 
     function test_corruptedV16ProofLeavesStateUnchanged() public {
@@ -227,6 +240,19 @@ contract DeployTest is Test {
         vm.etch(PREVIOUS_PROXY, address(deployed).code);
         bytes32 slot = bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
         vm.store(PREVIOUS_PROXY, slot, vm.load(address(deployed), slot));
+        charms = Charms(payable(PREVIOUS_PROXY));
+    }
+
+    function _proofCharmsWith(bytes32 programVKey) internal returns (Charms charms) {
+        Charms deployed = script.run(FACTORY, admin, signer);
+        Charms impl = new Charms(
+            new CharmsApply(16, programVKey, deployed.APPLY().VERIFIER()),
+            address(deployed.tokenImplementation()),
+            signer
+        );
+        vm.etch(PREVIOUS_PROXY, address(deployed).code);
+        bytes32 slot = bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);
+        vm.store(PREVIOUS_PROXY, slot, bytes32(uint256(uint160(address(impl)))));
         charms = Charms(payable(PREVIOUS_PROXY));
     }
 

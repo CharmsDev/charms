@@ -10,6 +10,11 @@
       "package": "scrolls_bitcoin",
       "type": "rust"
     },
+    "scrolls_bitcoin_v16": {
+      "candid": "src/scrolls_bitcoin/scrolls_bitcoin.did",
+      "package": "scrolls_bitcoin",
+      "type": "rust"
+    },
     "scrolls_cardano": {
       "candid": "src/scrolls_cardano/scrolls_cardano.did",
       "package": "scrolls_cardano",
