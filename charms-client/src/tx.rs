@@ -115,7 +115,6 @@ pub fn extended_normalized_spell(
     tx.virtual_spell(spell_vk, next_spell)
 }
 
-/// One spell key together with the Groth16 verifying key its proofs were built under.
 pub struct ProofPair<'a> {
     pub spell_vk: &'a [u8; 32],
     pub groth16_vk: &'a [u8],
@@ -219,7 +218,6 @@ pub const V16_FROZEN_SPELL_VK: [u8; 32] =
 /// version-14 bytes if a later rebuild changes [`V16_GROTH16_VK_BYTES`].
 pub const V16_FROZEN_GROTH16_VK_BYTES: &'static [u8] = V14_GROTH16_VK_BYTES;
 
-/// Verify-only. Version 16 tries the live pair, then the frozen pair.
 /// Proving uses [`spell_vk`] and does not call this.
 pub fn proof_pairs<'a>(
     version: u32,
@@ -250,7 +248,6 @@ pub fn proof_pairs<'a>(
     }])
 }
 
-/// Try each [`proof_pairs`] entry. Public values are `to_serialized_pv` of that pair's spell key.
 pub fn verify_committed_proof(
     spell: &NormalizedSpell,
     proof: &[u8],

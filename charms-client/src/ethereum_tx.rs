@@ -48,12 +48,10 @@ pub struct EthereumTx {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde_as(as = "Option<IfIsHumanReadable<Hex, serde_with::Bytes>>")]
     pub signature: Option<[u8; 64]>,
-    /// Creator preimage of each input. Not part of `ethTxId` or the finality message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_sources: Vec<InputSource>,
 }
 
-/// Creator of one input. `eth_tx_id(chain_id, charms, anchor, spell)` is that input's id.
 #[serde_as]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputSource {
@@ -67,7 +65,6 @@ pub struct InputSource {
     pub spell: Vec<u8>,
 }
 
-/// Openings `transact` sends. Charm indices are into the spending spell's app list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opening {
     pub charms: NormalizedCharms,
@@ -156,7 +153,6 @@ pub enum NativeFailure {
 }
 
 impl NativeFailure {
-    /// Missing or contradictory witness. A shape miss is not this.
     pub fn blocks_prove(&self) -> bool {
         matches!(
             self,
@@ -952,10 +948,6 @@ fn record_kind(record: &EthereumTx) -> anyhow::Result<RecordKind> {
     }
 }
 
-/// `transact` calldata for `record`. A placeholder is sent by its caller with its salt.
-/// A native spell is sent by its single input owner with a zero salt and the openings
-/// derived from `input_sources`. A proved spell with empty `input_sources` still encodes
-/// empty openings.
 pub fn transact_call(record: &EthereumTx) -> anyhow::Result<EthCall> {
     let (spell, from, salt, openings) = match record_kind(record)? {
         RecordKind::Placeholder => {
