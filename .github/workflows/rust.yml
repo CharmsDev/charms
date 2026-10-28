@@ -40,11 +40,20 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@1fbea72663f6d4c03efaab13560c8a24cfd2a7cc # v1.9.0
         with:
           cache-workspaces: scrolls
+          target: wasm32-unknown-unknown
           # The action default exports RUSTFLAGS=-D warnings. Leave it unset.
           rustflags: ''
 
       - name: Test charms_metadata and scrolls_ethereum
         run: cargo test --locked --manifest-path scrolls/Cargo.toml -p charms_metadata -p scrolls_ethereum
+
+      # dfx 0.30.1's Rust builder runs this command from the scrolls workspace
+      # (cargo build --target wasm32-unknown-unknown --release -p <package> --locked).
+      # The test step above never compiles scrolls_bitcoin, so a const error in
+      # that canister still left this job green.
+      - name: Build the scrolls_bitcoin wasm the way dfx does
+        working-directory: scrolls
+        run: env -u NEXT_SCROLLS_BITCOIN_CANISTER_ID cargo build --target wasm32-unknown-unknown --release -p scrolls_bitcoin --locked
 
   spell-checker-vk:
     runs-on: ubuntu-latest

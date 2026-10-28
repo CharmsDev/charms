@@ -68,8 +68,11 @@ const V14_SCROLLS_BITCOIN_CANISTER_ID: &str = "lmbwh-3qaaa-aaaak-qunha-cai";
 /// Each hop appends its own canister ID to the `seen` list passed downstream, so a
 /// misconfigured chain (A → B → A, A → B → C → A, etc.) is detected before the
 /// forwarding inter-canister call is made.
-const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str =
-    option_env!("NEXT_SCROLLS_BITCOIN_CANISTER_ID").unwrap_or("");
+const NEXT_SCROLLS_BITCOIN_CANISTER_ID: &str = match option_env!("NEXT_SCROLLS_BITCOIN_CANISTER_ID")
+{
+    Some(id) => id,
+    None => "",
+};
 
 /// mempool.space REST endpoint for broadcasting a raw transaction on mainnet.
 const MEMPOOL_MAINNET_BROADCAST_URL: &str = "https://mempool.space/api/tx";
