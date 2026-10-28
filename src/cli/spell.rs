@@ -293,6 +293,8 @@ impl Check for SpellCli {
 
         let prev_txs = from_strings(&prev_txs)?;
         adjust_coin_contents(&mut norm_spell, chain)?;
+        let prev_txs =
+            charms_client::bind_prev_txs(&norm_spell, &tx_ins_beamed_source_utxos, &prev_txs)?;
 
         ensure_all_prev_txs_are_present(
             &norm_spell,

@@ -439,6 +439,15 @@ pub struct SpellProverInput {
     pub scroll_outputs: Option<SignedScrollOutputs>,
 }
 
+pub fn bind_prev_txs(
+    spell: &NormalizedSpell,
+    tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
+    prev_txs: &[Tx],
+) -> anyhow::Result<Vec<Tx>> {
+    let direct = direct_prev_txids(spell, tx_ins_beamed_source_utxos);
+    Ok(ethereum_tx::bind_native_sources(&direct, prev_txs)?)
+}
+
 /// Check if the spell is correct.
 pub fn is_correct(
     spell: &NormalizedSpell,
@@ -448,8 +457,7 @@ pub fn is_correct(
     tx_ins_beamed_source_utxos: &BTreeMap<usize, BeamSource>,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
-    let direct = direct_prev_txids(spell, tx_ins_beamed_source_utxos);
-    let prev_owned = ethereum_tx::bind_native_sources(&direct, prev_txs)?;
+    let prev_owned = bind_prev_txs(spell, tx_ins_beamed_source_utxos, prev_txs)?;
     let prev_txs = &prev_owned;
 
     ensure_ethereum_prev_txs_admissible(spell, prev_txs)?;

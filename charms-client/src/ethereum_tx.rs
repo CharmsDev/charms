@@ -130,6 +130,8 @@ pub enum NativeFailure {
     SumOverflow { app: u32 },
     #[error("app {app} moves {input} in and {output} out")]
     Unbalanced { app: u32, input: u128, output: u128 },
+    #[error("app {app} has a zero token amount")]
+    ZeroAmount { app: u32 },
     #[error("nft multiset for app {app} changed")]
     NftMismatch { app: u32 },
     #[error("input {index} has no creator in the witness")]
@@ -163,6 +165,7 @@ impl NativeFailure {
                 | Self::HostMismatch
                 | Self::SourceConflict { .. }
                 | Self::OneSender
+                | Self::ZeroAmount { .. }
         )
     }
 }
@@ -348,6 +351,12 @@ fn fill_direct(
         return Ok(Tx::Ethereum(filled));
     }
     sources_match_pool(record, by_id)?;
+    for source in &record.input_sources {
+        let id = source_tx_id(source);
+        if !direct.contains(&id) && by_id.contains_key(&id) {
+            used.insert(id);
+        }
+    }
     Ok(tx.clone())
 }
 
@@ -508,6 +517,9 @@ fn token_sum<'a>(
             let amount = data
                 .value::<u64>()
                 .map_err(|_| NativeFailure::SumOverflow { app })?;
+            if amount == 0 {
+                return Err(NativeFailure::ZeroAmount { app });
+            }
             sum = sum.saturating_add(u128::from(amount));
         }
     }
@@ -1361,6 +1373,9 @@ mod tests {
     use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
     use ark_snark::SNARK;
     use ark_std::rand::{SeedableRng, rngs::StdRng};
+    use bitcoin::absolute::LockTime;
+    use bitcoin::hashes::Hash;
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
     use charms_data::{B32, Data, NFT, NativeOutput, UtxoId, VersionedApp};
     use sha2::{Digest, Sha256};
     use std::str::FromStr;
@@ -2340,6 +2355,81 @@ app_public_inputs: {}
         )
         .expect("beam claim filled from the creator");
         assert!(ok);
+    }
+
+    #[test]
+    fn an_explicit_zero_token_amount_is_rejected_and_a_missing_charm_is_not() {
+        let creator = creator_record(8_000, [0x44; 20], [6; 32], [0x33; 20]);
+        let source = source_of(&creator);
+        let mut spell = NormalizedSpell::default();
+        spell.app_public_inputs.insert(token_app(), Data::empty());
+        spell.tx.ins = Some(vec![UtxoId(source_tx_id(&source), 0)]);
+        spell.tx.outs = vec![token_output(8_000), NormalizedCharms::new()];
+        spell.tx.coins = Some(vec![eth_coin([0x55; 20]), eth_coin([0x66; 20])]);
+        assert!(native_spell(&spell, &[source.clone()]).is_ok());
+
+        spell.tx.outs[1] = token_output(0);
+        assert!(matches!(
+            native_spell(&spell, &[source]).unwrap_err(),
+            NativeFailure::ZeroAmount { app: 0 }
+        ));
+        assert!(NativeFailure::ZeroAmount { app: 0 }.blocks_prove());
+    }
+
+    #[test]
+    fn a_witness_creator_is_dropped_and_an_unrelated_record_stays() {
+        let charms = [0x33; 20];
+        let creator = creator_record(8_000, [0x44; 20], [8; 32], charms);
+        let unrelated = creator_record(1, [0x45; 20], [10; 32], charms);
+        let funding = BitcoinTx::Simple(Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([2; 32]), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        });
+        let claim_input = UtxoId(funding.tx_id(), 0);
+        let mut beam_spell = NormalizedSpell::default();
+        beam_spell
+            .app_public_inputs
+            .insert(token_app(), Data::empty());
+        beam_spell.tx.ins = Some(vec![UtxoId(source_tx_id(&source_of(&creator)), 0)]);
+        beam_spell.tx.outs = vec![token_output(8_000)];
+        beam_spell.tx.coins = Some(vec![eth_coin([0; 20])]);
+        beam_spell.tx.beamed_outs = Some(BTreeMap::from([(
+            0,
+            utxo_id_hash_with_nonce(&claim_input, None),
+        )]));
+        let mut beam = native_record(&beam_spell, &creator);
+        beam.input_sources.clear();
+        let direct = BTreeSet::from([funding.tx_id(), beam.tx_id()]);
+        let bound = bind_native_sources(
+            &direct,
+            &[
+                Tx::Bitcoin(funding),
+                Tx::Ethereum(beam.clone()),
+                Tx::Ethereum(creator.clone()),
+                Tx::Ethereum(unrelated.clone()),
+            ],
+        )
+        .unwrap();
+        assert!(bound.iter().all(|tx| tx.tx_id() != creator.tx_id()));
+        assert!(bound.iter().any(|tx| tx.tx_id() == unrelated.tx_id()));
+        let Tx::Ethereum(filled) = bound.iter().find(|tx| tx.tx_id() == beam.tx_id()).unwrap()
+        else {
+            panic!("beam record stays");
+        };
+        assert_eq!(
+            filled.input_sources,
+            native_record(&beam_spell, &creator).input_sources
+        );
     }
 
     #[test]

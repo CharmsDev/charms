@@ -23,7 +23,7 @@ contract DeployTest is Test {
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
     bytes32 internal constant PROGRAM_VKEY =
-        0x00b26f435baecb7396b8b42cc09524897b59236c90c3a290d35a40739337a5ee;
+        0x0089479ae9152d200d9678e19e92d958e62f7bbebc3850e47586acac6e431b4a;
     /// @dev Key committed by `test/vectors/v16-deploy-proof.json`.
     bytes32 internal constant FROZEN_PROGRAM_VKEY =
         0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d;

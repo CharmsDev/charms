@@ -45,7 +45,7 @@ PRs 249 and 251 rebuilt the guest and replaced the only version-16 key. That was
 
 ## Examples
 
-The live key after the proof-free Ethereum guest is `0x00b26f435baecb7396b8b42cc09524897b59236c90c3a290d35a40739337a5ee`. The frozen key is `0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d`. `version_16_verifies_the_frozen_spell_vk_and_the_live_one` locks both. `test_realV16ProofChangesState` still runs the checked-in proof under the frozen key. `test_checkedInV16ProofIsInvalidUnderTheLiveKey` shows the live `CharmsApply` rejects that proof.
+The live key after the proof-free Ethereum guest is `0x0089479ae9152d200d9678e19e92d958e62f7bbebc3850e47586acac6e431b4a`. The guest ELF is not stripped, so a later edit in a crate the guest links, including a comment-only edit, moves that live key. The frozen key is `0x00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d`. `version_16_verifies_the_frozen_spell_vk_and_the_live_one` locks both. `test_realV16ProofChangesState` still runs the checked-in proof under the frozen key. `test_checkedInV16ProofIsInvalidUnderTheLiveKey` shows the live `CharmsApply` rejects that proof.
 
 ## Related
 

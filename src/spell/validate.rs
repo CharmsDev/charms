@@ -234,6 +234,11 @@ impl ProveSpellTxImpl {
         prove_request: &mut super::request::ProveRequest,
         scroll_outputs: Option<&SignedScrollOutputs>,
     ) -> anyhow::Result<(u64, bool)> {
+        prove_request.prev_txs = charms_client::bind_prev_txs(
+            &prove_request.spell,
+            &prove_request.tx_ins_beamed_source_utxos,
+            &prove_request.prev_txs,
+        )?;
         charms_client::ensure_ethereum_prev_txs_admissible(
             &prove_request.spell,
             &prove_request.prev_txs,
@@ -443,9 +448,16 @@ impl ProveSpellTxImpl {
 mod tests {
     use super::*;
     use crate::spell::{ProveSpellTx, ProveSpellTxImpl};
+    use bitcoin::absolute::LockTime;
+    use bitcoin::hashes::Hash;
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+    use charms_client::bitcoin_tx::BitcoinTx;
+    use charms_client::ethereum_tx::plan_native;
     use charms_client::{
-        NormalizedSpell, ethereum_tx::EthereumTx, request::ProveRequest, tx::EnchantedTx,
+        BeamSource, NormalizedCharms, NormalizedSpell, bind_prev_txs, ethereum_tx::EthereumTx,
+        request::ProveRequest, tx::EnchantedTx, utxo_id_hash_with_nonce,
     };
+    use charms_data::{App, B32, NativeOutput, TOKEN, UtxoId};
     use std::collections::BTreeMap;
 
     fn ethereum_prev() -> Tx {
@@ -580,5 +592,129 @@ app_public_inputs: {}
             err.to_string(),
             "spell is hosted on ethereum but the requested chain is cardano"
         );
+    }
+
+    fn token_app() -> App {
+        App {
+            tag: TOKEN,
+            identity: B32([1; 32]),
+            vk: B32([2; 32]),
+        }
+    }
+
+    fn eth_coin(dest: [u8; 20]) -> NativeOutput {
+        NativeOutput {
+            amount: 0,
+            dest: dest.to_vec(),
+            content: None,
+        }
+    }
+
+    fn token_output(amount: u64) -> NormalizedCharms {
+        let mut charms = NormalizedCharms::new();
+        charms.insert(0, Data::from(&amount));
+        charms
+    }
+
+    #[test]
+    fn a_proof_free_beam_claim_binds_its_creator_before_the_exact_prev_check() {
+        let mut minted = NormalizedSpell::default();
+        minted.app_public_inputs.insert(token_app(), Data::empty());
+        minted.tx.ins = Some(Vec::new());
+        minted.tx.outs = vec![token_output(8_000)];
+        minted.tx.coins = Some(vec![eth_coin([0x44; 20])]);
+        let creator = EthereumTx {
+            chain_id: 1,
+            charms: [0x33; 20],
+            anchor: Some([9; 32]),
+            spell: util::write(&minted).unwrap(),
+            proof: Vec::new(),
+            caller: None,
+            salt: None,
+            signature: None,
+            input_sources: Vec::new(),
+        };
+        let funding = BitcoinTx::Simple(Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([1; 32]), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        });
+        let claim_input = UtxoId(funding.tx_id(), 0);
+        let creator_id = creator.tx_id();
+        let mut beam_spell = NormalizedSpell::default();
+        beam_spell
+            .app_public_inputs
+            .insert(token_app(), Data::empty());
+        beam_spell.tx.ins = Some(vec![UtxoId(creator_id, 0)]);
+        beam_spell.tx.outs = vec![token_output(8_000)];
+        beam_spell.tx.coins = Some(vec![eth_coin([0; 20])]);
+        beam_spell.tx.beamed_outs = Some(BTreeMap::from([(
+            0,
+            utxo_id_hash_with_nonce(&claim_input, None),
+        )]));
+        let planned = plan_native(&beam_spell, &[Tx::Ethereum(creator.clone())]).unwrap();
+        let expected_sources = planned.record.input_sources.clone();
+        let beam_id = planned.record.tx_id();
+        let mut unrelated = planned.record.clone();
+        unrelated.anchor = Some([4; 32]);
+        unrelated.input_sources.clear();
+        unrelated.spell.clear();
+        let mut beam = planned.record;
+        beam.input_sources.clear();
+        let mut claim = NormalizedSpell::default();
+        claim.app_public_inputs.insert(token_app(), Data::empty());
+        claim.tx.ins = Some(vec![claim_input]);
+        claim.tx.outs = vec![token_output(8_000)];
+        claim.tx.coins = Some(vec![NativeOutput {
+            amount: 1_000,
+            dest: vec![0x51; 22],
+            content: None,
+        }]);
+        let beamed = BTreeMap::from([(0, BeamSource(UtxoId(beam.tx_id(), 0), None))]);
+        let prev = vec![
+            Tx::Bitcoin(funding),
+            Tx::Ethereum(beam),
+            Tx::Ethereum(creator),
+        ];
+        let raw = ensure_all_prev_txs_are_present(&claim, &beamed, &by_txid(&prev)).unwrap_err();
+        assert!(raw.to_string().contains("exactly the transactions"));
+
+        let bound = bind_prev_txs(&claim, &beamed, &prev).unwrap();
+        ensure_all_prev_txs_are_present(&claim, &beamed, &by_txid(&bound)).unwrap();
+        assert!(bound.iter().all(|tx| tx.tx_id() != creator_id));
+        let Tx::Ethereum(filled) = bound.iter().find(|tx| tx.tx_id() == beam_id).unwrap() else {
+            panic!("the beam record stays");
+        };
+        assert_eq!(filled.input_sources, expected_sources);
+
+        let with_extra = {
+            let mut txs = prev.clone();
+            txs.push(Tx::Ethereum(unrelated.clone()));
+            txs
+        };
+        let bound_extra = bind_prev_txs(&claim, &beamed, &with_extra).unwrap();
+        let extra =
+            ensure_all_prev_txs_are_present(&claim, &beamed, &by_txid(&bound_extra)).unwrap_err();
+        assert!(extra.to_string().contains("exactly the transactions"));
+
+        let prover = ProveSpellTxImpl::new(false);
+        let mut request = request(claim, prev, Chain::Bitcoin);
+        request.tx_ins_beamed_source_utxos = beamed;
+        let err = prover
+            .validate_prove_request(&mut request, None)
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(!text.contains("exactly the transactions"));
+        assert!(!text.contains("no creator"));
+        assert!(request.prev_txs.iter().all(|tx| tx.tx_id() != creator_id));
     }
 }
