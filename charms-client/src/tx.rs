@@ -115,13 +115,6 @@ pub fn extended_normalized_spell(
     tx.virtual_spell(spell_vk, next_spell)
 }
 
-pub struct ProofPair<'a> {
-    pub spell_vk: &'a [u8; 32],
-    pub groth16_vk: &'a [u8],
-}
-
-/// Proving key for a new proof. Version 16 returns `live`. It does not return
-/// [`V16_FROZEN_SPELL_VK`].
 pub fn spell_vk(spell_version: u32, spell_vk: &[u8; 32], mock: bool) -> anyhow::Result<&[u8; 32]> {
     if mock {
         return Ok(&MOCK_SPELL_VK);
@@ -208,71 +201,6 @@ pub const V15_GROTH16_VK_BYTES: &'static [u8] = V14_GROTH16_VK_BYTES;
 pub const V16_GROTH16_VK_BYTES: &'static [u8] = V15_GROTH16_VK_BYTES;
 pub const CURRENT_GROTH16_VK_BYTES: &'static [u8] = V16_GROTH16_VK_BYTES;
 
-/// Spell key committed by version-16 proofs built before this guest.
-/// The mint `cfe002ad4fea566b8a927196c278a22751975f72394263dde7a4bb1bee9c0892`
-/// is one such proof. This tree does not check that transaction.
-pub const V16_FROZEN_SPELL_VK: [u8; 32] =
-    hex!("00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d");
-
-/// Groth16 key those frozen proofs were verified under. It stays on the
-/// version-14 bytes if a later rebuild changes [`V16_GROTH16_VK_BYTES`].
-pub const V16_FROZEN_GROTH16_VK_BYTES: &'static [u8] = V14_GROTH16_VK_BYTES;
-
-/// Proving uses [`spell_vk`] and does not call this.
-pub fn proof_pairs<'a>(
-    version: u32,
-    live: &'a [u8; 32],
-    mock: bool,
-) -> anyhow::Result<Vec<ProofPair<'a>>> {
-    if mock {
-        return Ok(vec![ProofPair {
-            spell_vk: &MOCK_SPELL_VK,
-            groth16_vk: MOCK_GROTH16_VK_BYTES,
-        }]);
-    }
-    if version == V16 {
-        return Ok(vec![
-            ProofPair {
-                spell_vk: live,
-                groth16_vk: groth16_vk(version, false)?,
-            },
-            ProofPair {
-                spell_vk: &V16_FROZEN_SPELL_VK,
-                groth16_vk: V16_FROZEN_GROTH16_VK_BYTES,
-            },
-        ]);
-    }
-    Ok(vec![ProofPair {
-        spell_vk: spell_vk(version, live, false)?,
-        groth16_vk: groth16_vk(version, false)?,
-    }])
-}
-
-pub fn verify_committed_proof(
-    spell: &NormalizedSpell,
-    proof: &[u8],
-    live: &[u8; 32],
-    mock: bool,
-) -> anyhow::Result<()> {
-    let pairs = proof_pairs(spell.version, live, mock)?;
-    let mut last = None;
-    for pair in pairs {
-        let public_values = to_serialized_pv(spell.version, pair.spell_vk, spell);
-        match verify_snark_proof_with_vk(
-            proof,
-            &public_values,
-            pair.spell_vk,
-            pair.groth16_vk,
-            spell.version,
-            mock,
-        ) {
-            Ok(()) => return Ok(()),
-            Err(err) => last = Some(err),
-        }
-    }
-    Err(last.expect("proof_pairs returns at least one pair"))
-}
-
 pub fn to_serialized_pv(
     spell_version: u32,
     spell_vk: &[u8; 32],
@@ -305,24 +233,6 @@ pub fn verify_snark_proof(
     mock: bool,
 ) -> anyhow::Result<()> {
     let groth16_vk = groth16_vk(spell_version, mock)?;
-    verify_snark_proof_with_vk(
-        proof,
-        public_inputs,
-        sp1_vkey_hash,
-        groth16_vk,
-        spell_version,
-        mock,
-    )
-}
-
-fn verify_snark_proof_with_vk(
-    proof: &[u8],
-    public_inputs: &[u8],
-    sp1_vkey_hash: &[u8; 32],
-    groth16_vk: &[u8],
-    spell_version: u32,
-    mock: bool,
-) -> anyhow::Result<()> {
     match mock {
         false => match spell_version {
             v if v <= V11 => verify_gnark_v5(proof, public_inputs, sp1_vkey_hash, groth16_vk),
@@ -451,30 +361,6 @@ mod tests {
             spell_vk(CURRENT_VERSION, &current, false).unwrap(),
             &current
         );
-    }
-
-    #[test]
-    fn version_16_verifies_the_frozen_spell_vk_and_the_live_one() {
-        let live = [9u8; 32];
-        let pairs = proof_pairs(16, &live, false).unwrap();
-        assert!(
-            pairs
-                .iter()
-                .any(|pair| pair.spell_vk == &V16_FROZEN_SPELL_VK)
-        );
-        assert!(pairs.iter().any(|pair| *pair.spell_vk == live));
-        assert_eq!(spell_vk(16, &live, false).unwrap(), &live);
-        assert_eq!(
-            V16_FROZEN_SPELL_VK,
-            hex!("00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d")
-        );
-        let frozen = pairs
-            .iter()
-            .find(|pair| pair.spell_vk == &V16_FROZEN_SPELL_VK)
-            .unwrap();
-        assert_eq!(frozen.groth16_vk, V14_GROTH16_VK_BYTES);
-        let live_pair = pairs.iter().find(|pair| *pair.spell_vk == live).unwrap();
-        assert_eq!(live_pair.groth16_vk, groth16_vk(16, false).unwrap());
     }
 
     #[test]

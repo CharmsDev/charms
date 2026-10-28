@@ -2,7 +2,7 @@
 
 `scrolls_bitcoin_v14` is `lmbwh-3qaaa-aaaak-qunha-cai`. `scrolls_bitcoin_v15` is `rpgc6-oqaaa-aaaak-qy3uq-cai`. Both were built from this crate before it verified spell version 16, so `verify_spell` on those deployments returns `unsupported spell version 16 (NEXT_SCROLLS_BITCOIN_CANISTER_ID not set)`.
 
-This tree's `CURRENT_VERSION` is 16. A wasm built from it verifies version 16 locally and does not consult `NEXT_SCROLLS_BITCOIN_CANISTER_ID` for that version. `verify_spell` accepts a version-16 proof that commits the live `SPELL_VK` and a proof that commits `00da533974a87fa489f6f9831c9ea2447b456b38ef3a5c6dc9e421af52831f8d`. `NEXT` is `option_env!("NEXT_SCROLLS_BITCOIN_CANISTER_ID").unwrap_or("")`. It is not an init argument. `init` stays `service : () -> { ... }`.
+This tree's `CURRENT_VERSION` is 16. A wasm built from it verifies version 16 locally and does not consult `NEXT_SCROLLS_BITCOIN_CANISTER_ID` for that version. `verify_spell` accepts a version-16 proof that commits this tree's `SPELL_VK`. `NEXT` is `option_env!("NEXT_SCROLLS_BITCOIN_CANISTER_ID").unwrap_or("")`. It is not an init argument. `init` stays `service : () -> { ... }`.
 
 The host keeps calling `addresses` on v15. A new canister id derives new threshold keys. Spending a scroll output still requires `sign_and_submit` on the canister whose key controls that output. Forwarding checks a spell. It does not sign.
 

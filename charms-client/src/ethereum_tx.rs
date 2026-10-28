@@ -664,7 +664,15 @@ impl EthereumTx {
             self.spell == canonical,
             "ethereum spell CBOR is not canonical"
         );
-        tx::verify_committed_proof(spell, &self.proof, spell_vk, spell.mock)?;
+        let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
+        let public_values = tx::to_serialized_pv(spell.version, spell_vk, spell);
+        tx::verify_snark_proof(
+            &self.proof,
+            &public_values,
+            spell_vk,
+            spell.version,
+            spell.mock,
+        )?;
         Ok(spell.clone())
     }
 
