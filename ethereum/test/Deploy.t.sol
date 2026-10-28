@@ -23,12 +23,12 @@ contract DeployTest is Test {
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
     bytes32 internal constant PROGRAM_VKEY =
-        0x0069b92e05b07b84b4525dcbce17dd29811ab2b6492c5bb6d86af7a5574f0494;
+        0x00b355b648d4efac98ca94aa15ad24300452b40762a269c599cd682d14b001c0;
     address internal constant CALLER = 0x1111111111111111111111111111111111111111;
     address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
     address internal constant NEXT_OWNER = 0x3333333333333333333333333333333333333333;
     bytes32 internal constant PLACEHOLDER_TX =
-        0x779bc5a626e8fce3529fd2faaae158c358a6b57a4f7652563a646323f74eb97c;
+        0x75d0f9e998a69ba877030d2f146931e1d0fc51b8d9aafd7475415a1e8c79b7a3;
     /// @dev The checked-in Groth16 proof commits to a spell whose input id was
     /// created at this proxy.
     address internal constant PREVIOUS_PROXY = 0x7269cC778B9b90EEe6717B3D3050E372E399d8E7;
@@ -54,6 +54,8 @@ contract DeployTest is Test {
             type(CharmsProxy).creationCode,
             abi.encode(initializer, abi.encodeCall(CharmsInitializer.initialize, (admin)))
         );
+        assertEq(script.INITIALIZER_SALT(), keccak256("charms-initializer-v2"));
+        assertEq(script.PROXY_SALT(), keccak256("charms-proxy-v2"));
         assertEq(
             address(charms),
             vm.computeCreate2Address(script.PROXY_SALT(), keccak256(proxyInit), FACTORY)
@@ -155,7 +157,7 @@ contract DeployTest is Test {
 
     function test_claimEncodingAtTheCreate2Address() public {
         Charms charms = script.run(FACTORY, admin, signer);
-        assertEq(address(charms), 0x083f086405cCCc5cEAdC29c8Ed36bBA4d13d39Fd);
+        assertEq(address(charms), 0x2d4ecAdc8eeD495c0aD037bcd876Ec180A011EeE);
         (, ICharmsTypes.Spell memory claim) = _placeholder(charms, PLACEHOLDER_TX);
         assertEq(
             SpellCodec.encode(claim), vm.parseBytes(vm.readFile("test/vectors/v16-claim-cbor.hex"))

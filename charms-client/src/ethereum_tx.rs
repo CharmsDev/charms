@@ -82,7 +82,7 @@ pub struct EthereumFinality {
 pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
     vkey: hex!("864bdfb6bbfc5497e23314caab4accda88f6adb34c7e33b278961a6f5c9d2514"),
     chain_id: 1,
-    charms: hex!("02177ffa1d7fbb35f2c444ee89b1f9de7b270b4f"),
+    charms: hex!("7f7ab9224782de7a20e89e6fc0de52ff6b48d8f0"),
 };
 
 #[cfg(test)]
