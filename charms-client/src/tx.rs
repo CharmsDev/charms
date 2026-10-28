@@ -3,7 +3,7 @@ use crate::{
     CURRENT_VERSION, MOCK_SPELL_VK, NormalizedSpell, V0, V0_SPELL_VK, V1, V1_SPELL_VK, V2,
     V2_SPELL_VK, V3, V3_SPELL_VK, V4, V4_SPELL_VK, V5, V5_SPELL_VK, V6, V6_SPELL_VK, V7,
     V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, V11, V11_SPELL_VK, V12,
-    V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, V15, V15_SPELL_VK, V16, ark,
+    V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, V15, V15_SPELL_VK, ark,
     bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
