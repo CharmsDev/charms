@@ -22,7 +22,7 @@ import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 contract Deploy is Script {
     uint32 public constant SPELL_VERSION = 16;
     bytes32 public constant PROGRAM_VKEY =
-        0x0089479ae9152d200d9678e19e92d958e62f7bbebc3850e47586acac6e431b4a;
+        0x0069b92e05b07b84b4525dcbce17dd29811ab2b6492c5bb6d86af7a5574f0494;
     bytes32 public constant GROTH16_VK_HASH =
         0x4388a21c687fdd5f218d7e3d13190cac4c5355818d3605fd5fb811df468ee696;
 

@@ -23,7 +23,7 @@ contract DeployTest is Test {
         hex"7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3";
 
     bytes32 internal constant PROGRAM_VKEY =
-        0x0089479ae9152d200d9678e19e92d958e62f7bbebc3850e47586acac6e431b4a;
+        0x0069b92e05b07b84b4525dcbce17dd29811ab2b6492c5bb6d86af7a5574f0494;
     address internal constant CALLER = 0x1111111111111111111111111111111111111111;
     address internal constant REF_OWNER = 0x2222222222222222222222222222222222222222;
     address internal constant NEXT_OWNER = 0x3333333333333333333333333333333333333333;
