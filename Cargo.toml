@@ -80,6 +80,11 @@ prover = ["sp1-sdk/native-gnark", "sp1-prover/native-gnark", "redis", "rslock"]
 none = []
 
 [dependencies]
+alloy-consensus = { version = "1.8.3", default-features = false, features = ["std"] }
+alloy-eips = { version = "1.8.3", default-features = false, features = ["std"] }
+alloy-primitives = { version = "1.7.3", default-features = false, features = ["std"] }
+alloy-rlp = { version = "0.3.16", default-features = false, features = ["std"] }
+alloy-sol-types = { version = "1.7.3", default-features = false, features = ["std"] }
 anyhow = { workspace = true }
 ark-bls12-381 = { workspace = true }
 ark-ec = { workspace = true }
@@ -134,6 +139,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 
 [dev-dependencies]
+alloy-signer = { version = "1.8.3", default-features = false }
+alloy-signer-local = { version = "1.8.3", default-features = false }
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 

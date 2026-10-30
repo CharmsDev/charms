@@ -8,7 +8,7 @@ use crate::{
         read_private_inputs,
     },
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use charms_app_runner::AppRunner;
 use charms_client::{
     CURRENT_VERSION,
@@ -58,6 +58,13 @@ impl SpellCli {
 
 impl Prove for SpellCli {
     async fn prove(&self, params: SpellProveParams) -> Result<()> {
+        // Resolve the unsigned-tx fee before any prove work. A missing nonce
+        // must not call the prover.
+        let fee = if params.chain == Chain::Ethereum {
+            ethereum_unsigned_fees(&params)?
+        } else {
+            None
+        };
         if params.chain == Chain::Ethereum {
             let spell: NormalizedSpell = serde_yaml::from_slice(&std::fs::read(&params.spell)?)?;
             if spell.tx.ins.as_ref().is_none_or(|ins| ins.is_empty()) {
@@ -101,8 +108,10 @@ impl Prove for SpellCli {
                         "--beamed-from is the claim side, not the Ethereum beam-out"
                     );
                     ensure!(!params.mock, "a native Ethereum spell has no proof to mock");
-                    let hex = Tx::Ethereum(plan.record).hex();
-                    println!("{}", serde_json::to_string(&vec![hex])?);
+                    println!(
+                        "{}",
+                        format_ethereum_txs(&[Tx::Ethereum(plan.record)], fee.as_ref())?
+                    );
                     return Ok(());
                 }
                 Err(err) => {
@@ -253,8 +262,7 @@ impl Prove for SpellCli {
                 println!("{}", tx_draft);
             }
             Chain::Ethereum => {
-                let hexes: Vec<String> = transactions.iter().map(Tx::hex).collect();
-                println!("{}", serde_json::to_string(&hexes)?);
+                println!("{}", format_ethereum_txs(&transactions, fee.as_ref())?);
             }
         }
 
@@ -389,7 +397,85 @@ fn reject_ethereum_only_options(params: &SpellProveParams) -> Result<()> {
         params.charms.is_none(),
         "--charms requires --chain ethereum"
     );
+    ensure!(
+        params.tx_format == super::EthereumTxFormat::Record,
+        "--tx-format unsigned-tx requires --chain ethereum"
+    );
+    ensure!(params.nonce.is_none(), "--nonce requires --chain ethereum");
+    ensure!(
+        params.gas_limit.is_none(),
+        "--gas-limit requires --chain ethereum"
+    );
+    ensure!(
+        params.max_fee_per_gas.is_none(),
+        "--max-fee-per-gas requires --chain ethereum"
+    );
+    ensure!(
+        params.max_priority_fee_per_gas.is_none(),
+        "--max-priority-fee-per-gas requires --chain ethereum"
+    );
     Ok(())
+}
+
+/// Fee fields for `--tx-format unsigned-tx`. `None` keeps the CHET record.
+///
+/// Clap requires the four fee flags when the format is `unsigned-tx` and rejects
+/// them together with `--payload`. A fee flag on the record format is still rejected
+/// here: clap has no "forbidden unless this value" rule.
+fn ethereum_unsigned_fees(
+    params: &SpellProveParams,
+) -> Result<Option<crate::ethereum_raw::Eip1559Fee>> {
+    if params.tx_format != super::EthereumTxFormat::UnsignedTx {
+        for (flag, set) in [
+            ("--nonce", params.nonce.is_some()),
+            ("--gas-limit", params.gas_limit.is_some()),
+            ("--max-fee-per-gas", params.max_fee_per_gas.is_some()),
+            (
+                "--max-priority-fee-per-gas",
+                params.max_priority_fee_per_gas.is_some(),
+            ),
+        ] {
+            ensure!(!set, "{flag} requires --tx-format unsigned-tx");
+        }
+        return Ok(None);
+    }
+    ensure!(
+        !params.payload,
+        "--payload is the prover API. --tx-format unsigned-tx prints a transaction"
+    );
+    Ok(Some(crate::ethereum_raw::Eip1559Fee {
+        nonce: params
+            .nonce
+            .context("--nonce is required for --tx-format unsigned-tx")?,
+        max_priority_fee_per_gas: params
+            .max_priority_fee_per_gas
+            .context("--max-priority-fee-per-gas is required for --tx-format unsigned-tx")?,
+        max_fee_per_gas: params
+            .max_fee_per_gas
+            .context("--max-fee-per-gas is required for --tx-format unsigned-tx")?,
+        gas_limit: params
+            .gas_limit
+            .context("--gas-limit is required for --tx-format unsigned-tx")?,
+    }))
+}
+
+fn format_ethereum_txs(
+    txs: &[Tx],
+    fee: Option<&crate::ethereum_raw::Eip1559Fee>,
+) -> Result<String> {
+    let Some(fee) = fee else {
+        let hexes: Vec<String> = txs.iter().map(Tx::hex).collect();
+        return Ok(serde_json::to_string(&hexes)?);
+    };
+    ensure!(
+        txs.len() == 1,
+        "--tx-format unsigned-tx prints one transaction"
+    );
+    let Tx::Ethereum(record) = &txs[0] else {
+        bail!("--tx-format unsigned-tx is an Ethereum encoding");
+    };
+    let raw = crate::ethereum_raw::unsigned_transact_eip1559(record, fee)?;
+    Ok(format!("0x{}", hex::encode(raw)))
 }
 
 pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<String> {
@@ -426,6 +512,7 @@ pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<Str
         "--collateral-utxo is not used on Ethereum"
     );
     ensure!(!params.mock, "an Ethereum placeholder has no proof to mock");
+    let fee = ethereum_unsigned_fees(params)?;
 
     let caller = parse_fixed(
         params
@@ -459,8 +546,7 @@ pub(crate) fn ethereum_placeholder_json(params: &SpellProveParams) -> Result<Str
             nonce: None,
         },
     )?;
-    let hex = Tx::Ethereum(plan.record).hex();
-    Ok(serde_json::to_string(&vec![hex])?)
+    format_ethereum_txs(&[Tx::Ethereum(plan.record)], fee.as_ref())
 }
 
 fn parse_fixed<const N: usize>(text: &str) -> Result<[u8; N]> {

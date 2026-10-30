@@ -2289,6 +2289,13 @@ dependencies = [
 name = "charms"
 version = "16.0.0"
 dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-signer",
+ "alloy-signer-local",
+ "alloy-sol-types",
  "anyhow",
  "ark-bls12-381",
  "ark-ec",

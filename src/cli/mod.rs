@@ -142,6 +142,20 @@ pub enum Output {
     Json,
 }
 
+/// How `spell prove --chain ethereum` prints its result.
+///
+/// `--output` is the prover payload encoding (`--payload` only). This flag is
+/// the Ethereum transaction encoding and does not replace it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum EthereumTxFormat {
+    /// JSON array of one CHET record hex string.
+    #[value(name = "record")]
+    Record,
+    /// One `0x`-prefixed unsigned EIP-1559 transaction.
+    #[value(name = "unsigned-tx")]
+    UnsignedTx,
+}
+
 #[derive(Args)]
 pub struct SpellProveParams {
     /// Path to the spell file (YAML or JSON).
@@ -216,6 +230,45 @@ pub struct SpellProveParams {
     /// Charms proxy address mixed into the placeholder UTXO id. Required for `--chain ethereum`.
     #[arg(long)]
     charms: Option<String>,
+
+    /// Ethereum prove output. `record` (default) is the CHET envelope.
+    /// `unsigned-tx` is one 0x-prefixed unsigned type-2 transaction.
+    /// `--output` selects the prover payload encoding and is a different flag.
+    #[arg(long, value_enum, default_value = "record")]
+    tx_format: EthereumTxFormat,
+
+    /// Account nonce. Required when `--tx-format` is `unsigned-tx`. Ethereum only.
+    #[arg(
+        long,
+        required_if_eq("tx_format", "unsigned-tx"),
+        conflicts_with = "payload"
+    )]
+    nonce: Option<u64>,
+
+    /// Gas limit. Required when `--tx-format` is `unsigned-tx`. Ethereum only.
+    #[arg(
+        long,
+        required_if_eq("tx_format", "unsigned-tx"),
+        conflicts_with = "payload"
+    )]
+    gas_limit: Option<u64>,
+
+    /// Max fee per gas, in wei. Required when `--tx-format` is `unsigned-tx`. Ethereum only.
+    #[arg(
+        long,
+        required_if_eq("tx_format", "unsigned-tx"),
+        conflicts_with = "payload"
+    )]
+    max_fee_per_gas: Option<u128>,
+
+    /// Max priority fee per gas, in wei. Required when `--tx-format` is `unsigned-tx`.
+    /// Ethereum only.
+    #[arg(
+        long,
+        required_if_eq("tx_format", "unsigned-tx"),
+        conflicts_with = "payload"
+    )]
+    max_priority_fee_per_gas: Option<u128>,
 
     /// Use mock mode (skip proof generation).
     #[arg(long, default_value = "false", hide_env = true)]
@@ -325,9 +378,13 @@ pub enum SpellCommands {
     ///
     /// Bitcoin prints a JSON array of hex-encoded transactions.
     /// Cardano prints a Ledger CDDL JSON envelope.
-    /// Ethereum prints a JSON array of one hex string. The hex is the Charms
-    /// record. `tx build` encodes that hex into the signable call.
-    /// The command does not call the prover and does not take `--prev-txs`.
+    /// Ethereum defaults to `--tx-format record`: a JSON array of one hex string.
+    /// The hex is the Charms record. `tx build` encodes that hex into the signable call.
+    /// `--tx-format unsigned-tx` prints one 0x-prefixed unsigned type-2 transaction instead.
+    /// That form needs `--nonce`, `--gas-limit`, `--max-fee-per-gas`, and
+    /// `--max-priority-fee-per-gas`. The transaction value is 0.
+    /// `--output` is the prover payload encoding and does not select this format.
+    /// An empty Ethereum UTXO does not call the prover and does not take `--prev-txs`.
     #[command(after_long_help = SPELL_DATA_HELP)]
     Prove(#[command(flatten)] SpellProveParams),
     /// Print the current protocol version and spell verification key (VK) as JSON to stdout.
@@ -340,7 +397,12 @@ pub struct ShowSpellParams {
     #[arg(long, default_value = "bitcoin")]
     chain: Chain,
 
-    /// Hex-encoded transaction.
+    /// Transaction hex.
+    ///
+    /// Bitcoin and Cardano take the raw transaction.
+    /// Ethereum takes the CHET record from `spell prove`, or a raw transaction
+    /// from `cast tx <hash> --raw` (signed or unsigned type 2, type 1, or legacy).
+    /// A `0x` prefix and surrounding whitespace are accepted.
     #[arg(long)]
     tx: String,
 
@@ -369,7 +431,15 @@ pub struct TxBuildParams {
 pub enum TxCommands {
     /// Extract and display the spell from a transaction.
     ///
-    /// Prints the spell as YAML (default) or JSON if the transaction contains a valid proof.
+    /// Prints YAML by default, or JSON with `--json`.
+    ///
+    /// Bitcoin and Cardano print the spell when the proof is valid.
+    /// Ethereum accepts the CHET record from `spell prove` (the proof is checked)
+    /// or a raw transaction. A `transact` call prints the spell from the calldata.
+    /// An ERC-20 `transfer` or `transferFrom` prints an empty spell: protocol
+    /// version 16, no inputs, no outputs, and no apps. The facade token builds
+    /// the real spell inside the contract, so the calldata has none. Any other
+    /// calldata is an error.
     ShowSpell(#[command(flatten)] ShowSpellParams),
 
     /// Encode a Charms record as the signable contract call.
@@ -692,6 +762,7 @@ mod test {
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     const TX_ID: &str = "8cb5ef4b8fd977bd570fbe98db1eaed4f1bb223086ab3e8d0b1b6e892abe2b5d";
     const CALLER: &str = "1111111111111111111111111111111111111111";
@@ -699,8 +770,10 @@ mod test {
     const CHARMS: &str = "3333333333333333333333333333333333333333";
 
     fn spell_file(name: &str, body: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "charms-placeholder-{}-{name}.yaml",
+            "charms-placeholder-{}-{n}-{name}.yaml",
             std::process::id()
         ));
         fs::write(&path, body).unwrap();
@@ -983,8 +1056,56 @@ app_public_inputs: {}
             ("--salt", "00", "--salt requires --chain ethereum"),
             ("--chain-id", "1", "--chain-id requires --chain ethereum"),
             ("--charms", "33", "--charms requires --chain ethereum"),
+            ("--nonce", "1", "--nonce requires --chain ethereum"),
+            (
+                "--gas-limit",
+                "21000",
+                "--gas-limit requires --chain ethereum",
+            ),
+            (
+                "--max-fee-per-gas",
+                "1",
+                "--max-fee-per-gas requires --chain ethereum",
+            ),
+            (
+                "--max-priority-fee-per-gas",
+                "1",
+                "--max-priority-fee-per-gas requires --chain ethereum",
+            ),
         ];
         for chain in ["bitcoin", "cardano"] {
+            let cli = Cli::try_parse_from([
+                "charms",
+                "spell",
+                "prove",
+                "--chain",
+                chain,
+                "--spell",
+                "unused.yaml",
+                "--tx-format",
+                "unsigned-tx",
+                "--nonce",
+                "1",
+                "--gas-limit",
+                "21000",
+                "--max-fee-per-gas",
+                "1",
+                "--max-priority-fee-per-gas",
+                "1",
+            ])
+            .unwrap();
+            let Commands::Spell {
+                command: SpellCommands::Prove(params),
+            } = cli.command
+            else {
+                panic!("spell prove");
+            };
+            let err = super::spell_cli().prove(params).await.unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "--tx-format unsigned-tx requires --chain ethereum",
+                "{chain} --tx-format"
+            );
             for (flag, value, message) in cases {
                 let cli = Cli::try_parse_from([
                     "charms",
@@ -1025,5 +1146,144 @@ app_public_inputs: {}
             err.to_string(),
             "--change-address is required for this chain"
         );
+    }
+
+    fn ethereum_prove_params(extra: &[&str]) -> SpellProveParams {
+        let path = spell_file("flags", placeholder_spell());
+        let mut args = vec![
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "0x1111111111111111111111111111111111111111",
+            "--salt",
+            "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "0x3333333333333333333333333333333333333333",
+        ];
+        args.extend(extra);
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Commands::Spell {
+            command: SpellCommands::Prove(params),
+        } = cli.command
+        else {
+            panic!("spell prove");
+        };
+        params
+    }
+
+    #[test]
+    fn ethereum_prove_can_print_an_unsigned_transaction() {
+        let params = ethereum_prove_params(&[
+            "--tx-format",
+            "unsigned-tx",
+            "--nonce",
+            "7",
+            "--gas-limit",
+            "500000",
+            "--max-fee-per-gas",
+            "2000000000",
+            "--max-priority-fee-per-gas",
+            "1000000",
+        ]);
+        let printed = ethereum_placeholder_json(&params).unwrap();
+        assert!(printed.starts_with("0x02"), "{printed}");
+        let raw = hex::decode(printed.trim_start_matches("0x")).unwrap();
+        let shown = crate::ethereum_raw::spell_from_raw_transaction(&raw).unwrap();
+        let record_params = ethereum_prove_params(&[]);
+        let record_json = ethereum_placeholder_json(&record_params).unwrap();
+        let hexes: Vec<String> = serde_json::from_str(&record_json).unwrap();
+        let record = from_envelope_hex(&hexes[0]).unwrap().unwrap();
+        assert_eq!(shown, record.decode().unwrap());
+        tx::tx_show_spell(ShowSpellParams {
+            chain: Chain::Ethereum,
+            tx: printed,
+            json: true,
+            mock: false,
+        })
+        .unwrap();
+        tx::tx_show_spell(ShowSpellParams {
+            chain: Chain::Ethereum,
+            tx: format!("0x{}\n", hexes[0]),
+            json: false,
+            mock: false,
+        })
+        .unwrap();
+        let _ = fs::remove_file(&params.spell);
+        let _ = fs::remove_file(&record_params.spell);
+    }
+
+    #[test]
+    fn ethereum_unsigned_tx_requires_the_fee_fields() {
+        let path = spell_file("fees", placeholder_spell());
+        let missing = Cli::try_parse_from([
+            "charms",
+            "spell",
+            "prove",
+            "--chain",
+            "ethereum",
+            "--spell",
+            path.to_str().unwrap(),
+            "--caller",
+            "0x1111111111111111111111111111111111111111",
+            "--salt",
+            "0x0000000000000000000000000000000000000000000000000000000000000007",
+            "--chain-id",
+            "1",
+            "--charms",
+            "0x3333333333333333333333333333333333333333",
+            "--tx-format",
+            "unsigned-tx",
+            "--gas-limit",
+            "21000",
+            "--max-fee-per-gas",
+            "1",
+            "--max-priority-fee-per-gas",
+            "1",
+        ]);
+        let err = match missing {
+            Ok(_) => panic!("unsigned-tx without --nonce parsed"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("required") && err.contains("--nonce"), "{err}");
+        let stray_nonce = ethereum_prove_params(&["--nonce", "1"]);
+        let err = ethereum_placeholder_json(&stray_nonce).unwrap_err();
+        assert_eq!(err.to_string(), "--nonce requires --tx-format unsigned-tx");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&stray_nonce.spell);
+    }
+
+    #[test]
+    fn ethereum_show_spell_accepts_raw_mainnet_transactions() {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ethereum");
+        for hash in [
+            "0x82439d38cb7a87912ab4da6016fa9b2b8598020ff9121ebf388056cc8ae6a7af",
+            "0xf9bf737f435fea4a2c8d3337b7dfc94040ac986800bf8a1c9ddbdf754ee86ce5",
+            "0x44a897c638cee33e62441af150a8c978f3303576b701dff3ada0974c017a1154",
+            "0xddbd6e2afd317aff3a761c273c0d7b0b7c33af23538dab5d5cc97e4e41f0999d",
+        ] {
+            let raw = fs::read_to_string(dir.join(format!("{hash}.raw.txt"))).unwrap();
+            tx::tx_show_spell(ShowSpellParams {
+                chain: Chain::Ethereum,
+                tx: raw,
+                json: false,
+                mock: false,
+            })
+            .unwrap();
+        }
+        let err = tx::tx_show_spell(ShowSpellParams {
+            chain: Chain::Ethereum,
+            tx: "0x05".into(),
+            json: false,
+            mock: false,
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "not an ethereum transaction");
     }
 }

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod cli;
+pub mod ethereum_raw;
 pub mod script;
 pub mod spell;
 pub mod tx;
