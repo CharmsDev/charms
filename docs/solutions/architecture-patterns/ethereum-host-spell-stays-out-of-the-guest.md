@@ -39,7 +39,7 @@ Leave `encode_spell`, `tuple`, and `array` in `charms-client`. Decode on the hos
 
 A decoded `transact` always stores `ins: Some(ins)` and `coins: Some(coins)`, including when those vectors are empty (`src/ethereum_raw.rs:255-263`). Empty `refs`, `beamed_outs`, and `scrolls` stay `None` (`src/ethereum_raw.rs:259-263`, `src/ethereum_raw.rs:337-347`). `transact_calldata_roundtrips_a_placeholder` checks that the decoded CBOR equals the record's spell bytes (`src/ethereum_raw.rs:423-426`). `eth_tx_id` hashes that CBOR (`charms-client/src/ethereum_tx.rs:827-842`).
 
-`transfer(address,uint256)` and `transferFrom(address,address,uint256)` decode as `empty_ethereum_spell`, which is `NormalizedSpell::default` (`src/ethereum_raw.rs:73-86`, `src/ethereum_raw.rs:184-186`). The checked-in transfer's input contains selector `a9059cbb` (`tests/fixtures/ethereum/0xddbd6e2afd317aff3a761c273c0d7b0b7c33af23538dab5d5cc97e4e41f0999d.raw.txt:1`). `mainnet_transactions_match_the_transaction_event` asserts that fixture equals the empty spell, and asserts the `Transaction` log's spell bytes differ (`src/ethereum_raw.rs:658-666`). Any other selector is an error (`src/ethereum_raw.rs:187`, `src/ethereum_raw.rs:787-795`).
+`transfer(address,uint256)` and `transferFrom(address,address,uint256)` carry no spell. `spell_from_raw_transaction` returns `Ok(None)`, and `tx show-spell` prints `No spell found in the transaction`, the same line as Bitcoin. The checked-in transfer's input contains selector `a9059cbb` (`tests/fixtures/ethereum/0xddbd6e2afd317aff3a761c273c0d7b0b7c33af23538dab5d5cc97e4e41f0999d.raw.txt`). `mainnet_transactions_match_the_transaction_event` asserts that fixture's calldata spell is `None`, and asserts the `Transaction` log's spell bytes are not the CBOR of `NormalizedSpell::default`. Any other non-`transact` call is also `Ok(None)`. Bytes that are not an Ethereum transaction, and a `transact` whose arguments do not decode, stay errors.
 
 Keep raw-tx decode, the ABI inverse, and `unsigned_transact_eip1559` in `src/ethereum_raw.rs` (`src/ethereum_raw.rs:107-160`). Call `transact_call`, `eth_tx_id`, and `TRANSACT_SIGNATURE` from `charms-client` (`charms-client/src/ethereum_tx.rs:22`, `charms-client/src/ethereum_tx.rs:828`, `charms-client/src/ethereum_tx.rs:971`). The spell-checker guest depends on `charms-client` (`charms-spell-checker/Cargo.toml:14`, `charms-spell-checker/src/lib.rs:1`). `.github/workflows/guests.yml` lists `charms-client/**` and runs `charms-spell-checker/check-guests.sh` (`.github/workflows/guests.yml:11`, `.github/workflows/guests.yml:45-46`). That script rebuilds the guests and exits 1 when committed guest bytes differ (`charms-spell-checker/check-guests.sh:7`, `charms-spell-checker/check-guests.sh:37-44`). The guest image builds `charms-spell-checker` with `cargo prove build` (`charms-spell-checker/Dockerfile:13-16`).
 
@@ -47,16 +47,18 @@ Keep raw-tx decode, the ABI inverse, and `unsigned_transact_eip1559` in `src/eth
 
 A decoder that folds the length word into an array's offsets reads the wrong tail and rebuilds the wrong spell.
 
-CBOR key presence is part of the committed spell. Dropping `ins` on a `transact` with no inputs changes the bytes `eth_tx_id` hashes, so the id and the receipt log diverge. Keeping `Some([])` on a facade transfer changes the bytes the other way. The transfer test requires the calldata spell and the log spell to differ.
+CBOR key presence is part of the committed spell. Dropping `ins` on a `transact` with no inputs changes the bytes `eth_tx_id` hashes, so the id and the receipt log diverge.
 
-An unknown selector must fail. Mapping it to the default spell would present a call the host cannot interpret as an empty spell.
+A facade transfer has no spell in the calldata. Printing `NormalizedSpell::default` would look like a spell was found. The transfer test requires `Ok(None)` from the raw transaction, and a log spell that is not the CBOR of that default.
+
+An unknown selector has no spell in the transaction. Mapping it to the default spell would present that call as an empty Charms spell. `show-spell` prints the Bitcoin no-spell line instead.
 
 The spell-checker guest links `charms-client` and does not depend on the root crate (`charms-spell-checker/Cargo.toml:14-16`). Guest ELFs and verification keys are committed. `.github/workflows/guests.yml` rebuilds them when `charms-client/**` changes, and `check-guests.sh` exits 1 if those bytes differ. Host-only decode stays in the root crate.
 
 ## When to Apply
 
 - Decoding `transact` calldata back to `NormalizedSpell`, or checking that CBOR against a `Transaction` log.
-- `show-spell` or a raw decoder sees an ERC-20 `transfer` or `transferFrom`. Print the default spell. The facade builds the real spell in the contract (`src/cli/mod.rs:443-447`).
+- `show-spell` sees an ERC-20 `transfer` or `transferFrom`, including a charm token. The transaction has no spell. Print `No spell found in the transaction`. The facade builds a spell inside the contract, and that spell is not in the transaction.
 - A `transact` has an empty input list and the bytes must match the contract. Set `ins` and `coins` to `Some`.
 - Adding raw transaction decode, an ABI inverse, or unsigned EIP-1559 encoding. Put that code in `src/ethereum_raw.rs`.
 
@@ -72,7 +74,7 @@ fn array(items: Vec<Abi>) -> Abi {
 }
 ```
 
-A decoded `transact` with no inputs still emits `ins`. The facade empty spell does not.
+A decoded `transact` with no inputs still emits `ins`. A facade transfer is not that spell.
 
 ```rust
 // spell_from_abi, including a zero-length input list
@@ -80,7 +82,7 @@ ins: Some(ins),
 coins: Some(coins),
 
 // ERC-20 transfer and transferFrom
-NormalizedSpell::default() // ins is None, so CBOR omits the key
+// spell_from_raw_transaction returns None
 ```
 
 ## Related

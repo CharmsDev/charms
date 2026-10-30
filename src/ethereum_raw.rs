@@ -1,8 +1,9 @@
 //! Raw Ethereum transactions and the inverse of [`charms_client::ethereum_tx::transact_call`].
 //!
 //! A Charms `transact` carries the spell as an ABI struct. [`spell_from_transact_calldata`]
-//! rebuilds the [`NormalizedSpell`] that struct was encoded from. An ERC-20 `transfer` or
-//! `transferFrom` carries no spell. Those calls decode as [`empty_ethereum_spell`].
+//! rebuilds the [`NormalizedSpell`] that struct was encoded from. Any other call carries no
+//! spell. That includes an ERC-20 `transfer` or `transferFrom` of a charm token.
+//! [`spell_from_raw_transaction`] returns `Ok(None)` for those transactions.
 //!
 //! Dynamic-array offsets in that struct are relative to the head after the length word.
 //! [`alloy_sol_types::sol`] decodes that ABI. `ins` is always `Some`, including when the
@@ -70,20 +71,9 @@ sol! {
         bytes proof,
         bytes[] signatures
     );
-    function transfer(address to, uint256 amount);
-    function transferFrom(address from, address to, uint256 amount);
 }
 
 const MAX_ABI_LEN: usize = 65_536;
-
-/// Spell `show-spell` prints for an ERC-20 `transfer` or `transferFrom`.
-///
-/// The facade builds the real spell inside the contract. The calldata has none.
-/// This is [`NormalizedSpell::default`]: protocol version 16, no inputs, no outputs,
-/// and no apps.
-pub fn empty_ethereum_spell() -> NormalizedSpell {
-    NormalizedSpell::default()
-}
 
 /// Chain id, destination, and calldata of one Ethereum transaction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,14 +139,17 @@ pub fn decode_ethereum_call(raw: &[u8]) -> Result<DecodedEthereumCall> {
     call_parts(envelope.chain_id(), envelope.kind(), envelope.input())
 }
 
-/// Spell carried by a raw transaction.
+/// Spell carried by a raw transaction, read from the transaction bytes.
 ///
-/// `transact` decodes the ABI spell. `transfer` and `transferFrom` return
-/// [`empty_ethereum_spell`]. Anything else is an error. This does not panic.
-pub fn spell_from_raw_transaction(raw: &[u8]) -> Result<NormalizedSpell> {
+/// `Ok(Some(spell))` is a `transact` call. `Ok(None)` is an Ethereum transaction
+/// with no spell in it: a plain transfer, a contract creation, or any other call,
+/// including ERC-20 `transfer` and `transferFrom`. `Err` means the bytes are not
+/// an Ethereum transaction, or the `transact` arguments do not decode.
+/// This does not panic.
+pub fn spell_from_raw_transaction(raw: &[u8]) -> Result<Option<NormalizedSpell>> {
     let call = decode_ethereum_call(raw)?;
     if call.to.is_none() {
-        bail!("transaction creates a contract and has no spell");
+        return Ok(None);
     }
     spell_from_input(&call.input)
 }
@@ -173,19 +166,14 @@ pub fn spell_from_transact_calldata(calldata: &[u8]) -> Result<NormalizedSpell> 
     spell_from_abi(&call.spell)
 }
 
-fn spell_from_input(input: &[u8]) -> Result<NormalizedSpell> {
-    let selector: [u8; 4] = input
-        .get(..4)
-        .context("transaction input has no function selector")?
-        .try_into()
-        .expect("four bytes");
-    if selector == transactCall::SELECTOR {
-        return spell_from_transact_calldata(input);
+fn spell_from_input(input: &[u8]) -> Result<Option<NormalizedSpell>> {
+    let Some(selector) = input.first_chunk::<4>() else {
+        return Ok(None);
+    };
+    if *selector == transactCall::SELECTOR {
+        return spell_from_transact_calldata(input).map(Some);
     }
-    if selector == transferCall::SELECTOR || selector == transferFromCall::SELECTOR {
-        return Ok(empty_ethereum_spell());
-    }
-    bail!("transaction input is not a Charms transact call or an ERC-20 transfer")
+    Ok(None)
 }
 
 fn spell_from_abi(spell: &CharmsSpell) -> Result<NormalizedSpell> {
@@ -371,6 +359,11 @@ mod tests {
         alloy_sol_types::sol! {
             event Transaction(bytes32 indexed tx_id, bytes32 anchor, bytes spell);
         }
+    }
+
+    alloy_sol_types::sol! {
+        function transfer(address to, uint256 amount);
+        function transferFrom(address from, address to, uint256 amount);
     }
 
     #[test]
@@ -577,7 +570,7 @@ mod tests {
         .unwrap();
         let produced = unsigned_transact_eip1559(&plan.record, &fee).unwrap();
         assert_eq!(
-            spell_from_raw_transaction(&produced).unwrap(),
+            spell_from_raw_transaction(&produced).unwrap().unwrap(),
             plan.record.decode().unwrap()
         );
 
@@ -607,8 +600,8 @@ mod tests {
         let again = TxEnvelope::decode_2718_exact(&signed).unwrap();
         assert_eq!(again.tx_hash(), envelope.tx_hash());
 
-        let from_unsigned = spell_from_raw_transaction(&raw).unwrap();
-        let from_signed = spell_from_raw_transaction(&signed).unwrap();
+        let from_unsigned = spell_from_raw_transaction(&raw).unwrap().unwrap();
+        let from_signed = spell_from_raw_transaction(&signed).unwrap().unwrap();
         assert_eq!(from_unsigned, spell);
         assert_eq!(from_signed, spell);
     }
@@ -658,14 +651,15 @@ mod tests {
             let spell = spell_from_raw_transaction(&raw).unwrap();
             let (anchor, event_spell, topic1) = transaction_event(hash);
             if empty {
-                assert_eq!(spell, empty_ethereum_spell(), "{hash} empty spell");
+                assert!(spell.is_none(), "{hash} calldata has no spell");
                 assert_ne!(
                     event_spell,
-                    util::write(&spell).unwrap(),
+                    util::write(&NormalizedSpell::default()).unwrap(),
                     "{hash} facade spell lives in the log, not the calldata"
                 );
                 continue;
             }
+            let spell = spell.expect("transact spell");
             let cbor = util::write(&spell).unwrap();
             assert_eq!(cbor, event_spell, "{hash} spell bytes");
             let tx_id = ethereum_tx::eth_tx_id(call.chain_id.unwrap(), &to, Some(anchor), &cbor);
@@ -732,7 +726,7 @@ mod tests {
         assert_eq!(call.chain_id, Some(1));
         assert_eq!(call.to, Some(to.into_array()));
         assert_eq!(
-            spell_from_raw_transaction(&raw).unwrap(),
+            spell_from_raw_transaction(&raw).unwrap().unwrap(),
             empty_spell_with_one_output()
         );
 
@@ -747,10 +741,7 @@ mod tests {
             input: Bytes::from(transferCall::SELECTOR.to_vec()),
         };
         let raw = typed.into_signed(signature).encoded_2718();
-        assert_eq!(
-            spell_from_raw_transaction(&raw).unwrap(),
-            empty_ethereum_spell()
-        );
+        assert!(spell_from_raw_transaction(&raw).unwrap().is_none());
         assert_eq!(decode_ethereum_call(&raw).unwrap().chain_id, Some(1));
     }
 
@@ -779,7 +770,7 @@ mod tests {
         assert_eq!(call.chain_id, None);
         assert_eq!(call.to, Some(to.into_array()));
         assert_eq!(
-            spell_from_raw_transaction(&raw).unwrap(),
+            spell_from_raw_transaction(&raw).unwrap().unwrap(),
             empty_spell_with_one_output()
         );
 
@@ -795,10 +786,7 @@ mod tests {
         let raw = transfer.into_signed(signature).encoded_2718();
         let call = decode_ethereum_call(&raw).unwrap();
         assert_eq!(call.chain_id, None);
-        assert_eq!(
-            spell_from_raw_transaction(&raw).unwrap(),
-            empty_ethereum_spell()
-        );
+        assert!(spell_from_raw_transaction(&raw).unwrap().is_none());
     }
 
     fn empty_spell_with_one_output() -> NormalizedSpell {
@@ -831,21 +819,48 @@ mod tests {
             "not an ethereum transaction"
         );
 
-        let transfer = unsigned_to(
-            TxKind::Call(Address::from([0x22; 20])),
-            vec![0xde, 0xad, 0xbe, 0xef],
+        let to = Address::from([0x22; 20]);
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(
+                TxKind::Call(to),
+                vec![0xde, 0xad, 0xbe, 0xef]
+            ))
+            .unwrap()
+            .is_none()
         );
-        let err = spell_from_raw_transaction(&transfer).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "transaction input is not a Charms transact call or an ERC-20 transfer"
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(
+                TxKind::Call(to),
+                transferCall::SELECTOR.to_vec()
+            ))
+            .unwrap()
+            .is_none()
         );
-
-        let create = unsigned_to(TxKind::Create, transferCall::SELECTOR.to_vec());
-        let err = spell_from_raw_transaction(&create).unwrap_err();
-        assert_eq!(
-            err.to_string(),
-            "transaction creates a contract and has no spell"
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(
+                TxKind::Call(to),
+                transferFromCall::SELECTOR.to_vec()
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(TxKind::Call(to), vec![0xab]))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(TxKind::Call(to), vec![]))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            spell_from_raw_transaction(&unsigned_to(
+                TxKind::Create,
+                transferCall::SELECTOR.to_vec()
+            ))
+            .unwrap()
+            .is_none()
         );
     }
 

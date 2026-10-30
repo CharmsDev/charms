@@ -436,10 +436,9 @@ pub enum TxCommands {
     /// Bitcoin and Cardano print the spell when the proof is valid.
     /// Ethereum accepts the CHET record from `spell prove` (the proof is checked)
     /// or a raw transaction. A `transact` call prints the spell from the calldata.
-    /// An ERC-20 `transfer` or `transferFrom` prints an empty spell: protocol
-    /// version 16, no inputs, no outputs, and no apps. The facade token builds
-    /// the real spell inside the contract, so the calldata has none. Any other
-    /// calldata is an error.
+    /// Any other transaction prints `No spell found in the transaction`, the same
+    /// line as Bitcoin. An ERC-20 `transfer` or `transferFrom` has no spell in the
+    /// transaction, including a transfer of charm tokens.
     ShowSpell(#[command(flatten)] ShowSpellParams),
 
     /// Encode a Charms record as the signable contract call.
@@ -1195,7 +1194,9 @@ app_public_inputs: {}
         let printed = ethereum_placeholder_json(&params).unwrap();
         assert!(printed.starts_with("0x02"), "{printed}");
         let raw = hex::decode(printed.trim_start_matches("0x")).unwrap();
-        let shown = crate::ethereum_raw::spell_from_raw_transaction(&raw).unwrap();
+        let shown = crate::ethereum_raw::spell_from_raw_transaction(&raw)
+            .unwrap()
+            .unwrap();
         let record_params = ethereum_prove_params(&[]);
         let record_json = ethereum_placeholder_json(&record_params).unwrap();
         let hexes: Vec<String> = serde_json::from_str(&record_json).unwrap();
