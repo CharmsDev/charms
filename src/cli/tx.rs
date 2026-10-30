@@ -28,12 +28,17 @@ pub fn tx_show_spell(params: ShowSpellParams) -> Result<()> {
 fn show_verified_spell(tx: &Tx, json: bool, mock: bool) -> Result<()> {
     match tx::spell(tx, mock) {
         Some(spell) => cli::print_output(&spell, json)?,
-        None => eprintln!("No spell found in the transaction"),
+        None => print_no_spell(),
     }
     Ok(())
 }
 
-/// CHET records keep the proof check. A raw transaction prints the spell in its calldata.
+fn print_no_spell() {
+    eprintln!("No spell found in the transaction");
+}
+
+/// CHET records keep the proof check. A raw `transact` prints the spell in its calldata.
+/// Any other raw transaction has no spell.
 fn show_ethereum_spell(tx: &str, json: bool, mock: bool) -> Result<()> {
     let hex_str = tx.trim();
     let hex_str = hex_str
@@ -47,8 +52,10 @@ fn show_ethereum_spell(tx: &str, json: bool, mock: bool) -> Result<()> {
         };
         return show_verified_spell(&Tx::Ethereum(eth), json, mock);
     }
-    let spell = crate::ethereum_raw::spell_from_raw_transaction(&bytes)?;
-    cli::print_output(&spell, json)?;
+    match crate::ethereum_raw::spell_from_raw_transaction(&bytes)? {
+        Some(spell) => cli::print_output(&spell, json)?,
+        None => print_no_spell(),
+    }
     Ok(())
 }
 
