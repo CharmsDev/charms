@@ -25,7 +25,7 @@ Spell version 16 is not released. Rebuilding the spell-checker moves `charms-lib
 
 ## Guidance
 
-Version 16 has one verification key. That key is the one `charms spell vk` prints, and it is the `PROGRAM_VKEY` in the `CharmsApply` built for this guest. For this tree the key is `0x005a18c3a82bd5b1bb5320acd166aae1548da178ff9169c8cec73a5c7685cdd6`. `spell_vk` returns it for version 16. `verify_snark_proof` checks that one key.
+Version 16 has one verification key. That key is the one `charms spell vk` prints, and it is the `PROGRAM_VKEY` in the `CharmsApply` built for this guest. For this tree the key is `0x007550770a9f1218cda12fe0303d072508087fef6762697840a17282abf82bcb`. `spell_vk` returns it for version 16. `verify_snark_proof` checks that one key.
 
 `ETHEREUM_FINALITY.charms` is the proxy this guest treats as the Ethereum host, `0x7f7ab9224782dE7a20e89E6fc0DE52Ff6b48d8f0`. `Deploy.s.sol` creates that proxy with salt `keccak256("charms-proxy-v2")`, a new `CharmsApply`, and new token contracts. The initializer salt is `keccak256("charms-initializer-v2")`. The `CharmsApply` is constructed with this `PROGRAM_VKEY`. The proxy address is part of the guest, so a different proxy is a new guest build and a new key. The contract is deployed from the guest that names that proxy.
 
