@@ -360,6 +360,27 @@ fn random_get(caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> Result<i
 
 const MAX_FUEL_PER_RUN: u64 = 1000000000;
 
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_GUEST_MEMORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static GUEST_MEMORY: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn store_guest_memory(instance: &wasmi::Instance, store: &Store<HostState>) {
+    if !CAPTURE_GUEST_MEMORY.with(|flag| flag.get()) {
+        return;
+    }
+    let Some(memory) = instance.get_memory(store, "memory") else {
+        return;
+    };
+    let mut bytes = vec![0u8; memory.data_size(store)];
+    if memory.read(store, 0, &mut bytes).is_ok() {
+        GUEST_MEMORY.with(|slot| *slot.borrow_mut() = Some(bytes));
+    }
+}
+
 impl AppRunner {
     pub fn new(count_cycles: bool) -> Self {
         let mut config = Config::default();
@@ -516,6 +537,8 @@ impl AppRunner {
         state.stderr.lock().unwrap().flush()?;
 
         result.map_err(|e| anyhow::anyhow!("error running wasm: {:?}", e))?;
+        #[cfg(test)]
+        store_guest_memory(&instance, &store);
 
         let cycles = match self.count_cycles {
             true => MAX_FUEL_PER_RUN - store.get_fuel()?,
@@ -930,6 +953,101 @@ mod tests {
         assert_eq!(
             run_wasm(&AppRunner::new(false), RANDOM_GET_32_AT_0).unwrap(),
             0
+        );
+    }
+
+    /// 60 bytes, then 20, then 4100. The second call crosses the 64-byte ChaCha
+    /// block. The third call is one guest request that the host writes as 4096
+    /// bytes and then the remainder.
+    const RANDOM_GET_SPLIT: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x1b, 0x01, 0x19, 0x00, 0x41, 0x00, 0x41, 0x3c, 0x10, 0x00, 0x1a, 0x41, 0x3c, 0x41, 0x14,
+        0x10, 0x00, 0x1a, 0x41, 0xd0, 0x00, 0x41, 0x84, 0x20, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+    const SPLIT_TOTAL: usize = 60 + 20 + 4100;
+    const BLOCK_AT: usize = 64;
+    const CHUNK_AT: usize = 80 + 4096;
+
+    fn empty_tx() -> Transaction {
+        Transaction {
+            ins: vec![],
+            refs: vec![],
+            outs: vec![],
+            coin_ins: None,
+            coin_outs: None,
+            prev_txs: BTreeMap::new(),
+            app_public_inputs: BTreeMap::new(),
+        }
+    }
+
+    fn run_guest(wasm: &[u8], x: &Data, w: &Data) -> Vec<u8> {
+        let runner = AppRunner::new(false);
+        let app = App {
+            tag: 't',
+            identity: B32::default(),
+            vk: runner.vk(wasm),
+        };
+        let tx = empty_tx();
+        CAPTURE_GUEST_MEMORY.with(|flag| flag.set(true));
+        GUEST_MEMORY.with(|slot| *slot.borrow_mut() = None);
+        let ran = runner.run(wasm, &app, &tx, x, w, &BTreeMap::new(), &BTreeMap::new());
+        CAPTURE_GUEST_MEMORY.with(|flag| flag.set(false));
+        let memory = GUEST_MEMORY.with(|slot| slot.borrow_mut().take());
+        ran.expect("guest ran");
+        memory.expect("guest memory")
+    }
+
+    fn expected_keystream(wasm: &[u8], x: &Data) -> Vec<u8> {
+        let runner = AppRunner::new(false);
+        let app = App {
+            tag: 't',
+            identity: B32::default(),
+            vk: runner.vk(wasm),
+        };
+        let tx = empty_tx();
+        let seed = random_seed(&app.vk, 0, &app, &tx, x).unwrap();
+        let mut bytes = vec![0u8; SPLIT_TOTAL];
+        ChaCha20::new(&seed.into(), &[0u8; 12].into()).apply_keystream(&mut bytes);
+        let mut again = vec![0u8; SPLIT_TOTAL];
+        ChaCha20::new(&seed.into(), &[0u8; 12].into()).apply_keystream(&mut again);
+        assert_eq!(bytes, again);
+        bytes
+    }
+
+    #[test]
+    fn random_get_bytes_ignore_w_follow_x_and_cross_block_and_chunk() {
+        let x = Data::empty();
+        let with_empty_w = run_guest(RANDOM_GET_SPLIT, &x, &Data::empty());
+        let with_other_w = run_guest(RANDOM_GET_SPLIT, &x, &Data::from(&0x99u8));
+        assert_eq!(&with_empty_w[..SPLIT_TOTAL], &with_other_w[..SPLIT_TOTAL]);
+
+        let other_x = Data::from(&0x5bu8);
+        let with_other_x = run_guest(RANDOM_GET_SPLIT, &other_x, &Data::empty());
+        assert_ne!(&with_empty_w[..SPLIT_TOTAL], &with_other_x[..SPLIT_TOTAL]);
+
+        let expected = expected_keystream(RANDOM_GET_SPLIT, &x);
+        assert_eq!(&with_empty_w[..SPLIT_TOTAL], expected.as_slice());
+        const AROUND_BLOCK: [u8; 16] = [
+            0x1a, 0x31, 0xa3, 0xd3, 0x0c, 0x81, 0x1d, 0xb5, 0x65, 0xc5, 0x08, 0x87, 0x57, 0x03,
+            0x6c, 0xbc,
+        ];
+        const AROUND_CHUNK: [u8; 8] = [0xb3, 0x20, 0x79, 0x2d, 0x22, 0x52, 0x70, 0x5f];
+        assert_eq!(
+            &with_empty_w[BLOCK_AT - 4..BLOCK_AT + 12],
+            &AROUND_BLOCK,
+            "block {:02x?}",
+            &with_empty_w[BLOCK_AT - 4..BLOCK_AT + 12]
+        );
+        assert_eq!(
+            &with_empty_w[CHUNK_AT - 4..CHUNK_AT + 4],
+            &AROUND_CHUNK,
+            "chunk {:02x?}",
+            &with_empty_w[CHUNK_AT - 4..CHUNK_AT + 4]
         );
     }
 }
