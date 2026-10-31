@@ -17,8 +17,8 @@ validate = ["wasmi/validate"]
 
 [dependencies]
 anyhow = { workspace = true }
+chacha20 = "0.10.2"
 charms-data = { path = "../charms-data", version = "16.0.0" }
-rand = { version = "0.10.3" }
 secp256k1 = { version = "0.29", default-features = false, features = ["std"] }
 sha2 = { workspace = true }
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "prefer-btree-collections", "portable-dispatch", "indirect-dispatch"] }
