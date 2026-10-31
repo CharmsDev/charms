@@ -1,8 +1,9 @@
 use anyhow::{Result, bail, ensure};
+use chacha20::ChaCha20;
+use chacha20::cipher::{KeyIvInit, StreamCipher};
 use charms_data::{
     App, AppSignature, B32, Data, Transaction, VersionedApp, is_simple_transfer, util,
 };
-use rand::{RngExt, SeedableRng, rngs::StdRng};
 use secp256k1::{Message, Secp256k1, VerifyOnly, XOnlyPublicKey, schnorr};
 use sha2::{Digest, Sha256};
 use std::{
@@ -32,7 +33,7 @@ pub struct AppRunner {
 struct HostState {
     stdin: Arc<Mutex<Vec<u8>>>,    // Stdin buffer
     stderr: Arc<Mutex<dyn Write>>, // Stderr buffer
-    prng: Arc<Mutex<StdRng>>,
+    stream: Arc<Mutex<ChaCha20>>,
 }
 
 // Wasm32 addresses are `u32`. Values at or above 2 GiB arrive as a negative `i32`.
@@ -271,20 +272,85 @@ fn environ_get(caller: Caller<'_, HostState>, environ_ptr: i32, environ_buf_ptr:
     })
 }
 
+const MAX_RANDOM_GET_LEN: usize = 65_536;
+const RANDOM_GET_CHUNK: usize = 4096;
+
+/// The bytes are a public deterministic function of `(wasm hash, version, app, tx, x)`.
+/// `w` cannot change them. The transaction author still chooses `tx` and `x`, so this
+/// is not a beacon and must not be used for secret keys, nonces, or unbiased lotteries.
+/// The CBOR from `util::write` is part of the consensus encoding. Do not bump `ciborium` casually.
+fn random_seed(
+    wasm_hash: &B32,
+    version: u32,
+    app: &App,
+    tx: &Transaction,
+    x: &Data,
+) -> Result<[u8; 32]> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"charms-app-runner/random/v1\0");
+    hasher.update(wasm_hash.0);
+    hasher.update(version.to_le_bytes());
+    hasher.update(util::write(&(app, tx, x))?);
+    Ok(hasher.finalize().into())
+}
+
+/// IETF ChaCha20 stream for `random_get`.
+///
+/// `chacha20` 0.10.2 `ChaChaCore::new_internal` zero-fills the state and does not
+/// write the counter word, so the 32-bit block counter starts at 0.
+fn random_stream(seed: [u8; 32]) -> ChaCha20 {
+    ChaCha20::new(&seed.into(), &[0u8; 12].into())
+}
+
+/// The bytes are a public deterministic function of `(wasm hash, version, app, tx, x)`.
+/// `w` cannot change them. The transaction author still chooses `tx` and `x`, so this
+/// is not a beacon and must not be used for secret keys, nonces, or unbiased lotteries.
+/// The CBOR from `util::write` is part of the consensus encoding. Do not bump `ciborium` casually.
 fn random_get_impl(mut caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> Result<i32> {
+    let len = guest_len(buf_len)?;
+    if len > MAX_RANDOM_GET_LEN {
+        bail!("random_get length exceeds {MAX_RANDOM_GET_LEN}");
+    }
     let memory = caller
         .get_export("memory")
         .and_then(Extern::into_memory)
         .ok_or_else(|| anyhow::anyhow!("No memory export"))?;
-    let buf = guest_addr(buf);
-    let buf_len = guest_len(buf_len)?;
-    let mut bytes = Vec::new();
-    bytes
-        .try_reserve_exact(buf_len)
-        .map_err(|_| anyhow::anyhow!("guest buffer too large"))?;
-    bytes.resize(buf_len, 0);
-    caller.data().prng.lock().unwrap().fill(&mut bytes);
-    memory.write(&mut caller, buf, &bytes)?;
+    let addr = guest_addr(buf);
+    let end = addr
+        .checked_add(len)
+        .ok_or_else(|| anyhow::anyhow!("out of bounds memory access"))?;
+    if end > memory.data_size(&caller) {
+        bail!("out of bounds memory access");
+    }
+    match caller.get_fuel() {
+        Ok(remaining) => {
+            let cost = len as u64;
+            if remaining < cost {
+                bail!("insufficient fuel");
+            }
+            caller.set_fuel(remaining - cost)?;
+        }
+        Err(err)
+            if matches!(
+                err.kind(),
+                wasmi::errors::ErrorKind::Fuel(wasmi::errors::FuelError::FuelMeteringDisabled)
+            ) => {}
+        Err(err) => return Err(anyhow::anyhow!(err.to_string())),
+    }
+
+    let mut offset = 0;
+    while offset < len {
+        let n = (len - offset).min(RANDOM_GET_CHUNK);
+        let mut chunk = [0u8; RANDOM_GET_CHUNK];
+        caller
+            .data()
+            .stream
+            .lock()
+            .unwrap()
+            .apply_keystream(&mut chunk[..n]);
+        memory.write(&mut caller, addr + offset, &chunk[..n])?;
+        offset += n;
+    }
     Ok(0)
 }
 
@@ -293,6 +359,27 @@ fn random_get(caller: Caller<'_, HostState>, buf: i32, buf_len: i32) -> Result<i
 }
 
 const MAX_FUEL_PER_RUN: u64 = 1000000000;
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_GUEST_MEMORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static GUEST_MEMORY: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn store_guest_memory(instance: &wasmi::Instance, store: &Store<HostState>) {
+    if !CAPTURE_GUEST_MEMORY.with(|flag| flag.get()) {
+        return;
+    }
+    let Some(memory) = instance.get_memory(store, "memory") else {
+        return;
+    };
+    let mut bytes = vec![0u8; memory.data_size(store)];
+    if memory.read(store, 0, &mut bytes).is_ok() {
+        GUEST_MEMORY.with(|slot| *slot.borrow_mut() = Some(bytes));
+    }
+}
 
 impl AppRunner {
     pub fn new(count_cycles: bool) -> Self {
@@ -383,15 +470,19 @@ impl AppRunner {
         versioned_apps: &BTreeMap<B32, VersionedApp>,
         app_signatures: &BTreeMap<B32, AppSignature>,
     ) -> Result<u64> {
-        self.verify_app_binary(app, app_binary, versioned_apps, app_signatures)?;
+        let wasm_hash = self.verify_app_binary(app, app_binary, versioned_apps, app_signatures)?;
 
         let stdin_content = util::write(&(app, tx, x, w))?;
-
-        let prng_seed: [u8; 32] = Sha256::digest(&stdin_content).into();
+        let version = versioned_apps
+            .get(&app.vk)
+            .map(|versioned| versioned.version)
+            .unwrap_or(0);
+        let seed = random_seed(&wasm_hash, version, app, tx, x)?;
+        let stream = random_stream(seed);
         let state = HostState {
             stdin: Arc::new(Mutex::new(stdin_content)),
             stderr: Arc::new(Mutex::new(std::io::stderr())),
-            prng: Arc::new(Mutex::new(StdRng::from_seed(prng_seed))),
+            stream: Arc::new(Mutex::new(stream)),
         };
 
         let mut store = Store::new(&self.engine, state.clone());
@@ -446,6 +537,8 @@ impl AppRunner {
         state.stderr.lock().unwrap().flush()?;
 
         result.map_err(|e| anyhow::anyhow!("error running wasm: {:?}", e))?;
+        #[cfg(test)]
+        store_guest_memory(&instance, &store);
 
         let cycles = match self.count_cycles {
             true => MAX_FUEL_PER_RUN - store.get_fuel()?,
@@ -506,6 +599,8 @@ impl AppRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chacha20::ChaCha20;
+    use chacha20::cipher::{KeyIvInit, StreamCipher};
 
     const VALID_START: &[u8] = &[
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03,
@@ -686,5 +781,273 @@ mod tests {
     #[should_panic(expected = "received invalid `MemoryType` from `wasmparser`")]
     fn memory64_module_panics_without_validation() {
         let _ = run_wasm(&AppRunner::new(false), MEMORY64);
+    }
+
+    const SIMPLE_SEED: [u8; 32] = [
+        0xdf, 0xa0, 0x26, 0x40, 0xaf, 0x4f, 0xeb, 0xb3, 0xb4, 0x22, 0xb1, 0x6e, 0x2b, 0x7e, 0x55,
+        0x0a, 0x9d, 0x26, 0x36, 0xcb, 0xea, 0x84, 0x17, 0xba, 0x3c, 0xb6, 0x04, 0xcc, 0xfa, 0x60,
+        0x92, 0x6b,
+    ];
+
+    const SIMPLE_KEYSTREAM: [u8; 64] = [
+        0xe1, 0x51, 0x36, 0x47, 0xf6, 0x81, 0x3f, 0x87, 0xe4, 0xd3, 0x2d, 0x47, 0x36, 0xeb, 0x26,
+        0x8e, 0x8d, 0xeb, 0xc0, 0x10, 0xcb, 0xd7, 0xe7, 0xd2, 0xe3, 0xae, 0xb8, 0x43, 0xe9, 0x9d,
+        0x40, 0x40, 0x5a, 0x3d, 0x87, 0x49, 0xdf, 0x9f, 0x78, 0x5b, 0x90, 0x76, 0xde, 0xee, 0x1e,
+        0x7a, 0x9b, 0xc6, 0xe3, 0x37, 0xcc, 0x7b, 0xfc, 0x67, 0x94, 0x3d, 0x00, 0x5b, 0xb4, 0x26,
+        0x3e, 0x51, 0xf2, 0x20,
+    ];
+
+    fn spell_inputs() -> (App, Transaction, Data) {
+        let app = App {
+            tag: 't',
+            identity: B32([0x11; 32]),
+            vk: B32([0x22; 32]),
+        };
+        let tx = Transaction {
+            ins: vec![],
+            refs: vec![],
+            outs: vec![],
+            coin_ins: None,
+            coin_outs: None,
+            prev_txs: BTreeMap::new(),
+            app_public_inputs: BTreeMap::new(),
+        };
+        let x = Data::from(&0x5au8);
+        (app, tx, x)
+    }
+
+    #[test]
+    fn random_seed_keystream_matches_ietf_chacha20() {
+        let (app, tx, x) = spell_inputs();
+        let seed = random_seed(&app.vk, 0, &app, &tx, &x).unwrap();
+        assert_eq!(seed, SIMPLE_SEED);
+
+        let mut from_stream = [0u8; 64];
+        random_stream(seed).apply_keystream(&mut from_stream);
+        let mut from_literal_seed = [0u8; 64];
+        ChaCha20::new(&SIMPLE_SEED.into(), &[0u8; 12].into())
+            .apply_keystream(&mut from_literal_seed);
+        assert_eq!(from_stream, SIMPLE_KEYSTREAM);
+        assert_eq!(from_literal_seed, SIMPLE_KEYSTREAM);
+    }
+
+    #[test]
+    fn private_input_does_not_change_seed_and_public_input_does() {
+        let (app, tx, x) = spell_inputs();
+        let seed = random_seed(&app.vk, 0, &app, &tx, &x).unwrap();
+        let empty_w = Data::empty();
+        let other_w = Data::from(&0x99u8);
+        let stdin_empty = util::write(&(&app, &tx, &x, &empty_w)).unwrap();
+        let stdin_other = util::write(&(&app, &tx, &x, &other_w)).unwrap();
+        assert_ne!(stdin_empty, stdin_other);
+        assert_eq!(seed, SIMPLE_SEED);
+        let other_x = Data::from(&0x5bu8);
+        assert_ne!(seed, random_seed(&app.vk, 0, &app, &tx, &other_x).unwrap());
+    }
+
+    #[test]
+    fn simple_app_seed_uses_version_zero_and_wasm_hash() {
+        let (app, tx, x) = spell_inputs();
+        let wasm_hash = app.vk.clone();
+        assert_eq!(wasm_hash, app.vk);
+        let simple = random_seed(&wasm_hash, 0, &app, &tx, &x).unwrap();
+        let version_3 = random_seed(&wasm_hash, 3, &app, &tx, &x).unwrap();
+        let version_4 = random_seed(&wasm_hash, 4, &app, &tx, &x).unwrap();
+        let other_hash = B32([0x23; 32]);
+        let other_hash_version_3 = random_seed(&other_hash, 3, &app, &tx, &x).unwrap();
+        assert_ne!(simple, version_3);
+        assert_ne!(version_3, version_4);
+        assert_ne!(version_3, other_hash_version_3);
+    }
+
+    const RANDOM_GET_65537_AT_0: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0d, 0x01, 0x0b, 0x00, 0x41, 0x00, 0x41, 0x81, 0x80, 0x04, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_GET_65537_AT_NEG1: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0d, 0x01, 0x0b, 0x00, 0x41, 0x7f, 0x41, 0x81, 0x80, 0x04, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_GET_65536_AT_0: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0d, 0x01, 0x0b, 0x00, 0x41, 0x00, 0x41, 0x80, 0x80, 0x04, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_GET_65536_AT_1: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0d, 0x01, 0x0b, 0x00, 0x41, 0x01, 0x41, 0x80, 0x80, 0x04, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_GET_32_AT_0: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0b, 0x01, 0x09, 0x00, 0x41, 0x00, 0x41, 0x20, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    const RANDOM_GET_0_AT_0: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x0b, 0x01, 0x09, 0x00, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+
+    #[test]
+    fn random_get_rejects_length_above_64k_before_bounds() {
+        for wasm in [RANDOM_GET_65537_AT_0, RANDOM_GET_65537_AT_NEG1] {
+            let err = run_wasm(&AppRunner::new(false), wasm)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("random_get length exceeds 65536"), "{err}");
+            assert!(!err.contains("out of bounds"), "{err}");
+        }
+    }
+
+    #[test]
+    fn random_get_one_page_fits_at_zero_and_not_at_one() {
+        assert_eq!(
+            run_wasm(&AppRunner::new(false), RANDOM_GET_65536_AT_0).unwrap(),
+            0
+        );
+        let err = run_wasm(&AppRunner::new(false), RANDOM_GET_65536_AT_1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("out of bounds"), "{err}");
+        assert!(!err.contains("random_get length exceeds"), "{err}");
+    }
+
+    #[test]
+    fn random_get_fuel_charges_one_per_byte() {
+        let charged = run_wasm(&AppRunner::new(true), RANDOM_GET_32_AT_0).unwrap();
+        let baseline = run_wasm(&AppRunner::new(true), RANDOM_GET_0_AT_0).unwrap();
+        assert_eq!((baseline, charged), (67, 99));
+        assert!(charged >= baseline + 32);
+        assert_eq!(
+            run_wasm(&AppRunner::new(false), RANDOM_GET_32_AT_0).unwrap(),
+            0
+        );
+    }
+
+    /// 60 bytes, then 20, then 4100. The second call crosses the 64-byte ChaCha
+    /// block. The third call is one guest request that the host writes as 4096
+    /// bytes and then the remainder.
+    const RANDOM_GET_SPLIT: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x0a, 0x02, 0x60, 0x00, 0x00, 0x60,
+        0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x02, 0x25, 0x01, 0x16, 0x77, 0x61, 0x73, 0x69, 0x5f, 0x73,
+        0x6e, 0x61, 0x70, 0x73, 0x68, 0x6f, 0x74, 0x5f, 0x70, 0x72, 0x65, 0x76, 0x69, 0x65, 0x77,
+        0x31, 0x0a, 0x72, 0x61, 0x6e, 0x64, 0x6f, 0x6d, 0x5f, 0x67, 0x65, 0x74, 0x00, 0x01, 0x03,
+        0x02, 0x01, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01, 0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d,
+        0x6f, 0x72, 0x79, 0x02, 0x00, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, 0x0a,
+        0x1b, 0x01, 0x19, 0x00, 0x41, 0x00, 0x41, 0x3c, 0x10, 0x00, 0x1a, 0x41, 0x3c, 0x41, 0x14,
+        0x10, 0x00, 0x1a, 0x41, 0xd0, 0x00, 0x41, 0x84, 0x20, 0x10, 0x00, 0x1a, 0x0b,
+    ];
+    const SPLIT_TOTAL: usize = 60 + 20 + 4100;
+    const BLOCK_AT: usize = 64;
+    const CHUNK_AT: usize = 80 + 4096;
+
+    fn empty_tx() -> Transaction {
+        Transaction {
+            ins: vec![],
+            refs: vec![],
+            outs: vec![],
+            coin_ins: None,
+            coin_outs: None,
+            prev_txs: BTreeMap::new(),
+            app_public_inputs: BTreeMap::new(),
+        }
+    }
+
+    fn run_guest(wasm: &[u8], x: &Data, w: &Data) -> Vec<u8> {
+        let runner = AppRunner::new(false);
+        let app = App {
+            tag: 't',
+            identity: B32::default(),
+            vk: runner.vk(wasm),
+        };
+        let tx = empty_tx();
+        CAPTURE_GUEST_MEMORY.with(|flag| flag.set(true));
+        GUEST_MEMORY.with(|slot| *slot.borrow_mut() = None);
+        let ran = runner.run(wasm, &app, &tx, x, w, &BTreeMap::new(), &BTreeMap::new());
+        CAPTURE_GUEST_MEMORY.with(|flag| flag.set(false));
+        let memory = GUEST_MEMORY.with(|slot| slot.borrow_mut().take());
+        ran.expect("guest ran");
+        memory.expect("guest memory")
+    }
+
+    fn expected_keystream(wasm: &[u8], x: &Data) -> Vec<u8> {
+        let runner = AppRunner::new(false);
+        let app = App {
+            tag: 't',
+            identity: B32::default(),
+            vk: runner.vk(wasm),
+        };
+        let tx = empty_tx();
+        let seed = random_seed(&app.vk, 0, &app, &tx, x).unwrap();
+        let mut bytes = vec![0u8; SPLIT_TOTAL];
+        ChaCha20::new(&seed.into(), &[0u8; 12].into()).apply_keystream(&mut bytes);
+        let mut again = vec![0u8; SPLIT_TOTAL];
+        ChaCha20::new(&seed.into(), &[0u8; 12].into()).apply_keystream(&mut again);
+        assert_eq!(bytes, again);
+        bytes
+    }
+
+    #[test]
+    fn random_get_bytes_ignore_w_follow_x_and_cross_block_and_chunk() {
+        let x = Data::empty();
+        let with_empty_w = run_guest(RANDOM_GET_SPLIT, &x, &Data::empty());
+        let with_other_w = run_guest(RANDOM_GET_SPLIT, &x, &Data::from(&0x99u8));
+        assert_eq!(&with_empty_w[..SPLIT_TOTAL], &with_other_w[..SPLIT_TOTAL]);
+
+        let other_x = Data::from(&0x5bu8);
+        let with_other_x = run_guest(RANDOM_GET_SPLIT, &other_x, &Data::empty());
+        assert_ne!(&with_empty_w[..SPLIT_TOTAL], &with_other_x[..SPLIT_TOTAL]);
+
+        let expected = expected_keystream(RANDOM_GET_SPLIT, &x);
+        assert_eq!(&with_empty_w[..SPLIT_TOTAL], expected.as_slice());
+        const AROUND_BLOCK: [u8; 16] = [
+            0x1a, 0x31, 0xa3, 0xd3, 0x0c, 0x81, 0x1d, 0xb5, 0x65, 0xc5, 0x08, 0x87, 0x57, 0x03,
+            0x6c, 0xbc,
+        ];
+        const AROUND_CHUNK: [u8; 8] = [0xb3, 0x20, 0x79, 0x2d, 0x22, 0x52, 0x70, 0x5f];
+        assert_eq!(
+            &with_empty_w[BLOCK_AT - 4..BLOCK_AT + 12],
+            &AROUND_BLOCK,
+            "block {:02x?}",
+            &with_empty_w[BLOCK_AT - 4..BLOCK_AT + 12]
+        );
+        assert_eq!(
+            &with_empty_w[CHUNK_AT - 4..CHUNK_AT + 4],
+            &AROUND_CHUNK,
+            "chunk {:02x?}",
+            &with_empty_w[CHUNK_AT - 4..CHUNK_AT + 4]
+        );
     }
 }
