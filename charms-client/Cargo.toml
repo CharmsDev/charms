@@ -51,7 +51,7 @@ ark-relations = { workspace = true }
 ark-std = { workspace = true }
 charms-data = { path = "../charms-data", version = "16.0.0", features = ["test"] }
 ciborium = { workspace = true }
-ic-pub-key = "0.3.0"
+ic-pub-key = "0.4.0"
 proptest = { workspace = true }
 proptest-derive = { workspace = true }
 serde_json = { workspace = true }
