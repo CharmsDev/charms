@@ -248,7 +248,7 @@ dependencies = [
  "alloy-rpc-types-any",
  "alloy-rpc-types-eth",
  "alloy-serde",
- "alloy-signer",
+ "alloy-signer 1.8.3",
  "alloy-sol-types",
  "async-trait",
  "auto_impl",
@@ -382,6 +382,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloy-signer"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7de6fd34b5ba1789d482fa800dd97219b34765d6b07633a989a24d2dace770e"
+dependencies = [
+ "alloy-primitives",
+ "async-trait",
+ "auto_impl",
+ "either",
+ "elliptic-curve",
+ "k256",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "alloy-signer-aws"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -390,7 +405,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-network",
  "alloy-primitives",
- "alloy-signer",
+ "alloy-signer 1.8.3",
  "async-trait",
  "aws-config",
  "aws-sdk-kms",
@@ -409,7 +424,7 @@ dependencies = [
  "alloy-consensus",
  "alloy-network",
  "alloy-primitives",
- "alloy-signer",
+ "alloy-signer 1.8.3",
  "async-trait",
  "k256",
  "rand 0.8.8",
@@ -2294,7 +2309,7 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-signer",
+ "alloy-signer 2.5.0",
  "alloy-signer-local",
  "alloy-sol-types",
  "anyhow",
@@ -9068,7 +9083,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "699ee2e78537efab20f76aa2049058aa5fa803c804cc6cd4bce25a50ee59c341"
 dependencies = [
  "alloy-primitives",
- "alloy-signer",
+ "alloy-signer 1.8.3",
  "alloy-signer-aws",
  "alloy-signer-local",
  "anyhow",
