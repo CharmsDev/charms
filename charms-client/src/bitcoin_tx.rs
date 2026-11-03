@@ -252,6 +252,9 @@ pub const SCROLLS_ADDRS_PUBKEY: [u8; 32] =
 ///
 /// Litecoin scroll outputs are checked against this key. Bitcoin scroll outputs
 /// stay on [`SCROLLS_ADDRS_PUBKEY`].
+// TODO(demo/zkltc-testnet): replace with the x-only `[b"sign"]` Schnorr key of the demo
+// scrolls_litecoin canister before building the demo guest. This is still the production
+// ya3wx key.
 pub const SCROLLS_LITECOIN_ADDRS_PUBKEY: [u8; 32] =
     hex!("1ed9e3732a0b1df786044973959dbdd0aec8e0e23bbb9bdbe3459e5d57c4728f");
 

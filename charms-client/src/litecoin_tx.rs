@@ -10,6 +10,19 @@ use crate::tx::EnchantedTx;
 
 pub const LITECOIN_NBITS_3206445: u32 = 0x192b8d45;
 
+/// DEMO ONLY (branch `demo/zkltc-testnet`): Litecoin testnet `powLimit`
+/// (`00000fff…ff`), the bits of a testnet min-difficulty block.
+///
+/// This branch replaces mainnet finality (six blocks of `LITECOIN_NBITS_3206445` work)
+/// with a fake, testnet-sized bar: the inclusion block plus
+/// [`LITECOIN_DEMO_FOLLOWING_HEADERS`] linked headers, each meeting its own scrypt
+/// target, totalling at least six min-difficulty blocks of work. Anyone can mine that on
+/// a private fork. Never ship this to a production verification key.
+pub const LITECOIN_TESTNET_POW_LIMIT_NBITS: u32 = 0x1e0fffff;
+
+/// DEMO ONLY: headers that must follow the inclusion block (six blocks in total).
+pub const LITECOIN_DEMO_FOLLOWING_HEADERS: usize = 5;
+
 serde_with::serde_conv!(
     MerkleBlockHex,
     MerkleBlock,
@@ -150,12 +163,14 @@ fn scrypt_chain_is_final(tx: &LitecoinTx, proof: &MerkleBlock, headers: &[Header
         work = work + header.work();
         prev = header;
     }
-    work >= litecoin_finality_work()
+    headers.len() >= LITECOIN_DEMO_FOLLOWING_HEADERS && work >= litecoin_finality_work()
 }
 
 fn litecoin_finality_target_bits() -> u32 {
-    let one =
-        Target::from_compact(CompactTarget::from_consensus(LITECOIN_NBITS_3206445)).to_work();
+    let one = Target::from_compact(CompactTarget::from_consensus(
+        LITECOIN_TESTNET_POW_LIMIT_NBITS,
+    ))
+    .to_work();
     let six = one + one + one + one + one + one;
     six.to_target()
         .to_compact_lossy()
@@ -236,13 +251,70 @@ mod tests {
     }
 
     #[test]
-    fn six_reference_blocks_meet_the_bar() {
-        let one =
-            Target::from_compact(CompactTarget::from_consensus(LITECOIN_NBITS_3206445)).to_work();
+    fn six_min_difficulty_blocks_meet_the_demo_bar() {
+        let one = Target::from_compact(CompactTarget::from_consensus(
+            LITECOIN_TESTNET_POW_LIMIT_NBITS,
+        ))
+        .to_work();
         let six = one + one + one + one + one + one;
         assert!(six >= litecoin_finality_work());
         let five = one + one + one + one + one;
         assert!(five < litecoin_finality_work());
+        let mainnet =
+            Target::from_compact(CompactTarget::from_consensus(LITECOIN_NBITS_3206445)).to_work();
+        assert!(mainnet >= litecoin_finality_work());
+    }
+
+    // Litecoin testnet block 5,016,291 (a4c65a04…4c9f), its coinbase, and the five
+    // blocks after it, from https://litecoinspace.org/testnet/api.
+    const TESTNET_COINBASE: &str = "020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff1f03e38a4c2891fd91020000002f736f6c6f2d706f6f6c2d746573746e65742fffffffff02123550090000000016001461394acf94ecc84d73f6dd1c07d52d99122b5f4a0000000000000000266a24aa21a9edaf6a9327c862fe4a19d1f9287694654b1bea9f0f10120b0f0a75f70929cf57310120000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    const TESTNET_PROOF: &str = "00000020b45e92767f4fe27d51c415494bbbf0daae765969ecf3ed525621e9a190a5e609d3c411a9180b2edf2d6b55d9d0d5c4718df292be6a61e33092a1388cd1fe7f5a944aea6ac0ff3f1c9ee2d5ec0300000003b93c828169a890418c2638be7157775620c3d945200c70c421075d63bd0a5bd98d1b0376a53d1a5c377512d397d48175a67e7710c57727195cb75ff5ea1237b866f52b10eac2c9616f7a0e774e8ccaa22a32c2c2cf65ee60048638e07a2c0bbb0107";
+
+    const TESTNET_HEADERS: [&str; 5] = [
+        "000000209f4c021be045abcf7044ee27cafc1dad444ace5911d174a7db74aef7045ac6a425f15da24c9caf643f61beca1b56bba26e4567f6944569f7205f5931371900a2644bea6ac0ff3f1c39788ba0",
+        "000000203c8dd36baa21a51254b2392b9e8d81e6804eaefb51cb642577d78fff12387c809bf1f0fd37cb798fa5b4ab749e293efd150048e2c161769fb37334c4dd19e8daa64bea6ac0ff3f1c9e9afb4d",
+        "00000020bfe9ecfc50354aa8865358fcf0ab1171ae6cd8b8c9efd681b0b219476aee5e999742d6671ace4f1e2691e00492ff02d1323595899a8d8bdbae64472a0070d7f7ac4bea6ac0ff3f1c3870a5ff",
+        "00000020c94e6418a858fff3a7fec292fa7398474f37107678e17cb50587fb14a9d391cde9eea7f61b6d26cf9badfb2707209b19cbb595c9018cbc1c214acb9e8e693ce4f84bea6ac0ff3f1c68d5e7ea",
+        "00000020b884f7cf15cf63e8e264fde1809677968824a087d9178c0247752151fe9e3b921e0e0792822287f524fed7379f44c0e1ce93163eb56b923e1e3221061cb71cad2a4dea6affff0f1ec0004c1b",
+    ];
+
+    fn testnet_carried(following: usize) -> LitecoinCarried {
+        LitecoinCarried::WithBlockProof(LitecoinFinality {
+            tx: LitecoinTx::from_hex(TESTNET_COINBASE).unwrap(),
+            proof: deserialize_hex(TESTNET_PROOF).unwrap(),
+            headers: TESTNET_HEADERS[..following]
+                .iter()
+                .map(|hex| deserialize_hex(*hex).unwrap())
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn six_testnet_blocks_are_demo_final() {
+        let carried = testnet_carried(5);
+        assert_eq!(
+            carried.inner().compute_txid().to_string(),
+            "d95b0abd635d0721c4700c2045d9c32056775771be38268c4190a86981823cb9"
+        );
+        let LitecoinCarried::WithBlockProof(finality) = &carried else {
+            unreachable!()
+        };
+        assert_eq!(
+            finality.proof.header.block_hash().to_string(),
+            "a4c65a04f7ae74dba774d11159ce4a44ad1dfcca27ee4470cfab45e01b024c9f"
+        );
+        assert_eq!(
+            finality.headers[4].bits.to_consensus(),
+            LITECOIN_TESTNET_POW_LIMIT_NBITS
+        );
+        assert!(carried.proven_final());
+        for following in 0..5 {
+            assert!(!testnet_carried(following).proven_final());
+        }
+        let mut unlinked = finality.clone();
+        unlinked.headers.swap(0, 1);
+        assert!(!LitecoinCarried::WithBlockProof(unlinked).proven_final());
     }
 
     #[test]
