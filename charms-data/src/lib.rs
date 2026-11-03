@@ -201,12 +201,6 @@ impl<'de> Deserialize<'de> for UtxoId {
     }
 }
 
-/// CBOR bytes signed for a Scrolls `scriptPubKey` map.
-///
-/// The statement is the creating transaction's first input paired with the
-/// `output index -> scriptPubKey` map. Signers and verifiers SHA-256 these
-/// bytes and use that digest as the BIP-340 message. A signature for one first
-/// input does not verify for a spell that spends a different outpoint.
 pub fn signed_scroll_script_pubkeys_preimage(
     tx_in_0: &UtxoId,
     script_pubkeys: &impl Serialize,

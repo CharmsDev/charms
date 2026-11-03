@@ -78,11 +78,6 @@ type SignRequest = record {
 // same `nat64` types).
 type V14SignInput = record { nonce : nat64; index : nat64 };
 service : () -> {
-  // Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
-  // given derivation anchor, together with a BIP-340 Schnorr signature over the
-  // `(output_index -> scriptPubKey)` map produced by the canister's chain key
-  // under derivation path `[b"sign"]`.
-  // 
   // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
   // It identifies the unique "anchor" used for key derivation:
   // 

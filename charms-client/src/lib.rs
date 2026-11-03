@@ -1084,26 +1084,6 @@ fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()
     Ok(())
 }
 
-/// Verify the canister-signed Scrolls `scriptPubKey` map. Called only when the spell
-/// is on Bitcoin.
-///
-/// Returns:
-///
-/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map is present and
-///   every check passes.
-/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied (the client
-///   preflight path, where `coins[i].dest` for those outputs is also still empty -- the prover
-///   server fills both in via `fill_scroll_outputs`).
-/// * `Err(_)` -- the signed map is present but a structural or cryptographic check failed.
-///
-/// When the signed map is present, these MUST all hold:
-///
-/// * its keys equal `spell.tx.scrolls`,
-/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded), pinning the Bitcoin
-///   output to the canister-controlled script,
-/// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
-///   `SHA-256(CBOR(spell.tx.ins[0], script_pubkeys))` (the same digest the
-///   `scrolls_bitcoin_v15` canister signs).
 fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,

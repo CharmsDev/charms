@@ -6,10 +6,6 @@ use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// `scrolls_bitcoin_v15` canister on the IC mainnet. The canister derives unique
-/// P2WPKH `scriptPubKey`s from `(tx_in_0, out_i)` and returns a Schnorr signature
-/// over CBOR `(tx_in_0, output index -> scriptPubKey)` under derivation path
-/// `[b"sign"]`, verifiable against `charms_client::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`.
 const SCROLLS_BITCOIN_V15_CANISTER_ID: &str = "rpgc6-oqaaa-aaaak-qy3uq-cai";
 
 /// Mirror of the canister's [`Addresses`](scrolls_bitcoin::Addresses) result —

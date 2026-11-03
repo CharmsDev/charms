@@ -512,9 +512,6 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
     })
 }
 
-/// Sign SHA-256 of CBOR `(tx_in_0, script_pubkeys)` with the canister's
-/// BIP-340/secp256k1 Schnorr chain key under derivation path `[b"sign"]`.
-/// Returns the hex-encoded signature.
 async fn sign_script_pubkeys(
     tx_in_0: &UtxoId,
     script_pubkeys: &BTreeMap<u32, String>,
