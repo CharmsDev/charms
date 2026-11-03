@@ -37,7 +37,7 @@ scrypt = "0.12.0"
 serde = { workspace = true, features = ["derive"] }
 serde_with = { version = "3.24.0", features = ["hex", "base64"] }
 sha2 = { workspace = true }
-sha3 = { version = "0.10.8" }
+sha3 = { version = "0.11.0" }
 sp1-primitives = { workspace = true }
 sp1-verifier = { workspace = true, default-features = false }
 strum = { version = "0.28.0", features = ["derive"] }
