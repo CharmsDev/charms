@@ -44,3 +44,17 @@ jobs:
 
       - name: Rebuild the guests and fail on byte drift
         run: charms-spell-checker/check-guests.sh
+
+      - name: Upload rebuilt guests
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rebuilt-guests
+          if-no-files-found: error
+          path: |
+            src/bin/charms-spell-checker
+            src/bin/charms-proof-wrapper
+            src/bin/charms-spell-checker-vk.bin
+            src/bin/charms-proof-wrapper-vk.bin
+            charms-proof-wrapper/src/lib.rs
+            charms-lib/src/lib.rs
