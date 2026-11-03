@@ -9,7 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{TxId, UtxoId, is_null_outpoint, signed_scroll_script_pubkeys_preimage, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
@@ -444,8 +444,8 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 
 /// Result of [`addresses`]: the map from output index to its derived P2WPKH
 /// `scriptPubKey` (hex-encoded raw script bytes), plus a BIP-340 Schnorr
-/// signature over the CBOR-serialized map produced by the canister's chain
-/// key under derivation path `[b"sign"]`. The signature is hex-encoded.
+/// signature over CBOR `(tx_in_0, scriptPubKey map)` produced by the canister's
+/// chain key under derivation path `[b"sign"]`. The signature is hex-encoded.
 ///
 /// The `scriptPubKey` is what goes directly into a Bitcoin output's
 /// `script_pubkey` field; it is the same byte string that ends up in
@@ -459,9 +459,9 @@ pub struct Addresses {
 
 #[ic_cdk::update]
 /// Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
-/// given derivation anchor, together with a BIP-340 Schnorr signature over the
-/// `(output_index -> scriptPubKey)` map produced by the canister's chain key
-/// under derivation path `[b"sign"]`.
+/// given derivation anchor, together with a BIP-340 Schnorr signature over
+/// CBOR `(tx_in_0, output index -> scriptPubKey)`. The canister's chain key
+/// signs that digest under derivation path `[b"sign"]`.
 ///
 /// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
 /// It identifies the unique "anchor" used for key derivation:
@@ -472,6 +472,9 @@ pub struct Addresses {
 ///   appears as the first input's `txid` of the coinbase transaction itself) together with the
 ///   block height (as a decimal integer) in place of the vout. Example:
 ///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
+///   The coinbase transaction's own input is the null outpoint (`vout` 4294967295). `addresses`
+///   refuses that anchor: a coinbase cannot create Scrolls outputs. `sign_tx` still spends an
+///   existing coinbase output with the block-height anchor above.
 ///
 /// `out_is` is a list of output indexes (within the creating transaction) for
 /// which `scriptPubKey`s should be generated. At most 256 indexes are accepted
@@ -491,11 +494,17 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
         "Input error: too many output indexes requested (max: 256)"
     );
 
-    require_secret_prefix()?;
-
     let tx_in_0: UtxoId = tx_in_0
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
+    // The null outpoint is every coinbase's own first input. Signing it would
+    // not match the block-height anchor `sign_tx` uses when spending.
+    ensure!(
+        !is_null_outpoint(&tx_in_0),
+        "Input error: coinbase transactions cannot create Scrolls outputs"
+    );
+
+    require_secret_prefix()?;
 
     let mut script_pubkeys = BTreeMap::new();
     for out_i in out_is {
@@ -504,7 +513,7 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
         script_pubkeys.insert(out_i, hex::encode(spk.as_bytes()));
     }
 
-    let signature = sign_script_pubkeys(&script_pubkeys).await?;
+    let signature = sign_script_pubkeys(&tx_in_0, &script_pubkeys).await?;
 
     Ok(Addresses {
         script_pubkeys,
@@ -512,11 +521,11 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
     })
 }
 
-/// Sign the CBOR serialization of `script_pubkeys` (after SHA-256 hashing) with
-/// the canister's BIP-340/secp256k1 Schnorr chain key under derivation path
-/// `[b"sign"]`. Returns the hex-encoded signature.
-async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::Result<String> {
-    let message_bytes = util::write(script_pubkeys)
+async fn sign_script_pubkeys(
+    tx_in_0: &UtxoId,
+    script_pubkeys: &BTreeMap<u32, String>,
+) -> anyhow::Result<String> {
+    let message_bytes = signed_scroll_script_pubkeys_preimage(tx_in_0, script_pubkeys)
         .context("System error: serializing script_pubkeys for signing")?;
     let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
         .to_byte_array()
@@ -878,12 +887,7 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
 #[ic_cdk::query]
 fn transform_http(args: TransformArgs) -> HttpRequestResult {
     let TransformArgs { context, response } = args;
-    let status: u16 = response
-        .status
-        .0
-        .clone()
-        .try_into()
-        .unwrap_or(u16::MAX);
+    let status: u16 = response.status.0.clone().try_into().unwrap_or(u16::MAX);
 
     if status == 200 {
         return HttpRequestResult {
@@ -1215,7 +1219,41 @@ fn txid_to_tx(
 
 #[cfg(test)]
 mod tests {
-    use super::is_tx_already_exists_error;
+    use super::{addresses_impl, is_tx_already_exists_error};
+    use charms_data::{TxId, UtxoId, is_null_outpoint};
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(&waker);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("future waited"),
+        }
+    }
+
+    #[test]
+    fn addresses_rejects_the_null_coinbase_outpoint() {
+        let tx_in_0 = format!("{}:{}", "0".repeat(64), u32::MAX);
+        let err = ready(addresses_impl(tx_in_0, vec![0]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn block_height_anchor_is_not_the_null_outpoint() {
+        let anchor = UtxoId(TxId([0; 32]), 100);
+        assert!(!is_null_outpoint(&anchor));
+    }
 
     #[test]
     fn detects_already_in_chain_rpc_error() {
@@ -1225,7 +1263,8 @@ mod tests {
 
     #[test]
     fn rejects_already_in_mempool_rpc_error() {
-        let body = r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
+        let body =
+            r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
         assert!(!is_tx_already_exists_error(400, body));
     }
 

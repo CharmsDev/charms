@@ -201,6 +201,19 @@ impl<'de> Deserialize<'de> for UtxoId {
     }
 }
 
+pub fn signed_scroll_script_pubkeys_preimage(
+    tx_in_0: &UtxoId,
+    script_pubkeys: &impl Serialize,
+) -> Result<Vec<u8>> {
+    util::write(&(tx_in_0, script_pubkeys))
+}
+
+/// Bitcoin's coinbase input spends this outpoint: an all-zero txid and vout `0xffffffff`.
+/// Every coinbase transaction shares it. `spell_ins` copies it unchanged onto the spell.
+pub fn is_null_outpoint(utxo_id: &UtxoId) -> bool {
+    utxo_id.0 == TxId([0; 32]) && utxo_id.1 == u32::MAX
+}
+
 /// App represents an application that can be used to create, transform or destroy charms (tokens,
 /// NFTs and other instances of app data).
 ///
@@ -782,6 +795,33 @@ mod tests {
 
     #[test]
     fn dummy() {}
+
+    #[test]
+    fn scroll_script_pubkey_preimage_binds_the_first_input() {
+        let mut scripts = std::collections::BTreeMap::new();
+        scripts.insert(
+            1u32,
+            "0014aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        );
+        let first = UtxoId(TxId([0x11; 32]), 0);
+        let other = UtxoId(TxId([0x22; 32]), 7);
+        let bound = signed_scroll_script_pubkeys_preimage(&first, &scripts).unwrap();
+        let rebound = signed_scroll_script_pubkeys_preimage(&other, &scripts).unwrap();
+        let bare = util::write(&scripts).unwrap();
+        assert_ne!(bound, rebound);
+        assert_ne!(bound, bare);
+        let decoded: (UtxoId, std::collections::BTreeMap<u32, String>) =
+            util::read(bound.as_slice()).unwrap();
+        assert_eq!(decoded.0, first);
+        assert_eq!(decoded.1, scripts);
+    }
+
+    #[test]
+    fn null_outpoint_is_the_shared_coinbase_input() {
+        assert!(is_null_outpoint(&UtxoId(TxId([0; 32]), u32::MAX)));
+        assert!(!is_null_outpoint(&UtxoId(TxId([0; 32]), 100)));
+        assert!(!is_null_outpoint(&UtxoId(TxId([1; 32]), u32::MAX)));
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

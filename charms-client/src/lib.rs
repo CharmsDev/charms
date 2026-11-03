@@ -8,7 +8,8 @@ use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature}
 use charms_app_runner::AppRunner;
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, SCROLL, TOKEN, Transaction, TxId, UtxoId,
-    VersionedApp, check, is_simple_transfer, util,
+    VersionedApp, check, is_null_outpoint, is_simple_transfer,
+    signed_scroll_script_pubkeys_preimage,
 };
 use const_format::formatcp;
 use hex_literal::hex;
@@ -416,7 +417,7 @@ pub fn charms(spell: &NormalizedSpell, n_charms: &NormalizedCharms) -> Charms {
 /// Output of the `scrolls_bitcoin_v15` canister's `addresses(...)` endpoint: a map
 /// from spell-output index to its derived P2WPKH `scriptPubKey` (hex-encoded raw
 /// script bytes — the same bytes that go into `tx.coins[i].dest`), plus a
-/// hex-encoded BIP-340 Schnorr signature over the CBOR serialization of the map,
+/// hex-encoded BIP-340 Schnorr signature over CBOR `(first input, scriptPubKey map)`,
 /// produced under the canister's chain key derivation path `[b"sign"]`. The
 /// signature is verified against [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -471,6 +472,11 @@ pub fn is_correct(
     ));
 
     let prev_spells = prev_spells(prev_txs, spell_vk, &spell)?;
+
+    // The committed input list is the one verification copies from the hosting
+    // transaction. Reject a coinbase before `well_formed`, which has no parent
+    // tx for the null outpoint and would hide this error.
+    ensure_no_coinbase_scroll_outputs(spell)?;
 
     ensure!(well_formed(spell, &prev_spells, tx_ins_beamed_source_utxos));
 
@@ -1030,6 +1036,17 @@ fn host_scrolls(
     prev_txs: &[Tx],
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
+    // A coinbase input's txid is all zeros, so it is not a previous transaction.
+    // `hosting_tx` would miss it and skip the Scrolls check.
+    if spell
+        .tx
+        .ins
+        .as_ref()
+        .and_then(|ins| ins.first())
+        .is_some_and(is_null_outpoint)
+    {
+        return check_scroll_outputs(spell, scroll_outputs);
+    }
     match hosting_tx(spell, prev_txs) {
         Some(Tx::Bitcoin(_)) => check_scroll_outputs(spell, scroll_outputs),
         Some(Tx::Litecoin(_))
@@ -1084,29 +1101,44 @@ fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()
     Ok(())
 }
 
-/// Verify the canister-signed Scrolls `scriptPubKey` map. Called only when the spell
-/// is on Bitcoin.
-///
-/// Returns:
-///
-/// * `Ok(true)` -- nothing to check (no Scrolls outputs declared), or the signed map is present and
-///   every check passes.
-/// * `Ok(false)` -- Scrolls outputs are declared but no signed map was supplied (the client
-///   preflight path, where `coins[i].dest` for those outputs is also still empty -- the prover
-///   server fills both in via `fill_scroll_outputs`).
-/// * `Err(_)` -- the signed map is present but a structural or cryptographic check failed.
-///
-/// When the signed map is present, these MUST all hold:
-///
-/// * its keys equal `spell.tx.scrolls`,
-/// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded), pinning the Bitcoin
-///   output to the canister-controlled script,
-/// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
-///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15` canister signs).
 fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
+    check_scroll_outputs_with_pubkey(spell, scroll_outputs, &SCROLLS_ADDRS_PUBKEY)
+}
+
+fn declares_scroll_outputs(spell: &NormalizedSpell) -> bool {
+    spell
+        .tx
+        .scrolls
+        .as_ref()
+        .is_some_and(|scrolls| !scrolls.is_empty())
+}
+
+/// Scrolls outputs are forbidden when the spell's first input is the null
+/// outpoint. Callers must pass the input list copied from the hosting
+/// transaction (`spell_ins`), which is the list the proof commits.
+pub fn ensure_no_coinbase_scroll_outputs(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    if !declares_scroll_outputs(spell) {
+        return Ok(());
+    }
+    let Some(tx_in_0) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
+        return Ok(());
+    };
+    ensure!(
+        !is_null_outpoint(tx_in_0),
+        "coinbase transactions cannot create Scrolls outputs"
+    );
+    Ok(())
+}
+
+fn check_scroll_outputs_with_pubkey(
+    spell: &NormalizedSpell,
+    scroll_outputs: Option<&SignedScrollOutputs>,
+    pubkey: &[u8; 32],
+) -> anyhow::Result<bool> {
+    ensure_no_coinbase_scroll_outputs(spell)?;
     let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
         return Ok(true);
     };
@@ -1142,12 +1174,22 @@ fn check_scroll_outputs(
             dest_hex
         );
     }
-    verify_scroll_outputs_signature(scroll_outputs)?;
+    let tx_in_0 = spell
+        .tx
+        .ins
+        .as_ref()
+        .and_then(|ins| ins.first())
+        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have a first input"))?;
+    verify_scroll_outputs_signature(tx_in_0, scroll_outputs, pubkey)?;
     Ok(true)
 }
 
-fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()> {
-    let message_bytes = util::write(&s.script_pubkeys)
+fn verify_scroll_outputs_signature(
+    tx_in_0: &UtxoId,
+    s: &SignedScrollOutputs,
+    pubkey: &[u8; 32],
+) -> anyhow::Result<()> {
+    let message_bytes = signed_scroll_script_pubkeys_preimage(tx_in_0, &s.script_pubkeys)
         .context("serializing Scrolls scriptPubKeys for signature check")?;
     let digest: [u8; 32] = Sha256::digest(&message_bytes).into();
     let msg = Message::from_digest(digest);
@@ -1155,8 +1197,8 @@ fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()
     let sig_bytes = hex::decode(&s.signature).context("decoding Scrolls signature hex")?;
     let sig =
         Signature::from_slice(&sig_bytes).context("parsing Scrolls BIP-340 Schnorr signature")?;
-    let pk = XOnlyPublicKey::from_slice(&SCROLLS_ADDRS_PUBKEY)
-        .context("parsing SCROLLS_ADDRS_PUBKEY as x-only secp256k1 key")?;
+    let pk = XOnlyPublicKey::from_slice(pubkey)
+        .context("parsing Scrolls Schnorr public key as x-only secp256k1 key")?;
 
     Secp256k1::verification_only()
         .verify_schnorr(&sig, &msg, &pk)
@@ -1191,10 +1233,20 @@ pub fn beamed_out_to_hash(spell: &NormalizedSpell, i: u32) -> Option<&B32> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::bitcoin_tx::LitecoinTx;
+    use crate::bitcoin_tx::{BitcoinTx, LitecoinTx};
     use crate::tx::EnchantedTx;
     use crate::{BeamSource, NormalizedSpell};
-    use charms_data::{App, Data, NativeOutput, UtxoId, VersionedApp, util};
+    use bitcoin::secp256k1::{Keypair, SecretKey};
+    use bitcoin::{
+        Amount, OutPoint, ScriptBuf, Sequence, Transaction as BitcoinTransaction, TxIn, TxOut,
+        Witness,
+        absolute::LockTime,
+        transaction::Version,
+    };
+    use charms_data::{
+        App, Data, NativeOutput, TxId, UtxoId, VersionedApp, signed_scroll_script_pubkeys_preimage,
+        util,
+    };
     use std::str::FromStr;
     use test_strategy::proptest;
 
@@ -1977,6 +2029,163 @@ app_public_inputs: {}
         assert!(
             err.contains("does not match `tx.coins[1].dest`"),
             "got: {err}"
+        );
+    }
+
+    fn spell_with_scroll_output_and_input(dest_hex: &str, tx_in_0: UtxoId) -> NormalizedSpell {
+        let mut spell = spell_with_scroll_output_at(dest_hex);
+        spell.tx.ins = Some(vec![tx_in_0]);
+        spell
+    }
+
+    fn scroll_signing_key() -> (Secp256k1<bitcoin::secp256k1::All>, Keypair) {
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let keypair = Keypair::from_secret_key(&secp, &secret);
+        (secp, keypair)
+    }
+
+    fn xonly_pubkey(keypair: &Keypair) -> [u8; 32] {
+        keypair.x_only_public_key().0.serialize()
+    }
+
+    fn sign_scroll_preimage(preimage: &[u8], spk_hex: &str) -> (SignedScrollOutputs, [u8; 32]) {
+        let (secp, keypair) = scroll_signing_key();
+        let digest: [u8; 32] = Sha256::digest(preimage).into();
+        let sig =
+            secp.sign_schnorr_with_aux_rand(&Message::from_digest(digest), &keypair, &[0u8; 32]);
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(1u32, spk_hex.to_string());
+        (
+            SignedScrollOutputs {
+                script_pubkeys,
+                signature: hex::encode(sig.as_ref()),
+            },
+            xonly_pubkey(&keypair),
+        )
+    }
+
+    fn sign_bound_scroll_map(tx_in_0: &UtxoId, spk_hex: &str) -> (SignedScrollOutputs, [u8; 32]) {
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(1u32, spk_hex.to_string());
+        let preimage = signed_scroll_script_pubkeys_preimage(tx_in_0, &script_pubkeys).unwrap();
+        sign_scroll_preimage(&preimage, spk_hex)
+    }
+
+    #[test]
+    fn check_scroll_outputs_accepts_map_bound_to_the_spells_first_input() {
+        let tx_in_0 = UtxoId(TxId([0xab; 32]), 3);
+        let spell = spell_with_scroll_output_and_input(SAMPLE_P2WPKH_SPK, tx_in_0.clone());
+        let (signed, pubkey) = sign_bound_scroll_map(&tx_in_0, SAMPLE_P2WPKH_SPK);
+        assert!(check_scroll_outputs_with_pubkey(&spell, Some(&signed), &pubkey).unwrap());
+    }
+
+    #[test]
+    fn check_scroll_outputs_rejects_a_reused_or_foreign_signed_map() {
+        let spell_input = UtxoId(TxId([0xab; 32]), 3);
+        let spell = spell_with_scroll_output_and_input(SAMPLE_P2WPKH_SPK, spell_input);
+        let mut bare_map = BTreeMap::new();
+        bare_map.insert(1u32, SAMPLE_P2WPKH_SPK.to_string());
+        let bare = util::write(&bare_map).unwrap();
+        let (unbound, pubkey) = sign_scroll_preimage(&bare, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&unbound), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Schnorr"),
+            "unbound map should fail signature verification, got: {err}"
+        );
+
+        let other = UtxoId(TxId([0xcd; 32]), 1);
+        let (foreign, pubkey) = sign_bound_scroll_map(&other, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&foreign), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Schnorr"),
+            "map signed for a different first input should fail, got: {err}"
+        );
+    }
+
+    fn hosting_coinbase() -> BitcoinTx {
+        let tx = BitcoinTransaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        assert!(tx.is_coinbase());
+        BitcoinTx::Simple(tx)
+    }
+
+    #[test]
+    fn coinbase_spell_with_scroll_outputs_is_rejected() {
+        let hosting = hosting_coinbase();
+        let filled = hosting.spell_ins();
+        assert!(is_null_outpoint(&filled[0]));
+
+        let client_input = UtxoId(TxId([0xab; 32]), 3);
+        let mut spell = spell_with_scroll_output_and_input(SAMPLE_P2WPKH_SPK, client_input.clone());
+        spell.tx.outs = vec![NormalizedCharms::new(), NormalizedCharms::new()];
+        let (client_signed, pubkey) = sign_bound_scroll_map(&client_input, SAMPLE_P2WPKH_SPK);
+        assert!(check_scroll_outputs_with_pubkey(&spell, Some(&client_signed), &pubkey).unwrap());
+
+        spell.tx.ins = Some(filled);
+        let tx_in_0 = spell.tx.ins.as_ref().unwrap().first().unwrap().clone();
+        let (signed, pubkey) = sign_bound_scroll_map(&tx_in_0, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&signed), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+
+        let err = is_correct(
+            &spell,
+            &vec![],
+            None,
+            &MOCK_SPELL_VK,
+            &BTreeMap::new(),
+            Some(&signed),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn coinbase_spell_without_scroll_outputs_still_passes_the_scroll_check() {
+        let hosting = hosting_coinbase();
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(hosting.spell_ins());
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        assert!(check_scroll_outputs(&spell, None).unwrap());
+
+        let err = is_correct(
+            &spell,
+            &vec![],
+            None,
+            &MOCK_SPELL_VK,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            !err.contains("coinbase"),
+            "a coinbase spell with no Scrolls outputs must not be banned, got: {err}"
         );
     }
 
