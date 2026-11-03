@@ -1,9 +1,10 @@
 use super::prove_spell_tx::ProveSpellTxImpl;
 use crate::tx::bitcoin_tx::{
-    decode_litecoin_address, from_spell, litecoin_output_script_ok, prevout_amount,
+    DUST_LIMIT, decode_litecoin_address, from_spell, litecoin_dust, litecoin_output_script_ok,
+    prevout_amount,
 };
 use anyhow::{Context, anyhow, bail, ensure};
-use bitcoin::Network;
+use bitcoin::{Address, Network};
 use charms_app_runner::AppRunner;
 use charms_client::{
     BeamSource, NormalizedSpell, SignedScrollOutputs,
@@ -231,11 +232,38 @@ pub fn adjust_coin_contents(norm_spell: &mut NormalizedSpell, chain: Chain) -> a
     Ok(())
 }
 
+fn fee_output_reserve(
+    coins: &[charms_data::NativeOutput],
+    charms_fee: u64,
+    fee_script: Option<&bitcoin::Script>,
+    fee_dust: u64,
+) -> anyhow::Result<u64> {
+    let Some(script) = fee_script else {
+        return Ok(charms_fee);
+    };
+    let existing = coins
+        .iter()
+        .filter(|coin| coin.dest.as_slice() == script.as_bytes())
+        .try_fold(0u64, |acc, coin| {
+            acc.checked_add(coin.amount)
+                .ok_or_else(|| anyhow!("existing fee sats overflow u64"))
+        })?;
+    if existing < charms_fee {
+        (charms_fee - existing)
+            .checked_add(fee_dust)
+            .ok_or_else(|| anyhow!("fee reserve overflow u64"))
+    } else {
+        Ok(0)
+    }
+}
+
 fn ensure_hosted_funding(
     norm_spell: &NormalizedSpell,
     prev_txs_by_id: &BTreeMap<TxId, Tx>,
     fee_rate: f64,
     charms_fee: u64,
+    fee_script: Option<&bitcoin::Script>,
+    fee_dust: u64,
     script_ok: impl Fn(&bitcoin::Script) -> bool,
 ) -> anyhow::Result<()> {
     let coin_outs = (norm_spell.tx.coins.as_ref()).expect("coin outputs are expected");
@@ -293,8 +321,9 @@ fn ensure_hosted_funding(
         estimated_bitcoin_fee
     );
 
+    let fee_reserve = fee_output_reserve(coin_outs, charms_fee, fee_script, fee_dust)?;
     let total_sats_required = total_sats_out
-        .checked_add(charms_fee)
+        .checked_add(fee_reserve)
         .and_then(|s| s.checked_add(estimated_bitcoin_fee))
         .ok_or_else(|| anyhow!("total required sats (outputs + fees) overflow u64"))?;
 
@@ -428,11 +457,19 @@ impl ProveSpellTxImpl {
                     ),
                 };
                 let charms_fee = get_charms_fee(&self.charms_fee_settings, total_cycles).to_sat();
+                let fee_script = self.charms_fee_settings.as_ref().and_then(|settings| {
+                    let address = settings.fee_address(&Chain::Bitcoin, network.to_core_arg())?;
+                    Address::from_str(address)
+                        .ok()
+                        .map(|parsed| parsed.assume_checked().script_pubkey())
+                });
                 ensure_hosted_funding(
                     norm_spell,
                     &prev_txs_by_id,
                     prove_request.fee_rate,
                     charms_fee,
+                    fee_script.as_deref(),
+                    DUST_LIMIT.to_sat(),
                     |script| bitcoin::Address::from_script(script, network).is_ok(),
                 )?;
                 Ok((total_cycles, verified))
@@ -453,11 +490,23 @@ impl ProveSpellTxImpl {
                     );
                 }
                 let charms_fee = get_charms_fee(&self.charms_fee_settings, total_cycles).to_sat();
+                let fee_script = self.charms_fee_settings.as_ref().and_then(|settings| {
+                    let address = settings.fee_address(&Chain::Litecoin, fee_key)?;
+                    decode_litecoin_address(address)
+                        .ok()
+                        .map(|decoded| decoded.script_pubkey)
+                });
+                let fee_dust = fee_script
+                    .as_ref()
+                    .map(|script| litecoin_dust(script).to_sat())
+                    .unwrap_or(0);
                 ensure_hosted_funding(
                     norm_spell,
                     &prev_txs_by_id,
                     prove_request.fee_rate,
                     charms_fee,
+                    fee_script.as_deref(),
+                    fee_dust,
                     litecoin_output_script_ok,
                 )?;
                 Ok((total_cycles, verified))
@@ -476,16 +525,17 @@ impl ProveSpellTxImpl {
 mod tests {
     use super::*;
     use crate::spell::{ProveSpellTx, ProveSpellTxImpl};
+    use crate::tx::bitcoin_tx::litecoin_dust;
     use bitcoin::absolute::LockTime;
     use bitcoin::hashes::Hash;
     use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
-    use charms_client::bitcoin_tx::BitcoinTx;
+    use charms_client::bitcoin_tx::{BitcoinTx, LitecoinTx};
     use charms_client::ethereum_tx::plan_native;
     use charms_client::{
         BeamSource, NormalizedCharms, NormalizedSpell, bind_prev_txs, ethereum_tx::EthereumTx,
         request::ProveRequest, tx::EnchantedTx, utxo_id_hash_with_nonce,
     };
-    use charms_data::{App, B32, NativeOutput, TOKEN, UtxoId};
+    use charms_data::{App, B32, NativeOutput, TOKEN, TxId, UtxoId};
     use std::collections::BTreeMap;
 
     fn ethereum_prev() -> Tx {
@@ -744,5 +794,78 @@ app_public_inputs: {}
         assert!(!text.contains("exactly the transactions"));
         assert!(!text.contains("no creator"));
         assert!(request.prev_txs.iter().all(|tx| tx.tx_id() != creator_id));
+    }
+
+    #[test]
+    fn litecoin_short_input_does_not_cover_witness_fee_dust() {
+        let fee_script = ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([0x11; 20]));
+        let coin_script = ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([0x33; 20]));
+        let fee_dust = litecoin_dust(&fee_script).to_sat();
+        assert_eq!(fee_dust, 2940);
+        let coin_sats = 50_000;
+        let charms_fee = 1_000;
+        let short_input = 51_001;
+        let covered_input = coin_sats + charms_fee + fee_dust + 1;
+
+        let short = hosted_litecoin(short_input, coin_sats, &coin_script);
+        let err = ensure_hosted_funding(
+            &short.0,
+            &short.1,
+            0.0,
+            charms_fee,
+            Some(fee_script.as_script()),
+            fee_dust,
+            litecoin_output_script_ok,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("spell inputs must have sufficient value")
+        );
+
+        let covered = hosted_litecoin(covered_input, coin_sats, &coin_script);
+        ensure_hosted_funding(
+            &covered.0,
+            &covered.1,
+            0.0,
+            charms_fee,
+            Some(fee_script.as_script()),
+            fee_dust,
+            litecoin_output_script_ok,
+        )
+        .unwrap();
+
+        fn hosted_litecoin(
+            input_sats: u64,
+            coin_sats: u64,
+            coin_script: &ScriptBuf,
+        ) -> (NormalizedSpell, BTreeMap<TxId, Tx>) {
+            let prev = Transaction {
+                version: bitcoin::transaction::Version::TWO,
+                lock_time: LockTime::ZERO,
+                input: vec![],
+                output: vec![TxOut {
+                    value: Amount::from_sat(input_sats),
+                    script_pubkey: ScriptBuf::new(),
+                }],
+            };
+            let txid = prev.compute_txid().to_byte_array();
+            let mut prev_txs = BTreeMap::new();
+            prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev)));
+            let spell = NormalizedSpell {
+                tx: charms_client::NormalizedTransaction {
+                    ins: Some(vec![UtxoId(TxId(txid), 0)]),
+                    outs: vec![Default::default()],
+                    coins: Some(vec![NativeOutput {
+                        amount: coin_sats,
+                        dest: coin_script.to_bytes(),
+                        content: None,
+                    }]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            (spell, prev_txs)
+        }
     }
 }

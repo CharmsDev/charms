@@ -1,5 +1,6 @@
 use crate::{spell, spell::CharmsFee};
 use anyhow::bail;
+use bitcoin::consensus::encode::serialize;
 use bitcoin::{
     self, Address, Amount, FeeRate, Network, OutPoint, PubkeyHash, Script, ScriptBuf, ScriptHash,
     Transaction, TxIn, TxOut, Txid, Weight, WitnessProgram, WitnessVersion, absolute::LockTime,
@@ -14,7 +15,7 @@ use charms_client::{
 use charms_data::{TxId, UtxoId};
 use std::{collections::BTreeMap, str::FromStr};
 
-const DUST_LIMIT: Amount = Amount::from_sat(300);
+pub(crate) const DUST_LIMIT: Amount = Amount::from_sat(300);
 
 const LTC_MAIN_PUBKEY_VERSION: u8 = 48;
 const LTC_MAIN_SCRIPT_VERSIONS: [u8; 2] = [5, 50];
@@ -22,8 +23,8 @@ const LTC_TEST_PUBKEY_VERSION: u8 = 111;
 const LTC_TEST_SCRIPT_VERSIONS: [u8; 2] = [196, 58];
 
 const LITECOIN_DUST_RELAY_TX_FEE: u64 = 30_000;
-const LITECOIN_WITNESS_DUST_SIZE: u64 = 98;
-const LITECOIN_LEGACY_DUST_SIZE: u64 = 182;
+const LITECOIN_WITNESS_INPUT_SIZE: u64 = 32 + 4 + 1 + (107 / 4) + 4;
+const LITECOIN_LEGACY_INPUT_SIZE: u64 = 32 + 4 + 1 + 107 + 4;
 
 struct LitecoinChainParams {
     fee_key: &'static str,
@@ -115,16 +116,21 @@ fn litecoin_base58_address(address: &str) -> anyhow::Result<LitecoinAddress> {
     })
 }
 
-fn litecoin_dust(script: &Script) -> Amount {
+pub(crate) fn litecoin_dust(script: &Script) -> Amount {
     if script.is_op_return() {
         return Amount::ZERO;
     }
-    let size = if script.is_witness_program() {
-        LITECOIN_WITNESS_DUST_SIZE
+    let output_size = serialize(&TxOut {
+        value: Amount::ZERO,
+        script_pubkey: script.to_owned(),
+    })
+    .len() as u64;
+    let input_size = if script.is_witness_program() {
+        LITECOIN_WITNESS_INPUT_SIZE
     } else {
-        LITECOIN_LEGACY_DUST_SIZE
+        LITECOIN_LEGACY_INPUT_SIZE
     };
-    Amount::from_sat(size * LITECOIN_DUST_RELAY_TX_FEE / 1000)
+    Amount::from_sat((output_size + input_size) * LITECOIN_DUST_RELAY_TX_FEE / 1000)
 }
 
 pub(crate) fn litecoin_output_script_ok(script: &Script) -> bool {
@@ -481,13 +487,6 @@ mod tests {
 
     #[test]
     fn litecoin_spell_is_one_op_return() {
-        let witness_dust = 98 * 30_000 / 1000;
-        let legacy_dust = 182 * 30_000 / 1000;
-        assert_eq!(witness_dust, 2940);
-        assert_eq!(legacy_dust, 5460);
-        assert_ne!(witness_dust, 300);
-        assert_ne!(legacy_dust, 300);
-
         let fee_address =
             bech32::segwit::encode_v0(bech32::Hrp::parse("ltc").unwrap(), &[0x11; 20]).unwrap();
         let mut change_payload = vec![LTC_MAIN_PUBKEY_VERSION];
@@ -497,6 +496,20 @@ mod tests {
         let change_script = decode_litecoin_address(&change_address)
             .unwrap()
             .script_pubkey;
+        let witness_program =
+            WitnessProgram::new(WitnessVersion::V1, &[0x44; 32]).expect("32-byte program");
+        let long_witness = ScriptBuf::new_witness_program(&witness_program);
+        let op_return = Builder::new().push_opcode(OP_RETURN).into_script();
+        let witness_dust = litecoin_dust(&fee_script).to_sat();
+        let legacy_dust = litecoin_dust(&change_script).to_sat();
+        assert_eq!(fee_script.len(), 22);
+        assert_eq!(long_witness.len(), 34);
+        assert_eq!(witness_dust, 2940);
+        assert_eq!(litecoin_dust(&long_witness).to_sat(), 3300);
+        assert_eq!(legacy_dust, 5460);
+        assert_eq!(litecoin_dust(&op_return).to_sat(), 0);
+        assert_ne!(witness_dust, 300);
+        assert_ne!(legacy_dust, 300);
         assert!(fee_script.is_witness_program());
         assert!(!change_script.is_witness_program());
         assert!(!change_script.is_op_return());
