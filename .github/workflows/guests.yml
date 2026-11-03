@@ -28,6 +28,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   rebuild:
@@ -44,3 +45,17 @@ jobs:
 
       - name: Rebuild the guests and fail on byte drift
         run: charms-spell-checker/check-guests.sh
+
+      - name: Upload rebuilt guest outputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: guest-outputs
+          if-no-files-found: error
+          path: |
+            src/bin/charms-spell-checker
+            src/bin/charms-proof-wrapper
+            src/bin/charms-spell-checker-vk.bin
+            src/bin/charms-proof-wrapper-vk.bin
+            charms-proof-wrapper/src/lib.rs
+            charms-lib/src/lib.rs
