@@ -1,5 +1,5 @@
 use crate::{
-    bitcoin_tx::SCROLLS_ADDRS_PUBKEY,
+    bitcoin_tx::{SCROLLS_ADDRS_PUBKEY, SCROLLS_LITECOIN_ADDRS_PUBKEY},
     ethereum_tx::EthereumTx,
     tx::{Chain, EnchantedTx, Tx, by_txid, extended_normalized_spell},
 };
@@ -419,7 +419,9 @@ pub fn charms(spell: &NormalizedSpell, n_charms: &NormalizedCharms) -> Charms {
 /// script bytes — the same bytes that go into `tx.coins[i].dest`), plus a
 /// hex-encoded BIP-340 Schnorr signature over CBOR `(first input, scriptPubKey map)`,
 /// produced under the canister's chain key derivation path `[b"sign"]`. The
-/// signature is verified against [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`].
+/// signature is verified against the hosting chain's scrolls key:
+/// [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`] on Bitcoin and
+/// [`crate::bitcoin_tx::SCROLLS_LITECOIN_ADDRS_PUBKEY`] on Litecoin.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SignedScrollOutputs {
     pub script_pubkeys: BTreeMap<u32, String>,
@@ -434,9 +436,9 @@ pub struct SpellProverInput {
     pub tx_ins_beamed_source_utxos: BTreeMap<usize, BeamSource>,
     pub app_input: Option<AppInput>,
     /// Signed `output_index -> scriptPubKey` map for the spell's Scrolls outputs.
-    /// MUST be `Some` whenever the spell is on Bitcoin and
+    /// MUST be `Some` whenever the spell is on Bitcoin or Litecoin and
     /// [`NormalizedTransaction::scrolls`] is non-empty. Verified inside
-    /// [`is_correct`].
+    /// [`is_correct`]. The hosting chain selects the Schnorr key.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub scroll_outputs: Option<SignedScrollOutputs>,
 }
@@ -1048,17 +1050,21 @@ fn host_scrolls(
         return check_scroll_outputs(spell, scroll_outputs);
     }
     match hosting_tx(spell, prev_txs) {
-        Some(Tx::Bitcoin(_)) => check_scroll_outputs(spell, scroll_outputs),
-        Some(Tx::Litecoin(_))
-            if spell
-                .tx
-                .scrolls
-                .as_ref()
-                .is_some_and(|scrolls| !scrolls.is_empty()) =>
-        {
-            anyhow::bail!("Litecoin spells cannot list scroll outputs");
-        }
-        Some(Tx::Litecoin(_)) | Some(Tx::Cardano(_)) | Some(Tx::Ethereum(_)) | None => Ok(true),
+        Some(host) => match scrolls_addrs_pubkey(host) {
+            Some(pubkey) => check_scroll_outputs_with_pubkey(spell, scroll_outputs, pubkey),
+            None => Ok(true),
+        },
+        None => Ok(true),
+    }
+}
+
+/// Bitcoin and Litecoin each check scroll outputs under that chain's canister
+/// key. Other hosts have no scroll signer.
+fn scrolls_addrs_pubkey(host: &Tx) -> Option<&'static [u8; 32]> {
+    match host {
+        Tx::Bitcoin(_) => Some(&SCROLLS_ADDRS_PUBKEY),
+        Tx::Litecoin(_) => Some(&SCROLLS_LITECOIN_ADDRS_PUBKEY),
+        Tx::Cardano(_) | Tx::Ethereum(_) => None,
     }
 }
 
@@ -1152,10 +1158,11 @@ fn check_scroll_outputs_with_pubkey(
         signed_keys,
         scrolls
     );
-    let coins =
-        spell.tx.coins.as_ref().ok_or_else(|| {
-            anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set")
-        })?;
+    let coins = spell
+        .tx
+        .coins
+        .as_ref()
+        .ok_or_else(|| anyhow!("spell with Scrolls outputs must have `tx.coins` set"))?;
     for (&i, signed_spk_hex) in &scroll_outputs.script_pubkeys {
         let coin = coins.get(i as usize).ok_or_else(|| {
             anyhow!(
@@ -1179,7 +1186,7 @@ fn check_scroll_outputs_with_pubkey(
         .ins
         .as_ref()
         .and_then(|ins| ins.first())
-        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have a first input"))?;
+        .ok_or_else(|| anyhow!("spell with Scrolls outputs must have a first input"))?;
     verify_scroll_outputs_signature(tx_in_0, scroll_outputs, pubkey)?;
     Ok(true)
 }
@@ -1239,9 +1246,7 @@ mod test {
     use bitcoin::secp256k1::{Keypair, SecretKey};
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Sequence, Transaction as BitcoinTransaction, TxIn, TxOut,
-        Witness,
-        absolute::LockTime,
-        transaction::Version,
+        Witness, absolute::LockTime, transaction::Version,
     };
     use charms_data::{
         App, Data, NativeOutput, TxId, UtxoId, VersionedApp, signed_scroll_script_pubkeys_preimage,
@@ -2222,34 +2227,107 @@ app_public_inputs: {}
     const SAMPLE_BTC_TX_HEX: &str = "0200000000010115ccf0534b7969e5ac0f4699e51bf7805168244057059caa333397fcf8a9acdd0000000000fdffffff027a6faf85150000001600147b458433d0c04323426ef88365bd4cfef141ac7520a107000000000022512087a397fc19d816b6f938dad182a54c778d2d5db8b31f4528a758b989d42f0b78024730440220072d64b2e3bbcd27bd79cb8859c83ca524dad60dc6310569c2a04c997d116381022071d4df703d037a9fe16ccb1a2b8061f10cda86ccbb330a49c5dcc95197436c960121030db9616d96a7b7a8656191b340f77e905ee2885a09a7a1e80b9c8b64ec746fb300000000";
     const SAMPLE_CARDANO_TX_HEX: &str = "84a400d901028182582011a2338987035057f6c36286cf5aadc02573059b2cde9790017eb4e148f0c67a0001828258390174f84e13070bb755eaa01cb717da8c7450daf379948e979f6de99d26ba89ff199fde572546b9a044eb129ad2edb184bd79cde63ab4b47aec1a01312d008258390184f1c3b1fff5241088acc4ce0aec81f45a71a70e35c94e30a70b7cdfeb0785cdec744029db6b4f344b1123497c9cabfeeb94af20fcfddfe01a33e578fd021a000299e90758201e8eb8575d879922d701c12daa7366cb71b6518a9500e083a966a8e66b56ed23a10081825820ea444825bbd5cc97b6c795437849fe55694b52e2f51485ac76ca2d9f991e83305840d59db4fa0b4bb233504f5e6826261a2e18b2e22cb3df4f631ab77d94d62e8df3200536271f3f3a625bc86919714972964f070f909f145b342f2889f58ccc210ff5a11902a2a1636d736765546f6b656f";
 
+    fn litecoin_scroll_spell(tx_in_0: UtxoId) -> NormalizedSpell {
+        let mut spell = spell_with_scroll_output_at(SAMPLE_P2WPKH_SPK);
+        spell.tx.ins = Some(vec![tx_in_0]);
+        spell.tx.outs = vec![NormalizedCharms::new(), NormalizedCharms::new()];
+        spell
+    }
+
+    fn sign_scroll_at(
+        index: u32,
+        tx_in_0: &UtxoId,
+        spk_hex: &str,
+        secret: [u8; 32],
+    ) -> (SignedScrollOutputs, [u8; 32]) {
+        let secp = Secp256k1::new();
+        let keypair = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&secret).unwrap());
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(index, spk_hex.to_string());
+        let preimage = signed_scroll_script_pubkeys_preimage(tx_in_0, &script_pubkeys).unwrap();
+        let digest: [u8; 32] = Sha256::digest(&preimage).into();
+        let sig =
+            secp.sign_schnorr_with_aux_rand(&Message::from_digest(digest), &keypair, &[0u8; 32]);
+        (
+            SignedScrollOutputs {
+                script_pubkeys,
+                signature: hex::encode(sig.as_ref()),
+            },
+            xonly_pubkey(&keypair),
+        )
+    }
+
     #[test]
-    fn litecoin_host_rejects_listed_scroll_outputs() {
+    fn litecoin_spell_accepts_a_scroll_output_signed_by_the_litecoin_key() {
+        let litecoin = Tx::from(LitecoinTx::from_hex(SAMPLE_BTC_TX_HEX).unwrap());
+        let tx_in_0 = UtxoId(litecoin.tx_id(), 0);
+        let spell = litecoin_scroll_spell(tx_in_0.clone());
+        // A Litecoin host selects the ya3wx key and no other chain's key.
+        assert_eq!(
+            scrolls_addrs_pubkey(&litecoin),
+            Some(&SCROLLS_LITECOIN_ADDRS_PUBKEY)
+        );
+        assert_ne!(SCROLLS_LITECOIN_ADDRS_PUBKEY, SCROLLS_ADDRS_PUBKEY);
+
+        // `host_scrolls` passes the selected key to `check_scroll_outputs_with_pubkey`.
+        // A signature under that key is accepted. ya3wx's threshold secret is not
+        // in this tree, so the fixture signs with a stand-in and runs the same
+        // check the host runs after it has selected the chain key.
+        let (signed, pubkey) = sign_scroll_at(1, &tx_in_0, SAMPLE_P2WPKH_SPK, [0x42; 32]);
+        assert!(check_scroll_outputs_with_pubkey(&spell, Some(&signed), &pubkey).unwrap());
+        assert_ne!(pubkey, SCROLLS_LITECOIN_ADDRS_PUBKEY);
+    }
+
+    #[test]
+    fn litecoin_spell_rejects_a_scroll_output_not_signed_by_the_litecoin_key() {
         let litecoin = Tx::from(LitecoinTx::from_hex(SAMPLE_BTC_TX_HEX).unwrap());
         let bitcoin = Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap();
         let txid = litecoin.tx_id();
         assert_eq!(txid, bitcoin.tx_id());
+        let tx_in_0 = UtxoId(txid, 0);
+        let spell = litecoin_scroll_spell(tx_in_0.clone());
 
-        let mut spell = NormalizedSpell::default();
-        spell.tx.ins = Some(vec![UtxoId(txid, 0)]);
-        spell.tx.outs = vec![NormalizedCharms::new()];
-        spell.tx.scrolls = Some(BTreeSet::from([0]));
+        let missing = is_correct(
+            &spell,
+            &vec![litecoin.clone()],
+            None,
+            &MOCK_SPELL_VK,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert!(!missing);
 
+        let (signed, pubkey) = sign_scroll_at(1, &tx_in_0, SAMPLE_P2WPKH_SPK, [0x42; 32]);
+        assert_ne!(pubkey, SCROLLS_LITECOIN_ADDRS_PUBKEY);
+        assert_ne!(SCROLLS_LITECOIN_ADDRS_PUBKEY, SCROLLS_ADDRS_PUBKEY);
         let err = is_correct(
             &spell,
             &vec![litecoin],
             None,
             &MOCK_SPELL_VK,
             &BTreeMap::new(),
-            None,
+            Some(&signed),
         )
         .unwrap_err()
         .to_string();
         assert!(
-            err.contains("Litecoin spells cannot list scroll outputs"),
-            "{err}"
+            err.contains("Schnorr"),
+            "a signature from another key must fail under the Litecoin canister key, got: {err}"
         );
+        let err =
+            check_scroll_outputs_with_pubkey(&spell, Some(&signed), &SCROLLS_LITECOIN_ADDRS_PUBKEY)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("Schnorr"), "{err}");
 
-        let verified = is_correct(
+        let (other_key, _) = sign_scroll_at(1, &tx_in_0, SAMPLE_P2WPKH_SPK, [0x24; 32]);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&other_key), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Schnorr"), "{err}");
+
+        let bitcoin_missing = is_correct(
             &spell,
             &vec![bitcoin],
             None,
@@ -2258,7 +2336,11 @@ app_public_inputs: {}
             None,
         )
         .unwrap();
-        assert!(!verified);
+        assert!(!bitcoin_missing);
+        assert_eq!(
+            scrolls_addrs_pubkey(&Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap()),
+            Some(&SCROLLS_ADDRS_PUBKEY)
+        );
     }
 
     #[test]

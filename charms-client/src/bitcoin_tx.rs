@@ -246,6 +246,15 @@ pub const FINALITY_TARGET_BITS: u32 = 0x16507000; // mainnet finality target bit
 pub const SCROLLS_ADDRS_PUBKEY: [u8; 32] =
     hex!("30109b1c3c8dc1812de6267cd864a5f1f794330c6e43c25f971e6d0ae9440e3b");
 
+/// The 32-byte BIP-340 (x-only) secp256k1 public key for the threshold Schnorr
+/// key of `scrolls_litecoin` (`ya3wx-vqaaa-aaaak-qzmja-cai`), derivation path
+/// `[b"sign"]`, key id `("key_1", bip340secp256k1)`.
+///
+/// Litecoin scroll outputs are checked against this key. Bitcoin scroll outputs
+/// stay on [`SCROLLS_ADDRS_PUBKEY`].
+pub const SCROLLS_LITECOIN_ADDRS_PUBKEY: [u8; 32] =
+    hex!("1ed9e3732a0b1df786044973959dbdd0aec8e0e23bbb9bdbe3459e5d57c4728f");
+
 fn verify_finality_proof(
     tx: &Transaction,
     tx_block_proof: &MerkleBlock,
@@ -463,6 +472,9 @@ fn parse_spell_and_proof_from_witness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ic_pub_key::{
+        CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, derive_schnorr_key,
+    };
     use std::str::FromStr;
 
     fn compute_finality_target(target_bits: u32) -> CompactTarget {
@@ -553,10 +565,6 @@ mod tests {
 
     #[test]
     fn scrolls_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
-        use ic_pub_key::{
-            CanisterId, SchnorrAlgorithm, SchnorrKeyId, SchnorrPublicKeyArgs, derive_schnorr_key,
-        };
-
         // Textual canister ID for rpgc6-oqaaa-aaaak-qy3uq-cai.
         let canister_id = CanisterId::from_str("rpgc6-oqaaa-aaaak-qy3uq-cai").unwrap();
 
@@ -582,5 +590,23 @@ mod tests {
         let derived_x_only: [u8; 32] = result.public_key[1..].try_into().unwrap();
 
         assert_eq!(SCROLLS_ADDRS_PUBKEY, derived_x_only);
+    }
+
+    #[test]
+    fn scrolls_litecoin_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
+        let canister_id = CanisterId::from_str("ya3wx-vqaaa-aaaak-qzmja-cai").unwrap();
+        let args = SchnorrPublicKeyArgs {
+            canister_id: Some(canister_id),
+            derivation_path: vec![b"sign".to_vec()],
+            key_id: SchnorrKeyId {
+                algorithm: SchnorrAlgorithm::Bip340secp256k1,
+                name: "key_1".to_string(),
+            },
+        };
+        let result = derive_schnorr_key(&args).expect("derivation must succeed for mainnet key_1");
+        assert_eq!(result.public_key.len(), 33);
+        let derived_x_only: [u8; 32] = result.public_key[1..].try_into().unwrap();
+        assert_eq!(SCROLLS_LITECOIN_ADDRS_PUBKEY, derived_x_only);
+        assert_ne!(SCROLLS_LITECOIN_ADDRS_PUBKEY, SCROLLS_ADDRS_PUBKEY);
     }
 }

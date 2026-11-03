@@ -9,6 +9,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const SCROLLS_BITCOIN_V15_CANISTER_ID: &str = "rpgc6-oqaaa-aaaak-qy3uq-cai";
+const SCROLLS_LITECOIN_CANISTER_ID: &str = "ya3wx-vqaaa-aaaak-qzmja-cai";
+
+fn scrolls_addresses_canister(chain: Chain) -> Option<&'static str> {
+    match chain {
+        Chain::Bitcoin => Some(SCROLLS_BITCOIN_V15_CANISTER_ID),
+        Chain::Litecoin => Some(SCROLLS_LITECOIN_CANISTER_ID),
+        Chain::Cardano | Chain::Ethereum => None,
+    }
+}
 
 /// Mirror of the canister's [`Addresses`](scrolls_bitcoin::Addresses) result —
 /// declared locally so we don't pull the canister crate into the host build.
@@ -18,21 +27,23 @@ struct CanisterAddresses {
     signature: String,
 }
 
-/// If `spell.tx.scrolls` is non-empty and the spell is on Bitcoin, call the
-/// `scrolls_bitcoin_v15` canister to fetch the signed `scriptPubKey` map and
-/// write each `scriptPubKey` into `spell.tx.coins[i].dest` so the Bitcoin
-/// transaction we ultimately build pays the canister-controlled scripts.
+/// If `spell.tx.scrolls` is non-empty and the spell is on Bitcoin or Litecoin,
+/// call that chain's scrolls canister to fetch the signed `scriptPubKey` map
+/// and write each `scriptPubKey` into `spell.tx.coins[i].dest`.
 ///
-/// Returns `None` if there's no scrolls work to do (no scroll outputs, not
-/// Bitcoin, or spell-without-inputs — which is a malformed case that the
-/// downstream validator will reject anyway).
+/// Bitcoin calls `rpgc6-oqaaa-aaaak-qy3uq-cai`. Litecoin calls
+/// `ya3wx-vqaaa-aaaak-qzmja-cai`. Callers attach no cycles; the canister pays
+/// for Schnorr signing.
+///
+/// Returns `None` when the chain has no scrolls canister, the spell lists no
+/// scroll outputs, or the spell has no inputs.
 pub async fn fill_scroll_outputs(
     spell: &mut NormalizedSpell,
     chain: Chain,
 ) -> anyhow::Result<Option<SignedScrollOutputs>> {
-    if chain != Chain::Bitcoin {
+    let Some(canister_id) = scrolls_addresses_canister(chain) else {
         return Ok(None);
-    }
+    };
     ensure_no_coinbase_scroll_outputs(spell)?;
     let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
         return Ok(None);
@@ -42,12 +53,13 @@ pub async fn fill_scroll_outputs(
     };
     let out_is: Vec<u32> = scrolls.iter().copied().collect();
 
-    let signed = call_canister_addresses(&tx_in_0, out_is).await?;
+    let signed = call_canister_addresses(canister_id, &tx_in_0, out_is).await?;
 
-    let coins =
-        spell.tx.coins.as_mut().ok_or_else(|| {
-            anyhow!("Bitcoin spell with Scrolls outputs must have `tx.coins` set")
-        })?;
+    let coins = spell
+        .tx
+        .coins
+        .as_mut()
+        .ok_or_else(|| anyhow!("spell with Scrolls outputs must have `tx.coins` set"))?;
     let coins_len = coins.len();
     for (&i, spk_hex) in &signed.script_pubkeys {
         let coin = coins.get_mut(i as usize).ok_or_else(|| {
@@ -65,6 +77,7 @@ pub async fn fill_scroll_outputs(
 }
 
 async fn call_canister_addresses(
+    canister_id: &str,
     tx_in_0: &UtxoId,
     out_is: Vec<u32>,
 ) -> anyhow::Result<SignedScrollOutputs> {
@@ -73,24 +86,24 @@ async fn call_canister_addresses(
         .build()
         .context("Failed to create ICP agent")?;
 
-    let canister_id = Principal::from_text(SCROLLS_BITCOIN_V15_CANISTER_ID)
-        .context("Failed to parse scrolls_bitcoin_v15 canister ID")?;
+    let principal = Principal::from_text(canister_id)
+        .with_context(|| format!("Failed to parse scrolls canister ID {canister_id}"))?;
 
     let args = Encode!(&tx_in_0.to_string(), &out_is)
         .context("Failed to encode Candid arguments for addresses()")?;
 
     let response = agent
-        .update(&canister_id, "addresses")
+        .update(&principal, "addresses")
         .with_arg(args)
         .call_and_wait()
         .await
-        .context("Failed to call scrolls_bitcoin_v15.addresses")?;
+        .with_context(|| format!("Failed to call {canister_id}.addresses"))?;
 
     let inner = Decode!(&response, Result<CanisterAddresses, String>)
         .context("Failed to decode addresses() response")?;
     let canister_result = match inner {
         Ok(a) => a,
-        Err(e) => bail!("scrolls_bitcoin_v15.addresses returned error: {}", e),
+        Err(e) => bail!("{canister_id}.addresses returned error: {e}"),
     };
 
     Ok(SignedScrollOutputs {
@@ -128,5 +141,38 @@ mod tests {
             .await
             .unwrap();
         assert!(signed.is_none());
+    }
+
+    #[tokio::test]
+    async fn fill_scroll_outputs_rejects_a_litecoin_coinbase_before_calling_the_canister() {
+        let mut spell = NormalizedSpell::default();
+        spell.tx.scrolls = Some(BTreeSet::from([0]));
+        spell.tx.ins = Some(vec![UtxoId(TxId([0; 32]), u32::MAX)]);
+        let err = fill_scroll_outputs(&mut spell, Chain::Litecoin)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn litecoin_scrolls_call_ya3wx_and_not_the_bitcoin_canister() {
+        assert_eq!(
+            scrolls_addresses_canister(Chain::Litecoin),
+            Some("ya3wx-vqaaa-aaaak-qzmja-cai")
+        );
+        assert_eq!(
+            scrolls_addresses_canister(Chain::Bitcoin),
+            Some("rpgc6-oqaaa-aaaak-qy3uq-cai")
+        );
+        assert_ne!(
+            scrolls_addresses_canister(Chain::Litecoin),
+            scrolls_addresses_canister(Chain::Bitcoin)
+        );
+        assert!(scrolls_addresses_canister(Chain::Cardano).is_none());
+        assert!(scrolls_addresses_canister(Chain::Ethereum).is_none());
     }
 }

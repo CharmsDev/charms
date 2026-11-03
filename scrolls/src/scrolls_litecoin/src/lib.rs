@@ -5,7 +5,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{TxId, UtxoId, is_null_outpoint, signed_scroll_script_pubkeys_preimage, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::LitecoinTx,
@@ -18,8 +18,8 @@ use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, HttpHeader, HttpMethod, HttpRequestArgs,
     HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs,
     TransformArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
-    cost_sign_with_schnorr, ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa,
-    sign_with_schnorr, transform_context_from_query, vetkd_derive_key, vetkd_public_key,
+    ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa, sign_with_schnorr,
+    transform_context_from_query, vetkd_derive_key, vetkd_public_key,
 };
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
@@ -367,6 +367,14 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
     Ok(hex::encode(spell_bytes))
 }
 
+/// The map from output index to its derived P2WPKH `scriptPubKey` (hex-encoded
+/// raw script bytes), plus a BIP-340 Schnorr signature over
+/// CBOR `(tx_in_0, scriptPubKey map)` from this canister's chain key under
+/// derivation path `[b"sign"]`. The signature is hex-encoded.
+///
+/// The `scriptPubKey` is the byte string that goes into the spell output's
+/// `dest`. A P2WPKH script is `OP_0 <20-byte-pubkey-hash>`, the same bytes on
+/// `main` and `test`.
 #[derive(CandidType, Clone, Debug, Deserialize, Serialize)]
 pub struct Addresses {
     pub script_pubkeys: BTreeMap<u32, String>,
@@ -374,28 +382,50 @@ pub struct Addresses {
 }
 
 #[ic_cdk::update]
+/// Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
+/// given derivation anchor, together with a BIP-340 Schnorr signature over
+/// CBOR `(tx_in_0, output index -> scriptPubKey)`. This canister's chain key
+/// signs that digest under derivation path `[b"sign"]` and pays for the
+/// signature from its own cycle balance. Callers attach no cycles.
+///
+/// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for a
+/// coinbase-created output). It is the anchor used for key derivation:
+///
+/// * For a normal output, this is the outpoint (`{txid}:{vout}`) of the first
+///   input of the transaction that created the output.
+/// * For an output created by a coinbase transaction, use the all-zeros txid
+///   together with the block height in place of the vout. Example:
+///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
+///   The coinbase transaction's own input is the null outpoint (`vout`
+///   4294967295). `addresses` refuses that anchor: a coinbase cannot create
+///   Scrolls outputs.
+///
+/// `out_is` is the list of output indexes to address. At most 256 indexes are
+/// accepted. No `network` argument is taken because a P2WPKH `scriptPubKey`
+/// has the same bytes on `main` and `test`.
 pub async fn addresses(tx_in_0: String, out_is: Vec<u32>) -> Result<Addresses, String> {
     addresses_impl(tx_in_0, out_is)
         .await
         .map_err(|e| e.to_string())
 }
 
-fn require_address_outputs(out_is: &[u32]) -> anyhow::Result<()> {
-    ensure!(!out_is.is_empty(), "Input error: out_is is empty");
+async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Addresses> {
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
     );
-    Ok(())
-}
-
-async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Addresses> {
-    require_address_outputs(&out_is)?;
-    require_secret_prefix()?;
 
     let tx_in_0: UtxoId = tx_in_0
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {e}"))?;
+    // The null outpoint is every coinbase's own first input. Signing it would
+    // not match the block-height anchor `sign_tx` uses when spending.
+    ensure!(
+        !is_null_outpoint(&tx_in_0),
+        "Input error: coinbase transactions cannot create Scrolls outputs"
+    );
+
+    require_secret_prefix()?;
 
     let mut script_pubkeys = BTreeMap::new();
     for out_i in out_is {
@@ -404,15 +434,18 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
         script_pubkeys.insert(out_i, hex::encode(spk.as_bytes()));
     }
 
-    let signature = sign_script_pubkeys(&script_pubkeys).await?;
+    let signature = sign_script_pubkeys(&tx_in_0, &script_pubkeys).await?;
     Ok(Addresses {
         script_pubkeys,
         signature,
     })
 }
 
-async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::Result<String> {
-    let message_bytes = util::write(script_pubkeys)
+async fn sign_script_pubkeys(
+    tx_in_0: &UtxoId,
+    script_pubkeys: &BTreeMap<u32, String>,
+) -> anyhow::Result<String> {
+    let message_bytes = signed_scroll_script_pubkeys_preimage(tx_in_0, script_pubkeys)
         .context("System error: serializing script_pubkeys for signing")?;
     let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
         .to_byte_array()
@@ -423,40 +456,10 @@ async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::
         key_id: schnorr_sign_key_id(),
         aux: None,
     };
-    let cost = cost_sign_with_schnorr(&args)
-        .map_err(|e| anyhow!("System error: Schnorr signing cost: {e}"))?;
-    let args = sign_when_schnorr_cycles_cover(
-        ic_cdk::api::msg_cycles_available(),
-        cost,
-        |cycles| ic_cdk::api::msg_cycles_accept(cycles),
-        || Ok(args),
-    )?;
     let result = sign_with_schnorr(&args)
         .await
         .map_err(|e| anyhow!("System error: signing addresses with Schnorr: {e}"))?;
     Ok(hex::encode(&result.signature))
-}
-
-/// Accept exactly the management-canister `sign_with_schnorr` quote, then run `sign`.
-///
-/// `cost` is the quote from `cost_sign_with_schnorr` for this request's key and
-/// algorithm. Zero attached cycles, a short payment, and a zero quote all return
-/// before `accept` and before `sign`.
-fn sign_when_schnorr_cycles_cover<T>(
-    available: u128,
-    cost: u128,
-    accept: impl FnOnce(u128) -> u128,
-    sign: impl FnOnce() -> anyhow::Result<T>,
-) -> anyhow::Result<T> {
-    if available == 0 || cost == 0 || available < cost {
-        bail!("Input error: Schnorr signing requires {cost} cycles, attached {available}");
-    }
-    let accepted = accept(cost);
-    ensure!(
-        accepted >= cost,
-        "Input error: could not accept cycles for Schnorr signing: accepted {accepted}, cost {cost}"
-    );
-    sign()
 }
 
 fn schnorr_sign_key_id() -> SchnorrKeyId {
@@ -965,14 +968,29 @@ mod tests {
         NETWORK_TEST, NEXT_SCROLLS_LITECOIN_CANISTER_ID, VETKD_SECRET_PREFIX_CONTEXT,
         VETKD_SECRET_PREFIX_DOMAIN_SEP, VETKD_SECRET_PREFIX_INPUT, check_network, config,
         insufficient_deposit, is_tx_already_in_chain_error, litecoin_fee_script,
-        litecoinspace_broadcast_url, require_address_outputs, sign_when_schnorr_cycles_cover,
-        verify_spell_locally,
+        addresses_impl, litecoinspace_broadcast_url, verify_spell_locally,
     };
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WPubkeyHash,
         Witness, absolute::LockTime, consensus::encode::serialize_hex, hashes::Hash,
         transaction::Version,
     };
+    use charms_data::{TxId, UtxoId, is_null_outpoint};
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(&waker);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("future waited"),
+        }
+    }
 
     #[test]
     fn vetkd_domain_strings_are_litecoin() {
@@ -1065,62 +1083,40 @@ mod tests {
         assert!(NEXT_SCROLLS_LITECOIN_CANISTER_ID.is_empty());
     }
 
-    /// Production `key_1` Schnorr fee from the IC cycle-cost reference.
-    /// `cost_sign_with_schnorr` is the quote `sign_with_schnorr` attaches.
-    const SCHNORR_KEY_1_SIGN_CYCLES: u128 = 26_153_846_153;
-
     #[test]
-    fn empty_out_is_is_rejected_before_signing() {
-        let err = require_address_outputs(&[]).unwrap_err().to_string();
-        assert!(err.contains("out_is is empty"), "{err}");
-        assert!(require_address_outputs(&[0, 1]).is_ok());
+    fn addresses_rejects_the_null_coinbase_outpoint() {
+        let tx_in_0 = format!("{}:{}", "0".repeat(64), u32::MAX);
+        let err = ready(addresses_impl(tx_in_0, vec![0]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn no_attached_cycles_never_reaches_the_signer() {
-        let mut signer_calls = 0;
-        let unpaid = sign_when_schnorr_cycles_cover(
-            0,
-            SCHNORR_KEY_1_SIGN_CYCLES,
-            |_| panic!("accept must not run when no cycles are attached"),
-            || {
-                signer_calls += 1;
-                Ok(())
-            },
-        );
-        let err = unpaid.unwrap_err().to_string();
-        assert_eq!(signer_calls, 0);
-        assert!(err.contains("attached 0"), "{err}");
+    fn block_height_anchor_is_not_the_null_outpoint() {
+        let anchor = UtxoId(TxId([0; 32]), 100);
+        assert!(!is_null_outpoint(&anchor));
+    }
 
-        let short = sign_when_schnorr_cycles_cover(
-            SCHNORR_KEY_1_SIGN_CYCLES - 1,
-            SCHNORR_KEY_1_SIGN_CYCLES,
-            |_| panic!("accept must not run when the quote is not covered"),
-            || {
-                signer_calls += 1;
-                Ok(())
-            },
-        );
-        assert!(short.is_err());
-        assert_eq!(signer_calls, 0);
-
-        let mut accepted = 0;
-        let paid = sign_when_schnorr_cycles_cover(
-            SCHNORR_KEY_1_SIGN_CYCLES,
-            SCHNORR_KEY_1_SIGN_CYCLES,
-            |cycles| {
-                accepted = cycles;
-                cycles
-            },
-            || {
-                signer_calls += 1;
-                Ok("signed")
-            },
-        )
-        .unwrap();
-        assert_eq!(paid, "signed");
-        assert_eq!(signer_calls, 1);
-        assert_eq!(accepted, SCHNORR_KEY_1_SIGN_CYCLES);
+    #[test]
+    fn addresses_signs_the_first_input_preimage_from_the_canister_balance() {
+        let prod = include_str!("lib.rs").split("mod tests").next().unwrap();
+        let signing = prod
+            .split("async fn sign_script_pubkeys")
+            .nth(1)
+            .unwrap()
+            .split("fn schnorr_sign_key_id")
+            .next()
+            .unwrap();
+        assert!(signing.contains("signed_scroll_script_pubkeys_preimage(tx_in_0, script_pubkeys)"));
+        assert!(!signing.contains("msg_cycles_accept"));
+        assert!(!signing.contains("msg_cycles_available"));
+        assert!(!signing.contains("cost_sign_with_schnorr"));
+        assert!(prod.contains("is_null_outpoint(&tx_in_0)"));
+        assert!(!prod.contains("cost_sign_with_schnorr"));
     }
 
     #[test]
