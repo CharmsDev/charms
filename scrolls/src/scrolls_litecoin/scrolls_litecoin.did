@@ -1,3 +1,11 @@
+// The map from output index to its derived P2WPKH `scriptPubKey` (hex-encoded
+// raw script bytes), plus a BIP-340 Schnorr signature over
+// CBOR `(tx_in_0, scriptPubKey map)` from this canister's chain key under
+// derivation path `[b"sign"]`. The signature is hex-encoded.
+// 
+// The `scriptPubKey` is the byte string that goes into the spell output's
+// `dest`. A P2WPKH script is `OP_0 <20-byte-pubkey-hash>`, the same bytes on
+// `main` and `test`.
 type Addresses = record {
   signature : text;
   script_pubkeys : vec record { nat32; text };
@@ -57,6 +65,27 @@ type TransformArgs = record {
   response : HttpRequestResult;
 };
 service : () -> {
+  // Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
+  // given derivation anchor, together with a BIP-340 Schnorr signature over
+  // CBOR `(tx_in_0, output index -> scriptPubKey)`. This canister's chain key
+  // signs that digest under derivation path `[b"sign"]` and pays for the
+  // signature from its own cycle balance. Callers attach no cycles.
+  // 
+  // `tx_in_0` is a string of the form `txid_hex:vout` (or block height for a
+  // coinbase-created output). It is the anchor used for key derivation:
+  // 
+  // * For a normal output, this is the outpoint (`{txid}:{vout}`) of the first
+  // input of the transaction that created the output.
+  // * For an output created by a coinbase transaction, use the all-zeros txid
+  // together with the block height in place of the vout. Example:
+  // `0000000000000000000000000000000000000000000000000000000000000000:123456`
+  // The coinbase transaction's own input is the null outpoint (`vout`
+  // 4294967295). `addresses` refuses that anchor: a coinbase cannot create
+  // Scrolls outputs.
+  // 
+  // `out_is` is the list of output indexes to address. At most 256 indexes are
+  // accepted. No `network` argument is taken because a P2WPKH `scriptPubKey`
+  // has the same bytes on `main` and `test`.
   addresses : (text, vec nat32) -> (Result);
   config : () -> (Config) query;
   cycles_balance : () -> (nat) query;
