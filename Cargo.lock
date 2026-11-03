@@ -2308,6 +2308,7 @@ dependencies = [
  "ark-std 0.6.0",
  "axum",
  "axum-macros",
+ "base58ck",
  "bech32 0.11.1",
  "bincode",
  "bitcoin",

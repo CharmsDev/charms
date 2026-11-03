@@ -4,7 +4,8 @@ use crate::{
     V2_SPELL_VK, V3, V3_SPELL_VK, V4, V4_SPELL_VK, V5, V5_SPELL_VK, V6, V6_SPELL_VK, V7,
     V7_SPELL_VK, V8, V8_SPELL_VK, V9, V9_SPELL_VK, V10, V10_SPELL_VK, V11, V11_SPELL_VK, V12,
     V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, V15, V15_SPELL_VK, ark,
-    bitcoin_tx::BitcoinTx, cardano_tx::CardanoTx,
+    bitcoin_tx::{BitcoinTx, LitecoinTx},
+    cardano_tx::CardanoTx,
 };
 use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
@@ -61,6 +62,7 @@ pub enum Tx {
     Bitcoin(BitcoinTx),
     Cardano(CardanoTx),
     Ethereum(EthereumTx),
+    Litecoin(LitecoinTx),
 }
 
 impl TryFrom<&str> for Tx {
@@ -90,6 +92,7 @@ impl Tx {
             Tx::Bitcoin(tx) => tx.hex(),
             Tx::Cardano(tx) => tx.hex(),
             Tx::Ethereum(tx) => tx.hex(),
+            Tx::Litecoin(tx) => tx.hex(),
         }
     }
 }

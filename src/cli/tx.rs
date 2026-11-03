@@ -5,7 +5,7 @@ use crate::{
 };
 use anyhow::{Result, bail, ensure};
 use charms_client::{
-    bitcoin_tx::BitcoinTx,
+    bitcoin_tx::{BitcoinTx, LitecoinTx},
     cardano_tx::CardanoTx,
     ethereum_tx::ENVELOPE_PREFIX,
     tx::{Chain, Tx},
@@ -22,6 +22,9 @@ pub fn tx_show_spell(params: ShowSpellParams) -> Result<()> {
         Chain::Bitcoin => show_verified_spell(&Tx::Bitcoin(BitcoinTx::from_hex(&tx)?), json, mock),
         Chain::Cardano => show_verified_spell(&Tx::Cardano(CardanoTx::from_hex(&tx)?), json, mock),
         Chain::Ethereum => show_ethereum_spell(&tx, json, mock),
+        Chain::Litecoin => {
+            show_verified_spell(&Tx::Litecoin(LitecoinTx::from_hex(&tx)?), json, mock)
+        }
     }
 }
 

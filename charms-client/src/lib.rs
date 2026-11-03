@@ -1017,6 +1017,7 @@ pub fn ensure_requested_chain_matches_host(
         Tx::Bitcoin(_) => Chain::Bitcoin,
         Tx::Cardano(_) => Chain::Cardano,
         Tx::Ethereum(_) => Chain::Ethereum,
+        Tx::Litecoin(_) => Chain::Litecoin,
     };
     ensure!(
         chain == hosted,
