@@ -116,6 +116,41 @@ fn litecoin_base58_address(address: &str) -> anyhow::Result<LitecoinAddress> {
     })
 }
 
+pub(crate) fn litecoin_fee_key<'a>(networks: &'a [&'a str], mock: bool) -> anyhow::Result<&'a str> {
+    if let [fee_key] = networks {
+        if *fee_key == "regtest" && !mock {
+            bail!("regtest change address requires mock");
+        }
+        return Ok(*fee_key);
+    }
+    if networks.len() == 2 && networks.contains(&"test") && networks.contains(&"regtest") {
+        return Ok(if mock { "regtest" } else { "test" });
+    }
+    bail!("litecoin change address does not select one network");
+}
+
+pub(crate) fn ensure_litecoin_coin_dust(spell: &NormalizedSpell) -> anyhow::Result<()> {
+    let coins = spell
+        .tx
+        .coins
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("coins must be present"))?;
+    let scrolls = spell.tx.scrolls.clone().unwrap_or_default();
+    for (i, coin) in coins.iter().enumerate() {
+        if scrolls.contains(&(i as u32)) && coin.dest.is_empty() {
+            continue;
+        }
+        let dust = litecoin_dust(Script::from_bytes(&coin.dest)).to_sat();
+        if coin.amount < dust {
+            bail!(
+                "coins[{i}].amount {} is below the Litecoin dust limit {dust}",
+                coin.amount
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn litecoin_dust(script: &Script) -> Amount {
     if script.is_op_return() {
         return Amount::ZERO;
@@ -318,6 +353,7 @@ pub fn make_transactions(
     fee_rate: f64,
     charms_fee: Option<CharmsFee>,
     total_cycles: u64,
+    mock: bool,
 ) -> anyhow::Result<Vec<Tx>> {
     let (change_pubkey, charms_fee_pubkey, fee_dust, change_dust) = match chain {
         Chain::Bitcoin => {
@@ -343,11 +379,10 @@ pub fn make_transactions(
             (change_pubkey, charms_fee_pubkey, DUST_LIMIT, DUST_LIMIT)
         }
         Chain::Litecoin => {
+            ensure_litecoin_coin_dust(spell)?;
             let decoded = decode_litecoin_address(change_address)?;
-            let fee_key = match decoded.networks.as_slice() {
-                [fee_key] => *fee_key,
-                _ => bail!("Invalid change address: {:?}", change_address),
-            };
+            let fee_key = litecoin_fee_key(&decoded.networks, mock)
+                .map_err(|_| anyhow::anyhow!("Invalid change address: {:?}", change_address))?;
             let change_pubkey = decoded.script_pubkey;
             let charms_fee_pubkey = match charms_fee
                 .as_ref()
@@ -412,7 +447,7 @@ mod tests {
     use charms_client::bitcoin_tx::parse_spell_and_proof_from_op_return;
     use charms_client::tx::EnchantedTx;
     use charms_data::{NativeOutput, util};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     #[test]
     fn test_add_spell_op_return() {
@@ -687,6 +722,7 @@ mod tests {
                     fee_base: fee_sats,
                 }),
                 0,
+                false,
             )
             .unwrap()
         }
@@ -723,5 +759,167 @@ mod tests {
                 }],
             })
         }
+    }
+
+    #[test]
+    fn shared_prefix_p2pkh_selects_test_outside_mock_and_regtest_in_mock() {
+        let mut payload = vec![LTC_TEST_PUBKEY_VERSION];
+        payload.extend_from_slice(&[0x55; 20]);
+        let change = base58ck::encode_check(&payload);
+        let decoded = decode_litecoin_address(&change).unwrap();
+        assert_eq!(litecoin_fee_key(&decoded.networks, false).unwrap(), "test");
+        assert_eq!(
+            litecoin_fee_key(&decoded.networks, true).unwrap(),
+            "regtest"
+        );
+
+        let test_fee =
+            bech32::segwit::encode_v0(bech32::Hrp::parse("tltc").unwrap(), &[0x11; 20]).unwrap();
+        let regtest_fee =
+            bech32::segwit::encode_v0(bech32::Hrp::parse("rltc").unwrap(), &[0x22; 20]).unwrap();
+        let test_script = decode_litecoin_address(&test_fee).unwrap().script_pubkey;
+        let regtest_script = decode_litecoin_address(&regtest_fee).unwrap().script_pubkey;
+        let coin = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x33; 20]));
+        let mut fees = BTreeMap::new();
+        fees.insert("test".to_string(), test_fee);
+        fees.insert("regtest".to_string(), regtest_fee);
+        let outside =
+            litecoin_built(&change, &coin, 2_940, 6_880, fees.clone(), 1_000, false).unwrap();
+        let inside = litecoin_built(&change, &coin, 2_940, 6_880, fees, 1_000, true).unwrap();
+        let outside_scripts = output_scripts(&outside);
+        let inside_scripts = output_scripts(&inside);
+        assert!(outside_scripts.contains(&test_script));
+        assert!(!outside_scripts.contains(&regtest_script));
+        assert!(inside_scripts.contains(&regtest_script));
+        assert!(!inside_scripts.contains(&test_script));
+
+        let tltc =
+            bech32::segwit::encode_v0(bech32::Hrp::parse("tltc").unwrap(), &[0x66; 20]).unwrap();
+        let rltc =
+            bech32::segwit::encode_v0(bech32::Hrp::parse("rltc").unwrap(), &[0x66; 20]).unwrap();
+        assert_eq!(
+            litecoin_fee_key(&decode_litecoin_address(&tltc).unwrap().networks, false).unwrap(),
+            "test"
+        );
+        assert_eq!(
+            litecoin_fee_key(&decode_litecoin_address(&tltc).unwrap().networks, true).unwrap(),
+            "test"
+        );
+        assert_eq!(
+            litecoin_fee_key(&decode_litecoin_address(&rltc).unwrap().networks, true).unwrap(),
+            "regtest"
+        );
+        assert!(
+            litecoin_fee_key(&decode_litecoin_address(&rltc).unwrap().networks, false).is_err()
+        );
+    }
+
+    #[test]
+    fn litecoin_p2wpkh_coin_dust_rejects_300_and_accepts_2940() {
+        let coin = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([0x33; 20]));
+        let low = coin_spell(&coin, 300, None);
+        assert!(
+            ensure_litecoin_coin_dust(&low)
+                .unwrap_err()
+                .to_string()
+                .contains("below the Litecoin dust limit")
+        );
+        ensure_litecoin_coin_dust(&coin_spell(&coin, 2_940, None)).unwrap();
+
+        let mut payload = vec![LTC_MAIN_PUBKEY_VERSION];
+        payload.extend_from_slice(&[0x22; 20]);
+        let change = base58ck::encode_check(&payload);
+        assert!(litecoin_built(&change, &coin, 300, 10_000, BTreeMap::new(), 0, false).is_err());
+        assert!(litecoin_built(&change, &coin, 2_940, 2_940, BTreeMap::new(), 0, false).is_ok());
+
+        let exempt = coin_spell(&coin, 0, Some(BTreeSet::from([0])));
+        let mut exempt = exempt;
+        exempt.tx.coins.as_mut().unwrap()[0].dest.clear();
+        ensure_litecoin_coin_dust(&exempt).unwrap();
+    }
+
+    fn coin_spell(
+        coin: &ScriptBuf,
+        amount: u64,
+        scrolls: Option<BTreeSet<u32>>,
+    ) -> NormalizedSpell {
+        NormalizedSpell {
+            tx: NormalizedTransaction {
+                ins: Some(vec![UtxoId(TxId([1; 32]), 0)]),
+                outs: vec![Default::default()],
+                coins: Some(vec![NativeOutput {
+                    amount,
+                    dest: coin.to_bytes(),
+                    content: None,
+                }]),
+                scrolls,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn output_scripts(txs: &[Tx]) -> Vec<ScriptBuf> {
+        let Tx::Litecoin(tx) = &txs[0] else {
+            panic!("litecoin tx");
+        };
+        tx.inner()
+            .output
+            .iter()
+            .map(|output| output.script_pubkey.clone())
+            .collect()
+    }
+
+    fn litecoin_built(
+        change: &str,
+        coin: &ScriptBuf,
+        coin_sats: u64,
+        input_sats: u64,
+        fees: BTreeMap<String, String>,
+        fee_sats: u64,
+        mock: bool,
+    ) -> anyhow::Result<Vec<Tx>> {
+        let prev = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![],
+            output: vec![TxOut {
+                value: Amount::from_sat(input_sats),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        };
+        let txid = prev.compute_txid().to_byte_array();
+        let mut prev_txs = BTreeMap::new();
+        prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev)));
+        let spell = NormalizedSpell {
+            tx: NormalizedTransaction {
+                ins: Some(vec![UtxoId(TxId(txid), 0)]),
+                outs: vec![Default::default()],
+                coins: Some(vec![NativeOutput {
+                    amount: coin_sats,
+                    dest: coin.to_bytes(),
+                    content: None,
+                }]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut fee_addresses = BTreeMap::new();
+        fee_addresses.insert(Chain::Litecoin, fees);
+        make_transactions(
+            Chain::Litecoin,
+            &spell,
+            &change.to_string(),
+            &prev_txs,
+            b"spell-bytes",
+            0.0,
+            Some(CharmsFee {
+                fee_addresses,
+                fee_rate: 0,
+                fee_base: fee_sats,
+            }),
+            0,
+            mock,
+        )
     }
 }

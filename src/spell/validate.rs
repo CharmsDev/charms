@@ -1,7 +1,7 @@
 use super::prove_spell_tx::ProveSpellTxImpl;
 use crate::tx::bitcoin_tx::{
-    DUST_LIMIT, decode_litecoin_address, from_spell, litecoin_dust, litecoin_output_script_ok,
-    prevout_amount,
+    DUST_LIMIT, decode_litecoin_address, ensure_litecoin_coin_dust, from_spell, litecoin_dust,
+    litecoin_fee_key, litecoin_output_script_ok, prevout_amount,
 };
 use anyhow::{Context, anyhow, bail, ensure};
 use bitcoin::{Address, Network};
@@ -476,19 +476,13 @@ impl ProveSpellTxImpl {
             }
             Chain::Litecoin => {
                 let decoded = decode_litecoin_address(&prove_request.change_address)?;
-                let fee_key = match decoded.networks.as_slice() {
-                    [fee_key] => *fee_key,
-                    _ => bail!(
+                let fee_key = litecoin_fee_key(&decoded.networks, self.mock).map_err(|_| {
+                    anyhow!(
                         "Unsupported network of change address: {:?}",
                         prove_request.change_address
-                    ),
-                };
-                if fee_key == "regtest" && !self.mock {
-                    bail!(
-                        "Unsupported network of change address: {:?}",
-                        prove_request.change_address
-                    );
-                }
+                    )
+                })?;
+                ensure_litecoin_coin_dust(norm_spell)?;
                 let charms_fee = get_charms_fee(&self.charms_fee_settings, total_cycles).to_sat();
                 let fee_script = self.charms_fee_settings.as_ref().and_then(|settings| {
                     let address = settings.fee_address(&Chain::Litecoin, fee_key)?;

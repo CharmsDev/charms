@@ -171,6 +171,7 @@ impl ProveSpellTxImpl {
                     fee_rate,
                     charms_fee,
                     total_cycles,
+                    self.mock,
                 )?;
                 Ok(txs)
             }
