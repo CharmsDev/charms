@@ -173,14 +173,14 @@ fn litecoin_finality_work() -> bitcoin::Work {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::UtxoId;
     use crate::bitcoin_tx::BitcoinTx;
     use crate::tx::{EnchantedTx, Tx};
-    use crate::{MOCK_SPELL_VK, NormalizedSpell, UtxoId, is_correct};
     use bitcoin::absolute::LockTime;
     use bitcoin::block::Version;
     use bitcoin::consensus::encode::deserialize_hex;
     use bitcoin::{
-        Amount, Block, OutPoint, ScriptBuf, Sequence, TxIn, TxMerkleNode, TxOut, Witness,
+        Amount, Block, OutPoint, ScriptBuf, Sequence, TxIn, TxMerkleNode, TxOut, Txid, Witness,
     };
     use charms_data::TxId;
     use std::collections::BTreeMap;
@@ -305,31 +305,79 @@ mod tests {
         assert!(parsed.proven_final());
     }
 
-    #[test]
-    fn beamed_litecoin_source_passes_finality_and_raw_hex_does_not() {
-        let carried = mainnet_carried();
-        let tagged = Tx::Litecoin(carried);
-        let txid = tagged.tx_id();
-        let mut spell = NormalizedSpell::default();
-        spell.tx.ins = Some(vec![UtxoId(TxId(txid.0), 0)]);
-        spell.tx.outs = vec![BTreeMap::new()];
-        spell.tx.coins = Some(vec![]);
+    fn host_transaction(marker: u8) -> bitcoin::Transaction {
+        bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([marker; 32]), 0),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(1_000),
+                script_pubkey: ScriptBuf::new(),
+            }],
+        }
+    }
+
+    fn beam_of(source: &Tx) -> BTreeMap<usize, crate::BeamSource> {
         let mut beamed = BTreeMap::new();
-        beamed.insert(0, crate::BeamSource(UtxoId(TxId(txid.0), 0), None));
-
-        let tagged_err = is_correct(&spell, &vec![tagged], None, &MOCK_SPELL_VK, &beamed, None)
-            .unwrap_err()
-            .to_string();
-        assert!(tagged_err.contains("well_formed"), "{tagged_err}");
-
-        let raw = Tx::try_from(MAINNET_COINBASE).unwrap();
-        let raw_err = is_correct(&spell, &vec![raw], None, &MOCK_SPELL_VK, &beamed, None)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            raw_err.contains("beaming_txs_have_finality_proofs"),
-            "{raw_err}"
+        beamed.insert(
+            0,
+            crate::BeamSource(UtxoId(TxId(source.tx_id().0), 0), None),
         );
+        beamed
+    }
+
+    fn beam_gate(host: Tx, source: &Tx) -> bool {
+        assert_ne!(host.tx_id(), source.tx_id());
+        crate::beaming_txs_have_finality_proofs(&vec![host, source.clone()], &beam_of(source))
+    }
+
+    #[test]
+    fn bitcoin_host_beam_gate_accepts_scrypt_final_litecoin_source() {
+        let source = Tx::Litecoin(mainnet_carried());
+        assert!(source.proven_final());
+        let host = Tx::Bitcoin(BitcoinTx::Simple(host_transaction(1)));
+        assert!(matches!(host, Tx::Bitcoin(BitcoinTx::Simple(_))));
+        assert!(beam_gate(host.clone(), &source));
+
+        let Tx::Litecoin(LitecoinCarried::WithBlockProof(finality)) = &source else {
+            panic!("litecoin source must carry headers");
+        };
+        let as_bitcoin = Tx::Bitcoin(BitcoinTx::WithBlockProof {
+            tx: finality.tx.inner().clone(),
+            proof: finality.proof.clone(),
+            headers: finality.headers.clone(),
+        });
+        assert_eq!(as_bitcoin.tx_id(), source.tx_id());
+        assert!(!as_bitcoin.proven_final());
+        assert!(!beam_gate(host, &as_bitcoin));
+    }
+
+    #[test]
+    fn litecoin_host_beam_gate_accepts_bitcoin_final_source() {
+        let yaml = include_str!("../testdata/bitcoin-final-prev.yaml");
+        let source: Tx = serde_yaml::from_str(yaml).unwrap();
+        let Tx::Bitcoin(BitcoinTx::WithBlockProof { .. }) = &source else {
+            panic!("bitcoin source must carry headers");
+        };
+        assert!(source.proven_final());
+        let host = Tx::from(LitecoinTx::new(host_transaction(2)));
+        assert!(matches!(host, Tx::Litecoin(LitecoinCarried::Simple(_))));
+        assert!(beam_gate(host.clone(), &source));
+
+        let retag = yaml.replacen("!bitcoin", "!litecoin", 1);
+        let as_litecoin: Tx = serde_yaml::from_str(&retag).unwrap();
+        assert!(matches!(
+            as_litecoin,
+            Tx::Litecoin(LitecoinCarried::WithBlockProof(_))
+        ));
+        assert_eq!(as_litecoin.tx_id(), source.tx_id());
+        assert!(!as_litecoin.proven_final());
+        assert!(!beam_gate(host, &as_litecoin));
     }
 
     #[test]
