@@ -273,7 +273,7 @@ fn verify_finality_proof(
     Ok(())
 }
 
-fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> {
+pub(crate) fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> {
     let mut txs = vec![];
     {
         let mut _indexes = vec![];

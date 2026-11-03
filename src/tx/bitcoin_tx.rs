@@ -428,7 +428,7 @@ pub fn make_transactions(
         .into_iter()
         .map(|tx| match chain {
             Chain::Bitcoin => Tx::Bitcoin(BitcoinTx::Simple(tx)),
-            Chain::Litecoin => Tx::Litecoin(LitecoinTx::new(tx)),
+            Chain::Litecoin => Tx::Litecoin(LitecoinTx::new(tx).into()),
             Chain::Cardano | Chain::Ethereum => unreachable!(),
         })
         .collect())
@@ -691,7 +691,7 @@ mod tests {
             };
             let txid = prev.compute_txid().to_byte_array();
             let mut prev_txs = BTreeMap::new();
-            prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev)));
+            prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev).into()));
             let spell = NormalizedSpell {
                 tx: NormalizedTransaction {
                     ins: Some(vec![UtxoId(TxId(txid), 0)]),
@@ -890,7 +890,7 @@ mod tests {
         };
         let txid = prev.compute_txid().to_byte_array();
         let mut prev_txs = BTreeMap::new();
-        prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev)));
+        prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev).into()));
         let spell = NormalizedSpell {
             tx: NormalizedTransaction {
                 ins: Some(vec![UtxoId(TxId(txid), 0)]),

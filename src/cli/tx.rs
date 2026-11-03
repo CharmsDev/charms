@@ -23,7 +23,7 @@ pub fn tx_show_spell(params: ShowSpellParams) -> Result<()> {
         Chain::Cardano => show_verified_spell(&Tx::Cardano(CardanoTx::from_hex(&tx)?), json, mock),
         Chain::Ethereum => show_ethereum_spell(&tx, json, mock),
         Chain::Litecoin => {
-            show_verified_spell(&Tx::Litecoin(LitecoinTx::from_hex(&tx)?), json, mock)
+            show_verified_spell(&Tx::Litecoin(LitecoinTx::from_hex(&tx)?.into()), json, mock)
         }
     }
 }
