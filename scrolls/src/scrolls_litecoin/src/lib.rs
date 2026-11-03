@@ -1035,14 +1035,6 @@ mod tests {
         );
         let main = litecoin_fee_script(NETWORK_MAIN, &CONFIG.fee_address[NETWORK_MAIN]).unwrap();
         let test = litecoin_fee_script(NETWORK_TEST, &CONFIG.fee_address[NETWORK_TEST]).unwrap();
-        assert_eq!(
-            main.as_bytes(),
-            &hex::decode("0014318d2dbf53a3f9c41b2e36683a3a8b8580e05516").unwrap()
-        );
-        assert_eq!(
-            test.as_bytes(),
-            &hex::decode("00141db4ded10fa155036bfb40717ea68022be899fbb").unwrap()
-        );
         assert!(main.is_p2wpkh());
         assert!(test.is_p2wpkh());
         assert_ne!(main, test);

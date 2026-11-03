@@ -10,10 +10,20 @@ This canister signs Litecoin scroll outputs. It is a new canister id. Do not run
 
 `addresses` accepts caller cycles before `sign_with_schnorr`. The amount is the quote from `cost_sign_with_schnorr` for key `key_1` and that request. The IC cycle-cost reference lists `26153846153` cycles for the production key. The canister accepts that quote and does not keep a surplus as a fee. An empty `out_is` is rejected before the signing call. Attaching no cycles does not sign.
 
-The fee addresses `config` returns are the P2WPKH programs already published for the Bitcoin fee addresses, encoded with Litecoin HRPs:
+The initial fee keys are the Bitcoin fee keys in `ltc1` and `tltc1` encoding. That reuse is intended. `config` is a query and returns the addresses embedded from `src/scrolls_litecoin/config.yaml`:
 
 - `main`: `ltc1qxxxjm06n50uugxewxe5r5w5tskqwq4gk2lpt90`
 - `test`: `tltc1qrk6da5g0592sx6lmgpchaf5qy2lgn8am8s7hp5`
+
+There is no init argument and no setter for these addresses. To change the Litecoin fee addresses later, edit only `src/scrolls_litecoin/config.yaml`, then rebuild and upgrade this canister:
+
+```bash
+cd scrolls
+env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx build scrolls_litecoin
+dfx deploy scrolls_litecoin --network ic --yes
+```
+
+That change does not require editing the Bitcoin fee config.
 
 The threshold key of the new id is not in this tree. Litecoin scroll outputs stay rejected until a later change pins that key.
 

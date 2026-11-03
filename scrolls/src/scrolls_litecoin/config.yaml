@@ -1,5 +1,6 @@
-# P2WPKH fee outputs. The 20-byte witness programs are the ones already published
-# for the Bitcoin fee addresses, encoded here with the Litecoin HRPs.
+# P2WPKH fee outputs for this canister. These are Litecoin addresses, written here.
+# The initial keys are the Bitcoin fee keys in ltc1 and tltc1 encoding. That reuse
+# is intended. A later change edits this file only.
 fee_address:
   main: ltc1qxxxjm06n50uugxewxe5r5w5tskqwq4gk2lpt90
   test: tltc1qrk6da5g0592sx6lmgpchaf5qy2lgn8am8s7hp5
