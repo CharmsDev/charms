@@ -8,6 +8,8 @@ This canister signs Litecoin scroll outputs. It is a new canister id. Do not run
 
 `deposit_cycles` rejects an attached amount below `MIN_DEPOSIT_CYCLES` `1000000000000`. `cycles_balance` is a query.
 
+`addresses` accepts caller cycles before `sign_with_schnorr`. The amount is the quote from `cost_sign_with_schnorr` for key `key_1` and that request. The IC cycle-cost reference lists `26153846153` cycles for the production key. The canister accepts that quote and does not keep a surplus as a fee. An empty `out_is` is rejected before the signing call. Attaching no cycles does not sign.
+
 The fee addresses `config` returns are the P2WPKH programs already published for the Bitcoin fee addresses, encoded with Litecoin HRPs:
 
 - `main`: `ltc1qxxxjm06n50uugxewxe5r5w5tskqwq4gk2lpt90`
@@ -44,16 +46,27 @@ dfx canister status "$(dfx canister id scrolls_litecoin --network ic)" --network
 
 3. `dfx canister call scrolls_litecoin config --network ic` returns the Litecoin fee addresses from that canister's yaml.
 4. `dfx canister call scrolls_litecoin cycles_balance --network ic` returns a balance above zero.
-5. `strings` on the wasm does not contain a `NEXT` canister id that was only meant for a later upgrade.
+5. The wasm built with the forwarding variable unset does not embed a canister principal. The error text names that variable even when its value is empty, so this check does not search for that name. `test -s` fails when the wasm is absent. A principal in the file fails the check.
 
 ```bash
-strings .dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm | grep NEXT_SCROLLS || true
+set -euo pipefail
+wasm=.dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm
+test -s "$wasm"
+status=0
+found=$(strings -n 27 "$wasm" | grep -E '[a-z2-7]{5}(-[a-z2-7]{5}){3}-[a-z2-7]{1,5}') || status=$?
+test "$status" -eq 1
+test -z "$found"
 ```
 
 6. Do not install this wasm onto `rpgc6-oqaaa-aaaak-qy3uq-cai` or `lmbwh-3qaaa-aaaak-qunha-cai`.
 
 ```bash
-strings .dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm | grep -E 'rpgc6-|lmbwh-' || true
+set -euo pipefail
+wasm=.dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm
+test -s "$wasm"
+status=0
+strings "$wasm" | grep -E 'rpgc6-|lmbwh-' || status=$?
+test "$status" -eq 1
 ```
 
 Leave these deployments on their current wasm:

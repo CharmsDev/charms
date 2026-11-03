@@ -18,8 +18,8 @@ use ic_cdk_management_canister::{
     EcdsaCurve, EcdsaKeyId, EcdsaPublicKeyArgs, HttpHeader, HttpMethod, HttpRequestArgs,
     HttpRequestResult, SchnorrAlgorithm, SchnorrKeyId, SignWithEcdsaArgs, SignWithSchnorrArgs,
     TransformArgs, VetKDCurve, VetKDDeriveKeyArgs, VetKDKeyId, VetKDPublicKeyArgs,
-    ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa, sign_with_schnorr,
-    transform_context_from_query, vetkd_derive_key, vetkd_public_key,
+    cost_sign_with_schnorr, ecdsa_public_key, http_request, raw_rand, sign_with_ecdsa,
+    sign_with_schnorr, transform_context_from_query, vetkd_derive_key, vetkd_public_key,
 };
 use ic_vetkeys::{DerivedPublicKey, EncryptedVetKey, TransportSecretKey};
 use serde::{Deserialize, Serialize};
@@ -380,11 +380,17 @@ pub async fn addresses(tx_in_0: String, out_is: Vec<u32>) -> Result<Addresses, S
         .map_err(|e| e.to_string())
 }
 
-async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Addresses> {
+fn require_address_outputs(out_is: &[u32]) -> anyhow::Result<()> {
+    ensure!(!out_is.is_empty(), "Input error: out_is is empty");
     ensure!(
         out_is.len() <= 256,
         "Input error: too many output indexes requested (max: 256)"
     );
+    Ok(())
+}
+
+async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Addresses> {
+    require_address_outputs(&out_is)?;
     require_secret_prefix()?;
 
     let tx_in_0: UtxoId = tx_in_0
@@ -417,10 +423,40 @@ async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::
         key_id: schnorr_sign_key_id(),
         aux: None,
     };
+    let cost = cost_sign_with_schnorr(&args)
+        .map_err(|e| anyhow!("System error: Schnorr signing cost: {e}"))?;
+    let args = sign_when_schnorr_cycles_cover(
+        ic_cdk::api::msg_cycles_available(),
+        cost,
+        |cycles| ic_cdk::api::msg_cycles_accept(cycles),
+        || Ok(args),
+    )?;
     let result = sign_with_schnorr(&args)
         .await
         .map_err(|e| anyhow!("System error: signing addresses with Schnorr: {e}"))?;
     Ok(hex::encode(&result.signature))
+}
+
+/// Accept exactly the management-canister `sign_with_schnorr` quote, then run `sign`.
+///
+/// `cost` is the quote from `cost_sign_with_schnorr` for this request's key and
+/// algorithm. Zero attached cycles, a short payment, and a zero quote all return
+/// before `accept` and before `sign`.
+fn sign_when_schnorr_cycles_cover<T>(
+    available: u128,
+    cost: u128,
+    accept: impl FnOnce(u128) -> u128,
+    sign: impl FnOnce() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    if available == 0 || cost == 0 || available < cost {
+        bail!("Input error: Schnorr signing requires {cost} cycles, attached {available}");
+    }
+    let accepted = accept(cost);
+    ensure!(
+        accepted >= cost,
+        "Input error: could not accept cycles for Schnorr signing: accepted {accepted}, cost {cost}"
+    );
+    sign()
 }
 
 fn schnorr_sign_key_id() -> SchnorrKeyId {
@@ -929,7 +965,8 @@ mod tests {
         NETWORK_TEST, NEXT_SCROLLS_LITECOIN_CANISTER_ID, VETKD_SECRET_PREFIX_CONTEXT,
         VETKD_SECRET_PREFIX_DOMAIN_SEP, VETKD_SECRET_PREFIX_INPUT, check_network, config,
         insufficient_deposit, is_tx_already_in_chain_error, litecoin_fee_script,
-        litecoinspace_broadcast_url, verify_spell_locally,
+        litecoinspace_broadcast_url, require_address_outputs, sign_when_schnorr_cycles_cover,
+        verify_spell_locally,
     };
     use bitcoin::{
         Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, WPubkeyHash,
@@ -1034,6 +1071,73 @@ mod tests {
     #[test]
     fn next_canister_id_is_unset_in_this_build() {
         assert!(NEXT_SCROLLS_LITECOIN_CANISTER_ID.is_empty());
+    }
+
+    /// Production `key_1` Schnorr fee from the IC cycle-cost reference.
+    /// `cost_sign_with_schnorr` is the quote `sign_with_schnorr` attaches.
+    const SCHNORR_KEY_1_SIGN_CYCLES: u128 = 26_153_846_153;
+
+    #[test]
+    fn empty_out_is_is_rejected_before_signing() {
+        let err = require_address_outputs(&[]).unwrap_err().to_string();
+        assert!(err.contains("out_is is empty"), "{err}");
+        assert!(require_address_outputs(&[0, 1]).is_ok());
+    }
+
+    #[test]
+    fn no_attached_cycles_never_reaches_the_signer() {
+        let mut signer_calls = 0;
+        let unpaid = sign_when_schnorr_cycles_cover(
+            0,
+            SCHNORR_KEY_1_SIGN_CYCLES,
+            |_| panic!("accept must not run when no cycles are attached"),
+            || {
+                signer_calls += 1;
+                Ok(())
+            },
+        );
+        let err = unpaid.unwrap_err().to_string();
+        assert_eq!(signer_calls, 0);
+        assert!(err.contains("attached 0"), "{err}");
+
+        let short = sign_when_schnorr_cycles_cover(
+            SCHNORR_KEY_1_SIGN_CYCLES - 1,
+            SCHNORR_KEY_1_SIGN_CYCLES,
+            |_| panic!("accept must not run when the quote is not covered"),
+            || {
+                signer_calls += 1;
+                Ok(())
+            },
+        );
+        assert!(short.is_err());
+        assert_eq!(signer_calls, 0);
+
+        let mut accepted = 0;
+        let paid = sign_when_schnorr_cycles_cover(
+            SCHNORR_KEY_1_SIGN_CYCLES,
+            SCHNORR_KEY_1_SIGN_CYCLES,
+            |cycles| {
+                accepted = cycles;
+                cycles
+            },
+            || {
+                signer_calls += 1;
+                Ok("signed")
+            },
+        )
+        .unwrap();
+        assert_eq!(paid, "signed");
+        assert_eq!(signer_calls, 1);
+        assert_eq!(accepted, SCHNORR_KEY_1_SIGN_CYCLES);
+    }
+
+    #[test]
+    fn runbook_forwarding_check_requires_the_wasm_and_a_principal() {
+        let runbook = include_str!("../../../LITECOIN.md");
+        assert!(!runbook.contains("grep NEXT_SCROLLS"));
+        assert!(!runbook.contains("|| true"));
+        assert!(runbook.contains("test -s \"$wasm\""));
+        assert!(runbook.contains("[a-z2-7]{5}(-[a-z2-7]{5}){3}-[a-z2-7]{1,5}"));
     }
 
     #[test]
