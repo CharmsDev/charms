@@ -1107,6 +1107,14 @@ fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,
 ) -> anyhow::Result<bool> {
+    check_scroll_outputs_with_pubkey(spell, scroll_outputs, &SCROLLS_ADDRS_PUBKEY)
+}
+
+fn check_scroll_outputs_with_pubkey(
+    spell: &NormalizedSpell,
+    scroll_outputs: Option<&SignedScrollOutputs>,
+    pubkey: &[u8; 32],
+) -> anyhow::Result<bool> {
     let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
         return Ok(true);
     };
@@ -1142,11 +1150,14 @@ fn check_scroll_outputs(
             dest_hex
         );
     }
-    verify_scroll_outputs_signature(scroll_outputs)?;
+    verify_scroll_outputs_signature(scroll_outputs, pubkey)?;
     Ok(true)
 }
 
-fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()> {
+fn verify_scroll_outputs_signature(
+    s: &SignedScrollOutputs,
+    pubkey: &[u8; 32],
+) -> anyhow::Result<()> {
     let message_bytes = util::write(&s.script_pubkeys)
         .context("serializing Scrolls scriptPubKeys for signature check")?;
     let digest: [u8; 32] = Sha256::digest(&message_bytes).into();
@@ -1155,8 +1166,8 @@ fn verify_scroll_outputs_signature(s: &SignedScrollOutputs) -> anyhow::Result<()
     let sig_bytes = hex::decode(&s.signature).context("decoding Scrolls signature hex")?;
     let sig =
         Signature::from_slice(&sig_bytes).context("parsing Scrolls BIP-340 Schnorr signature")?;
-    let pk = XOnlyPublicKey::from_slice(&SCROLLS_ADDRS_PUBKEY)
-        .context("parsing SCROLLS_ADDRS_PUBKEY as x-only secp256k1 key")?;
+    let pk = XOnlyPublicKey::from_slice(pubkey)
+        .context("parsing Scrolls Schnorr public key as x-only secp256k1 key")?;
 
     Secp256k1::verification_only()
         .verify_schnorr(&sig, &msg, &pk)
@@ -1194,7 +1205,11 @@ mod test {
     use crate::bitcoin_tx::LitecoinTx;
     use crate::tx::EnchantedTx;
     use crate::{BeamSource, NormalizedSpell};
-    use charms_data::{App, Data, NativeOutput, UtxoId, VersionedApp, util};
+    use bitcoin::secp256k1::{Keypair, SecretKey};
+    use charms_data::{
+        App, Data, NativeOutput, TxId, UtxoId, VersionedApp, signed_scroll_script_pubkeys_preimage,
+        util,
+    };
     use std::str::FromStr;
     use test_strategy::proptest;
 
@@ -1977,6 +1992,81 @@ app_public_inputs: {}
         assert!(
             err.contains("does not match `tx.coins[1].dest`"),
             "got: {err}"
+        );
+    }
+
+    fn spell_with_scroll_output_and_input(dest_hex: &str, tx_in_0: UtxoId) -> NormalizedSpell {
+        let mut spell = spell_with_scroll_output_at(dest_hex);
+        spell.tx.ins = Some(vec![tx_in_0]);
+        spell
+    }
+
+    fn scroll_signing_key() -> (Secp256k1<bitcoin::secp256k1::All>, Keypair) {
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[0x42; 32]).unwrap();
+        let keypair = Keypair::from_secret_key(&secp, &secret);
+        (secp, keypair)
+    }
+
+    fn xonly_pubkey(keypair: &Keypair) -> [u8; 32] {
+        keypair.x_only_public_key().0.serialize()
+    }
+
+    fn sign_scroll_preimage(preimage: &[u8], spk_hex: &str) -> (SignedScrollOutputs, [u8; 32]) {
+        let (secp, keypair) = scroll_signing_key();
+        let digest: [u8; 32] = Sha256::digest(preimage).into();
+        let sig =
+            secp.sign_schnorr_with_aux_rand(&Message::from_digest(digest), &keypair, &[0u8; 32]);
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(1u32, spk_hex.to_string());
+        (
+            SignedScrollOutputs {
+                script_pubkeys,
+                signature: hex::encode(sig.as_ref()),
+            },
+            xonly_pubkey(&keypair),
+        )
+    }
+
+    fn sign_bound_scroll_map(tx_in_0: &UtxoId, spk_hex: &str) -> (SignedScrollOutputs, [u8; 32]) {
+        let mut script_pubkeys = BTreeMap::new();
+        script_pubkeys.insert(1u32, spk_hex.to_string());
+        let preimage = signed_scroll_script_pubkeys_preimage(tx_in_0, &script_pubkeys).unwrap();
+        sign_scroll_preimage(&preimage, spk_hex)
+    }
+
+    #[test]
+    fn check_scroll_outputs_accepts_map_bound_to_the_spells_first_input() {
+        let tx_in_0 = UtxoId(TxId([0xab; 32]), 3);
+        let spell = spell_with_scroll_output_and_input(SAMPLE_P2WPKH_SPK, tx_in_0.clone());
+        let (signed, pubkey) = sign_bound_scroll_map(&tx_in_0, SAMPLE_P2WPKH_SPK);
+        assert!(check_scroll_outputs_with_pubkey(&spell, Some(&signed), &pubkey).unwrap());
+    }
+
+    #[test]
+    fn check_scroll_outputs_rejects_a_reused_or_foreign_signed_map() {
+        let spell_input = UtxoId(TxId([0xab; 32]), 3);
+        let spell = spell_with_scroll_output_and_input(SAMPLE_P2WPKH_SPK, spell_input);
+        let mut bare_map = BTreeMap::new();
+        bare_map.insert(1u32, SAMPLE_P2WPKH_SPK.to_string());
+        let bare = util::write(&bare_map).unwrap();
+        let (unbound, pubkey) = sign_scroll_preimage(&bare, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&unbound), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Schnorr"),
+            "unbound map should fail signature verification, got: {err}"
+        );
+
+        let other = UtxoId(TxId([0xcd; 32]), 1);
+        let (foreign, pubkey) = sign_bound_scroll_map(&other, SAMPLE_P2WPKH_SPK);
+        let err = check_scroll_outputs_with_pubkey(&spell, Some(&foreign), &pubkey)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Schnorr"),
+            "map signed for a different first input should fail, got: {err}"
         );
     }
 
