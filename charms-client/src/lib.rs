@@ -21,6 +21,7 @@ pub mod ark;
 pub mod bitcoin_tx;
 pub mod cardano_tx;
 pub mod ethereum_tx;
+pub mod litecoin_tx;
 pub mod request;
 pub mod sorted_app_map;
 pub mod tx;
@@ -488,16 +489,7 @@ pub fn is_correct(
     check_prev_versioned_apps_consistency(&prev_spells)?;
     check_scroll_outputs_are_listed(spell)?;
 
-    // Scrolls scriptPubKey-map check. May return `Ok(false)` on the client
-    // preflight path (the spell declares Scrolls outputs but the signed map
-    // hasn't been fetched -- the prover server fills it in via
-    // `fill_scroll_outputs`). We don't bail early on `false`: the rest of the
-    // checks still run, and the "not yet" signal is folded into the final
-    // result below. The zkVM spell-checker asserts `Ok(true)` and so refuses to
-    // prove until the binding is in place; host-side callers that run before
-    // the server hop tolerate `Ok(false)`.
-    let scrolls_ok =
-        !hosting_chain_is_bitcoin(spell, prev_txs) || check_scroll_outputs(spell, scroll_outputs)?;
+    let scrolls_ok = host_scrolls(spell, prev_txs, scroll_outputs)?;
 
     let apps = apps(spell);
     let charms_tx = to_tx(spell, &prev_spells, tx_ins_beamed_source_utxos, prev_txs);
@@ -1028,14 +1020,29 @@ pub fn ensure_requested_chain_matches_host(
     Ok(())
 }
 
-fn hosting_chain_is_bitcoin(spell: &NormalizedSpell, prev_txs: &[Tx]) -> bool {
-    let Some(first_in) = spell.tx.ins.as_ref().and_then(|ins| ins.first()) else {
-        return false;
-    };
-    prev_txs
-        .iter()
-        .find(|tx| tx.tx_id() == first_in.0)
-        .is_some_and(|tx| matches!(tx, Tx::Bitcoin(_)))
+fn hosting_tx<'a>(spell: &NormalizedSpell, prev_txs: &'a [Tx]) -> Option<&'a Tx> {
+    let first = spell.tx.ins.as_ref()?.first()?;
+    prev_txs.iter().find(|tx| tx.tx_id() == first.0)
+}
+
+fn host_scrolls(
+    spell: &NormalizedSpell,
+    prev_txs: &[Tx],
+    scroll_outputs: Option<&SignedScrollOutputs>,
+) -> anyhow::Result<bool> {
+    match hosting_tx(spell, prev_txs) {
+        Some(Tx::Bitcoin(_)) => check_scroll_outputs(spell, scroll_outputs),
+        Some(Tx::Litecoin(_))
+            if spell
+                .tx
+                .scrolls
+                .as_ref()
+                .is_some_and(|scrolls| !scrolls.is_empty()) =>
+        {
+            anyhow::bail!("Litecoin spells cannot list scroll outputs");
+        }
+        Some(Tx::Litecoin(_)) | Some(Tx::Cardano(_)) | Some(Tx::Ethereum(_)) | None => Ok(true),
+    }
 }
 
 /// Every output that carries a charm whose app has tag [`SCROLL`] MUST have its index
@@ -1184,6 +1191,8 @@ pub fn beamed_out_to_hash(spell: &NormalizedSpell, i: u32) -> Option<&B32> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::bitcoin_tx::LitecoinTx;
+    use crate::tx::EnchantedTx;
     use crate::{BeamSource, NormalizedSpell};
     use charms_data::{App, Data, NativeOutput, UtxoId, VersionedApp, util};
     use std::str::FromStr;
@@ -2005,9 +2014,46 @@ app_public_inputs: {}
     const SAMPLE_CARDANO_TX_HEX: &str = "84a400d901028182582011a2338987035057f6c36286cf5aadc02573059b2cde9790017eb4e148f0c67a0001828258390174f84e13070bb755eaa01cb717da8c7450daf379948e979f6de99d26ba89ff199fde572546b9a044eb129ad2edb184bd79cde63ab4b47aec1a01312d008258390184f1c3b1fff5241088acc4ce0aec81f45a71a70e35c94e30a70b7cdfeb0785cdec744029db6b4f344b1123497c9cabfeeb94af20fcfddfe01a33e578fd021a000299e90758201e8eb8575d879922d701c12daa7366cb71b6518a9500e083a966a8e66b56ed23a10081825820ea444825bbd5cc97b6c795437849fe55694b52e2f51485ac76ca2d9f991e83305840d59db4fa0b4bb233504f5e6826261a2e18b2e22cb3df4f631ab77d94d62e8df3200536271f3f3a625bc86919714972964f070f909f145b342f2889f58ccc210ff5a11902a2a1636d736765546f6b656f";
 
     #[test]
-    fn hosting_chain_follows_first_input_not_any_prev_tx() {
-        use crate::tx::EnchantedTx;
+    fn litecoin_host_rejects_listed_scroll_outputs() {
+        let litecoin = Tx::from(LitecoinTx::from_hex(SAMPLE_BTC_TX_HEX).unwrap());
+        let bitcoin = Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap();
+        let txid = litecoin.tx_id();
+        assert_eq!(txid, bitcoin.tx_id());
 
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(txid, 0)]);
+        spell.tx.outs = vec![NormalizedCharms::new()];
+        spell.tx.scrolls = Some(BTreeSet::from([0]));
+
+        let err = is_correct(
+            &spell,
+            &vec![litecoin],
+            None,
+            &MOCK_SPELL_VK,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("Litecoin spells cannot list scroll outputs"),
+            "{err}"
+        );
+
+        let verified = is_correct(
+            &spell,
+            &vec![bitcoin],
+            None,
+            &MOCK_SPELL_VK,
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+        assert!(!verified);
+    }
+
+    #[test]
+    fn hosting_chain_follows_first_input_not_any_prev_tx() {
         let btc_tx = Tx::try_from(SAMPLE_BTC_TX_HEX).unwrap();
         let cardano_tx = Tx::try_from(SAMPLE_CARDANO_TX_HEX).unwrap();
         let btc_txid = btc_tx.tx_id();
@@ -2019,10 +2065,15 @@ app_public_inputs: {}
         let mut spell = NormalizedSpell::default();
         spell.tx.ins = Some(vec![UtxoId(cardano_txid, 0)]);
         let prev_txs = vec![cardano_tx.clone(), btc_tx.clone()];
-        assert!(!hosting_chain_is_bitcoin(&spell, &prev_txs));
+        assert!(matches!(
+            hosting_tx(&spell, &prev_txs),
+            Some(Tx::Cardano(_))
+        ));
 
-        // Mirror image: first input points at the Bitcoin tx -> Bitcoin host.
         spell.tx.ins = Some(vec![UtxoId(btc_txid, 0)]);
-        assert!(hosting_chain_is_bitcoin(&spell, &prev_txs));
+        assert!(matches!(
+            hosting_tx(&spell, &prev_txs),
+            Some(Tx::Bitcoin(_))
+        ));
     }
 }

@@ -845,7 +845,7 @@ app_public_inputs: {}
             };
             let txid = prev.compute_txid().to_byte_array();
             let mut prev_txs = BTreeMap::new();
-            prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev)));
+            prev_txs.insert(TxId(txid), Tx::Litecoin(LitecoinTx::new(prev).into()));
             let spell = NormalizedSpell {
                 tx: charms_client::NormalizedTransaction {
                     ins: Some(vec![UtxoId(TxId(txid), 0)]),

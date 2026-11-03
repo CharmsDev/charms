@@ -357,11 +357,15 @@ DATA STRUCTURES:
 
   Previous transactions (--prev-txs):
     Each value is one of:
-      - raw hex (auto-detected as Bitcoin or Cardano)
-      - YAML-tagged: '!bitcoin <hex>' or '!cardano <hex>'
+      - raw hex (auto-detected as Bitcoin or Cardano). Litecoin
+        transactions use that same encoding, so raw hex stays Bitcoin.
+        Select Litecoin with a tag.
+      - YAML-tagged: '!bitcoin <hex>', '!litecoin <hex>', or '!cardano <hex>'
       - YAML-tagged with finality proof:
+          '!bitcoin {tx: <hex>, proof: <hex>, headers: [<hex>, ...]}'
+          '!litecoin {tx: <hex>, proof: <hex>, headers: [<hex>, ...]}'
           '!cardano {tx: <hex>, signature: <hex>}'
-      - JSON: '{\"bitcoin\": \"<hex>\"}' or '{\"cardano\": \"<hex>\"}'
+      - JSON: '{\"bitcoin\": \"<hex>\"}', '{\"litecoin\": \"<hex>\"}', or '{\"cardano\": \"<hex>\"}'
         An Ethereum record may include \"signature\", the 64-byte
         scrolls_ethereum signature as hex. Without it the record is not final.
 

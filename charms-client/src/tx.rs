@@ -6,6 +6,7 @@ use crate::{
     V12_SPELL_VK, V13, V13_SPELL_VK, V14, V14_SPELL_VK, V15, V15_SPELL_VK, ark,
     bitcoin_tx::{BitcoinTx, LitecoinTx},
     cardano_tx::CardanoTx,
+    litecoin_tx::LitecoinCarried,
 };
 use anyhow::{anyhow, bail};
 use charms_data::{NativeOutput, TxId, UtxoId, util};
@@ -62,7 +63,13 @@ pub enum Tx {
     Bitcoin(BitcoinTx),
     Cardano(CardanoTx),
     Ethereum(EthereumTx),
-    Litecoin(LitecoinTx),
+    Litecoin(LitecoinCarried),
+}
+
+impl From<LitecoinTx> for Tx {
+    fn from(tx: LitecoinTx) -> Self {
+        Tx::Litecoin(tx.into())
+    }
 }
 
 impl TryFrom<&str> for Tx {
