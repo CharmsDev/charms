@@ -4,7 +4,7 @@ This canister signs Litecoin scroll outputs. It is a new canister id. Do not run
 
 `init` takes no arguments. The candid service is `service : () ->`. `dfx deploy` passes no `--argument`. `do_init` reads the fee addresses embedded from `src/scrolls_litecoin/config.yaml`. `dfx.json` sets no create-time cycle balance, and this runbook does not pass a cycle amount to `dfx canister create` or `dfx deploy`.
 
-`NEXT_SCROLLS_LITECOIN_CANISTER_ID` is `option_env!` at compile time. It is not an init argument. Build with the variable unset so this wasm does not forward to a later id.
+`NEXT_SCROLLS_LITECOIN_CANISTER_ID` is `option_env!` at compile time. It is not an init argument. Every `dfx build` and every `dfx deploy` below unsets it. `dfx deploy` compiles again, so a value exported in the shell must not be left set for that command. The wasm that gets installed does not forward to a later id.
 
 `deposit_cycles` rejects an attached amount below `MIN_DEPOSIT_CYCLES` `1000000000000`. `cycles_balance` is a query.
 
@@ -20,7 +20,7 @@ There is no init argument and no setter for these addresses. To change the Litec
 ```bash
 cd scrolls
 env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx build scrolls_litecoin
-dfx deploy scrolls_litecoin --network ic --yes
+env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx deploy scrolls_litecoin --network ic --yes
 ```
 
 That change does not require editing the Bitcoin fee config.
@@ -33,7 +33,7 @@ The threshold key of the new id is not in this tree. Litecoin scroll outputs sta
 cd scrolls
 env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx build scrolls_litecoin
 dfx canister create scrolls_litecoin --network ic
-dfx deploy scrolls_litecoin --network ic --yes
+env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx deploy scrolls_litecoin --network ic --yes
 ```
 
 Top up after create by attaching cycles to `deposit_cycles`. The minimum is `1000000000000`.
