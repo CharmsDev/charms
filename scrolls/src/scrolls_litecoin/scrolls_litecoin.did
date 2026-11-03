@@ -1,0 +1,68 @@
+type Addresses = record {
+  signature : text;
+  script_pubkeys : vec record { nat32; text };
+};
+type Config = record {
+  fee_per_input : nat64;
+  fee_address : vec record { text; text };
+  fixed_cost : nat64;
+  fee_basis_points : nat64;
+};
+// # HTTP Header.
+// 
+// Represents a HTTP header.
+// 
+// See [`HttpRequestArgs::headers`] and [`HttpRequestResult::headers`].
+type HttpHeader = record {
+  // Value of the header.
+  value : text;
+  // Name of the header.
+  name : text;
+};
+// # HTTP Request Result
+// 
+// Result type of [`http_request`](https://internetcomputer.org/docs/current/references/ic-interface-spec/#ic-http_request).
+type HttpRequestResult = record {
+  // The response status (e.g. 200, 404).
+  status : nat;
+  // The response’s body.
+  body : blob;
+  // List of HTTP response headers and their corresponding values.
+  headers : vec HttpHeader;
+};
+type Result = variant { Ok : Addresses; Err : text };
+type Result_1 = variant { Ok : nat; Err : text };
+type Result_2 = variant { Ok : SignAndSubmitResult; Err : text };
+type Result_3 = variant { Ok : text; Err : text };
+type SignAndSubmitResult = record { txid : text; wtxid : text };
+type SignRequest = record {
+  prev_txs : vec text;
+  sign_inputs : vec nat32;
+  tx_to_sign : text;
+};
+// # Transform Args.
+// 
+// ```text
+// record {
+// response : http_response;
+// context : blob;
+// }
+// ```
+// 
+// See [`TransformContext`].
+type TransformArgs = record {
+  // Context for response transformation
+  context : blob;
+  // Raw response from remote service, to be transformed
+  response : HttpRequestResult;
+};
+service : () -> {
+  addresses : (text, vec nat32) -> (Result);
+  config : () -> (Config) query;
+  cycles_balance : () -> (nat) query;
+  deposit_cycles : () -> (Result_1);
+  sign_and_submit : (text, SignRequest) -> (Result_2);
+  transform_http : (TransformArgs) -> (HttpRequestResult) query;
+  verify_spell : (text, bool) -> (Result_3);
+  verify_spell_delegated : (text, bool, nat32, vec text) -> (Result_3);
+}

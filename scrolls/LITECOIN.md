@@ -1,0 +1,65 @@
+# scrolls_litecoin
+
+This canister signs Litecoin scroll outputs. It is a new canister id. Do not run these commands as part of a code change. Do not deploy from this pull request.
+
+`init` takes no arguments. The candid service is `service : () ->`. `dfx deploy` passes no `--argument`. `do_init` reads the fee addresses embedded from `src/scrolls_litecoin/config.yaml`. `dfx.json` sets no create-time cycle balance, and this runbook does not pass a cycle amount to `dfx canister create` or `dfx deploy`.
+
+`NEXT_SCROLLS_LITECOIN_CANISTER_ID` is `option_env!` at compile time. It is not an init argument. Build with the variable unset so this wasm does not forward to a later id.
+
+`deposit_cycles` rejects an attached amount below `MIN_DEPOSIT_CYCLES` `1000000000000`. `cycles_balance` is a query.
+
+The fee addresses `config` returns are the P2WPKH programs already published for the Bitcoin fee addresses, encoded with Litecoin HRPs:
+
+- `main`: `ltc1qxxxjm06n50uugxewxe5r5w5tskqwq4gk2lpt90`
+- `test`: `tltc1qrk6da5g0592sx6lmgpchaf5qy2lgn8am8s7hp5`
+
+The threshold key of the new id is not in this tree. Litecoin scroll outputs stay rejected until a later change pins that key.
+
+## Create
+
+```bash
+cd scrolls
+env -u NEXT_SCROLLS_LITECOIN_CANISTER_ID dfx build scrolls_litecoin
+dfx canister create scrolls_litecoin --network ic
+dfx deploy scrolls_litecoin --network ic --yes
+```
+
+Top up after create by attaching cycles to `deposit_cycles`. The minimum is `1000000000000`.
+
+```bash
+dfx canister call scrolls_litecoin deposit_cycles --network ic --with-cycles 1000000000000
+dfx canister call scrolls_litecoin cycles_balance --network ic
+```
+
+## Verify a mainnet deploy
+
+Run these after the canister exists. This pull request does not run them.
+
+1. `dfx canister id scrolls_litecoin --network ic` prints the new id.
+2. `dfx canister status` on that id shows the wasm from that build.
+
+```bash
+dfx canister status "$(dfx canister id scrolls_litecoin --network ic)" --network ic
+```
+
+3. `dfx canister call scrolls_litecoin config --network ic` returns the Litecoin fee addresses from that canister's yaml.
+4. `dfx canister call scrolls_litecoin cycles_balance --network ic` returns a balance above zero.
+5. `strings` on the wasm does not contain a `NEXT` canister id that was only meant for a later upgrade.
+
+```bash
+strings .dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm | grep NEXT_SCROLLS || true
+```
+
+6. Do not install this wasm onto `rpgc6-oqaaa-aaaak-qy3uq-cai` or `lmbwh-3qaaa-aaaak-qunha-cai`.
+
+```bash
+strings .dfx/local/canisters/scrolls_litecoin/scrolls_litecoin.wasm | grep -E 'rpgc6-|lmbwh-' || true
+```
+
+Leave these deployments on their current wasm:
+
+- `rpgc6-oqaaa-aaaak-qy3uq-cai`
+- `lmbwh-3qaaa-aaaak-qunha-cai`
+- `tty7k-waaaa-aaaak-qvngq-cai`
+- `z4e4c-oqaaa-aaaak-qzlqq-cai`
+- Ethereum proxy `0x7f7ab9224782dE7a20e89E6fc0DE52Ff6b48d8f0`
