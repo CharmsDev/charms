@@ -5019,6 +5019,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "scrolls_litecoin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bech32 0.11.1",
+ "bitcoin",
+ "candid",
+ "charms-data",
+ "charms-lib",
+ "getrandom 0.2.16",
+ "hex",
+ "ic-cdk",
+ "ic-cdk-management-canister 0.1.1",
+ "ic-cdk-timers",
+ "ic-vetkeys",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+]
+
+[[package]]
 name = "scrypt"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

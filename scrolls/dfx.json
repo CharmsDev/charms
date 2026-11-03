@@ -15,6 +15,11 @@
       "package": "scrolls_bitcoin",
       "type": "rust"
     },
+    "scrolls_litecoin": {
+      "candid": "src/scrolls_litecoin/scrolls_litecoin.did",
+      "package": "scrolls_litecoin",
+      "type": "rust"
+    },
     "scrolls_cardano": {
       "candid": "src/scrolls_cardano/scrolls_cardano.did",
       "package": "scrolls_cardano",

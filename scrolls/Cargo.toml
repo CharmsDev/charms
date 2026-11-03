@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "src/scrolls_bitcoin",
+    "src/scrolls_litecoin",
     "src/scrolls_cardano",
     "src/scrolls_ethereum",
     "src/charms_metadata",
