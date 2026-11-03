@@ -8,7 +8,7 @@ use bitcoin::secp256k1::{Message, Secp256k1, XOnlyPublicKey, schnorr::Signature}
 use charms_app_runner::AppRunner;
 use charms_data::{
     App, AppInput, B32, Charms, Data, NativeOutput, SCROLL, TOKEN, Transaction, TxId, UtxoId,
-    VersionedApp, check, is_simple_transfer, util,
+    VersionedApp, check, is_simple_transfer, signed_scroll_script_pubkeys_preimage,
 };
 use const_format::formatcp;
 use hex_literal::hex;
@@ -416,7 +416,7 @@ pub fn charms(spell: &NormalizedSpell, n_charms: &NormalizedCharms) -> Charms {
 /// Output of the `scrolls_bitcoin_v15` canister's `addresses(...)` endpoint: a map
 /// from spell-output index to its derived P2WPKH `scriptPubKey` (hex-encoded raw
 /// script bytes — the same bytes that go into `tx.coins[i].dest`), plus a
-/// hex-encoded BIP-340 Schnorr signature over the CBOR serialization of the map,
+/// hex-encoded BIP-340 Schnorr signature over CBOR `(first input, scriptPubKey map)`,
 /// produced under the canister's chain key derivation path `[b"sign"]`. The
 /// signature is verified against [`crate::bitcoin_tx::SCROLLS_ADDRS_PUBKEY`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1102,7 +1102,8 @@ fn check_scroll_outputs_are_listed(spell: &NormalizedSpell) -> anyhow::Result<()
 /// * each signed `scriptPubKey` equals `spell.tx.coins[i].dest` (hex-encoded), pinning the Bitcoin
 ///   output to the canister-controlled script,
 /// * its BIP-340 Schnorr signature verifies under [`SCROLLS_ADDRS_PUBKEY`] over
-///   `SHA-256(CBOR(script_pubkeys))` (the same digest the `scrolls_bitcoin_v15` canister signs).
+///   `SHA-256(CBOR(spell.tx.ins[0], script_pubkeys))` (the same digest the
+///   `scrolls_bitcoin_v15` canister signs).
 fn check_scroll_outputs(
     spell: &NormalizedSpell,
     scroll_outputs: Option<&SignedScrollOutputs>,
@@ -1150,15 +1151,22 @@ fn check_scroll_outputs_with_pubkey(
             dest_hex
         );
     }
-    verify_scroll_outputs_signature(scroll_outputs, pubkey)?;
+    let tx_in_0 = spell
+        .tx
+        .ins
+        .as_ref()
+        .and_then(|ins| ins.first())
+        .ok_or_else(|| anyhow!("Bitcoin spell with Scrolls outputs must have a first input"))?;
+    verify_scroll_outputs_signature(tx_in_0, scroll_outputs, pubkey)?;
     Ok(true)
 }
 
 fn verify_scroll_outputs_signature(
+    tx_in_0: &UtxoId,
     s: &SignedScrollOutputs,
     pubkey: &[u8; 32],
 ) -> anyhow::Result<()> {
-    let message_bytes = util::write(&s.script_pubkeys)
+    let message_bytes = signed_scroll_script_pubkeys_preimage(tx_in_0, &s.script_pubkeys)
         .context("serializing Scrolls scriptPubKeys for signature check")?;
     let digest: [u8; 32] = Sha256::digest(&message_bytes).into();
     let msg = Message::from_digest(digest);

@@ -9,7 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::{TxId, UtxoId, util};
+use charms_data::{TxId, UtxoId, signed_scroll_script_pubkeys_preimage, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
@@ -444,8 +444,8 @@ fn spell_to_hex(spell: NormalizedSpell) -> Result<String, String> {
 
 /// Result of [`addresses`]: the map from output index to its derived P2WPKH
 /// `scriptPubKey` (hex-encoded raw script bytes), plus a BIP-340 Schnorr
-/// signature over the CBOR-serialized map produced by the canister's chain
-/// key under derivation path `[b"sign"]`. The signature is hex-encoded.
+/// signature over CBOR `(tx_in_0, scriptPubKey map)` produced by the canister's
+/// chain key under derivation path `[b"sign"]`. The signature is hex-encoded.
 ///
 /// The `scriptPubKey` is what goes directly into a Bitcoin output's
 /// `script_pubkey` field; it is the same byte string that ends up in
@@ -459,9 +459,9 @@ pub struct Addresses {
 
 #[ic_cdk::update]
 /// Returns the Scroll-controlled P2WPKH `scriptPubKey`s (hex-encoded) for the
-/// given derivation anchor, together with a BIP-340 Schnorr signature over the
-/// `(output_index -> scriptPubKey)` map produced by the canister's chain key
-/// under derivation path `[b"sign"]`.
+/// given derivation anchor, together with a BIP-340 Schnorr signature over
+/// CBOR `(tx_in_0, output index -> scriptPubKey)`. The canister's chain key
+/// signs that digest under derivation path `[b"sign"]`.
 ///
 /// `tx_in_0` is a string of the form `txid_hex:vout` (or block height for coinbase).
 /// It identifies the unique "anchor" used for key derivation:
@@ -504,7 +504,7 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
         script_pubkeys.insert(out_i, hex::encode(spk.as_bytes()));
     }
 
-    let signature = sign_script_pubkeys(&script_pubkeys).await?;
+    let signature = sign_script_pubkeys(&tx_in_0, &script_pubkeys).await?;
 
     Ok(Addresses {
         script_pubkeys,
@@ -512,11 +512,14 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
     })
 }
 
-/// Sign the CBOR serialization of `script_pubkeys` (after SHA-256 hashing) with
-/// the canister's BIP-340/secp256k1 Schnorr chain key under derivation path
-/// `[b"sign"]`. Returns the hex-encoded signature.
-async fn sign_script_pubkeys(script_pubkeys: &BTreeMap<u32, String>) -> anyhow::Result<String> {
-    let message_bytes = util::write(script_pubkeys)
+/// Sign SHA-256 of CBOR `(tx_in_0, script_pubkeys)` with the canister's
+/// BIP-340/secp256k1 Schnorr chain key under derivation path `[b"sign"]`.
+/// Returns the hex-encoded signature.
+async fn sign_script_pubkeys(
+    tx_in_0: &UtxoId,
+    script_pubkeys: &BTreeMap<u32, String>,
+) -> anyhow::Result<String> {
+    let message_bytes = signed_scroll_script_pubkeys_preimage(tx_in_0, script_pubkeys)
         .context("System error: serializing script_pubkeys for signing")?;
     let message_hash = bitcoin::hashes::sha256::Hash::hash(&message_bytes)
         .to_byte_array()
@@ -878,12 +881,7 @@ async fn submit_tx(network: Network, tx: &Transaction) -> anyhow::Result<()> {
 #[ic_cdk::query]
 fn transform_http(args: TransformArgs) -> HttpRequestResult {
     let TransformArgs { context, response } = args;
-    let status: u16 = response
-        .status
-        .0
-        .clone()
-        .try_into()
-        .unwrap_or(u16::MAX);
+    let status: u16 = response.status.0.clone().try_into().unwrap_or(u16::MAX);
 
     if status == 200 {
         return HttpRequestResult {
@@ -1225,7 +1223,8 @@ mod tests {
 
     #[test]
     fn rejects_already_in_mempool_rpc_error() {
-        let body = r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
+        let body =
+            r#"sendrawtransaction RPC error: {"code":-26,"message":"258: txn-already-in-mempool"}"#;
         assert!(!is_tx_already_exists_error(400, body));
     }
 
