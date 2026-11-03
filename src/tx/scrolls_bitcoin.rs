@@ -1,6 +1,8 @@
 use anyhow::{Context, anyhow, bail};
 use candid::{CandidType, Decode, Encode, Principal};
-use charms_client::{NormalizedSpell, SignedScrollOutputs, tx::Chain};
+use charms_client::{
+    NormalizedSpell, SignedScrollOutputs, ensure_no_coinbase_scroll_outputs, tx::Chain,
+};
 use charms_data::UtxoId;
 use ic_agent::Agent;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,7 @@ pub async fn fill_scroll_outputs(
     if chain != Chain::Bitcoin {
         return Ok(None);
     }
+    ensure_no_coinbase_scroll_outputs(spell)?;
     let Some(scrolls) = spell.tx.scrolls.as_ref().filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -94,4 +97,36 @@ async fn call_canister_addresses(
         script_pubkeys: canister_result.script_pubkeys,
         signature: canister_result.signature,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use charms_data::{TxId, UtxoId};
+    use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn fill_scroll_outputs_rejects_a_coinbase_before_calling_the_canister() {
+        let mut spell = NormalizedSpell::default();
+        spell.tx.scrolls = Some(BTreeSet::from([0]));
+        spell.tx.ins = Some(vec![UtxoId(TxId([0; 32]), u32::MAX)]);
+        let err = fill_scroll_outputs(&mut spell, Chain::Bitcoin)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fill_scroll_outputs_allows_a_coinbase_without_scroll_outputs() {
+        let mut spell = NormalizedSpell::default();
+        spell.tx.ins = Some(vec![UtxoId(TxId([0; 32]), u32::MAX)]);
+        let signed = fill_scroll_outputs(&mut spell, Chain::Bitcoin)
+            .await
+            .unwrap();
+        assert!(signed.is_none());
+    }
 }

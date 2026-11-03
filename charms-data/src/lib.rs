@@ -208,6 +208,12 @@ pub fn signed_scroll_script_pubkeys_preimage(
     util::write(&(tx_in_0, script_pubkeys))
 }
 
+/// Bitcoin's coinbase input spends this outpoint: an all-zero txid and vout `0xffffffff`.
+/// Every coinbase transaction shares it. `spell_ins` copies it unchanged onto the spell.
+pub fn is_null_outpoint(utxo_id: &UtxoId) -> bool {
+    utxo_id.0 == TxId([0; 32]) && utxo_id.1 == u32::MAX
+}
+
 /// App represents an application that can be used to create, transform or destroy charms (tokens,
 /// NFTs and other instances of app data).
 ///
@@ -808,6 +814,13 @@ mod tests {
             util::read(bound.as_slice()).unwrap();
         assert_eq!(decoded.0, first);
         assert_eq!(decoded.1, scripts);
+    }
+
+    #[test]
+    fn null_outpoint_is_the_shared_coinbase_input() {
+        assert!(is_null_outpoint(&UtxoId(TxId([0; 32]), u32::MAX)));
+        assert!(!is_null_outpoint(&UtxoId(TxId([0; 32]), 100)));
+        assert!(!is_null_outpoint(&UtxoId(TxId([1; 32]), u32::MAX)));
     }
 }
 

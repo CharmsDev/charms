@@ -9,7 +9,7 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use candid::{CandidType, Principal};
-use charms_data::{TxId, UtxoId, signed_scroll_script_pubkeys_preimage, util};
+use charms_data::{TxId, UtxoId, is_null_outpoint, signed_scroll_script_pubkeys_preimage, util};
 use charms_lib::{
     CURRENT_VERSION, NormalizedSpell, SPELL_VK,
     bitcoin_tx::BitcoinTx,
@@ -472,6 +472,9 @@ pub struct Addresses {
 ///   appears as the first input's `txid` of the coinbase transaction itself) together with the
 ///   block height (as a decimal integer) in place of the vout. Example:
 ///   `0000000000000000000000000000000000000000000000000000000000000000:123456`
+///   The coinbase transaction's own input is the null outpoint (`vout` 4294967295). `addresses`
+///   refuses that anchor: a coinbase cannot create Scrolls outputs. `sign_tx` still spends an
+///   existing coinbase output with the block-height anchor above.
 ///
 /// `out_is` is a list of output indexes (within the creating transaction) for
 /// which `scriptPubKey`s should be generated. At most 256 indexes are accepted
@@ -491,11 +494,17 @@ async fn addresses_impl(tx_in_0: String, out_is: Vec<u32>) -> anyhow::Result<Add
         "Input error: too many output indexes requested (max: 256)"
     );
 
-    require_secret_prefix()?;
-
     let tx_in_0: UtxoId = tx_in_0
         .parse()
         .map_err(|e| anyhow!("Input error: invalid tx_in_0: {}", e))?;
+    // The null outpoint is every coinbase's own first input. Signing it would
+    // not match the block-height anchor `sign_tx` uses when spending.
+    ensure!(
+        !is_null_outpoint(&tx_in_0),
+        "Input error: coinbase transactions cannot create Scrolls outputs"
+    );
+
+    require_secret_prefix()?;
 
     let mut script_pubkeys = BTreeMap::new();
     for out_i in out_is {
@@ -1210,7 +1219,41 @@ fn txid_to_tx(
 
 #[cfg(test)]
 mod tests {
-    use super::is_tx_already_exists_error;
+    use super::{addresses_impl, is_tx_already_exists_error};
+    use charms_data::{TxId, UtxoId, is_null_outpoint};
+    use std::{
+        future::Future,
+        pin::pin,
+        task::{Context, Poll, Waker},
+    };
+
+    fn ready<F: Future>(future: F) -> F::Output {
+        let mut future = pin!(future);
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(&waker);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("future waited"),
+        }
+    }
+
+    #[test]
+    fn addresses_rejects_the_null_coinbase_outpoint() {
+        let tx_in_0 = format!("{}:{}", "0".repeat(64), u32::MAX);
+        let err = ready(addresses_impl(tx_in_0, vec![0]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("coinbase transactions cannot create Scrolls outputs"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn block_height_anchor_is_not_the_null_outpoint() {
+        let anchor = UtxoId(TxId([0; 32]), 100);
+        assert!(!is_null_outpoint(&anchor));
+    }
 
     #[test]
     fn detects_already_in_chain_rpc_error() {
