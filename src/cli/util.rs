@@ -1,4 +1,5 @@
 use crate::cli::DestParams;
+use crate::tx::bitcoin_tx::decode_litecoin_address;
 use anyhow::{bail, ensure};
 use charms_client::{cardano_tx::proxy_script_hash, tx::Chain};
 use cml_core::serialization::RawBytesEncoding;
@@ -14,7 +15,7 @@ pub fn dest(params: DestParams) -> anyhow::Result<()> {
     if has_apps {
         match params.chain {
             Some(Chain::Cardano) | None => {}
-            Some(Chain::Bitcoin) | Some(Chain::Ethereum) => {
+            Some(Chain::Bitcoin) | Some(Chain::Litecoin) | Some(Chain::Ethereum) => {
                 bail!("--apps only works with Cardano");
             }
         }
@@ -35,6 +36,7 @@ fn dest_from_addr(addr: &str, chain: Option<Chain>) -> anyhow::Result<Vec<u8>> {
         Some(Chain::Bitcoin) => bitcoin_dest(addr),
         Some(Chain::Cardano) => cardano_dest(addr),
         Some(Chain::Ethereum) => ethereum_dest(addr),
+        Some(Chain::Litecoin) => litecoin_dest(addr),
         None => {
             // Auto-detect: try Cardano first (bech32 with addr/addr_test prefix),
             // then Bitcoin
@@ -57,6 +59,10 @@ fn ethereum_dest(addr: &str) -> anyhow::Result<Vec<u8>> {
     let bytes = hex::decode(text).map_err(|_| anyhow::anyhow!("expected hex"))?;
     ensure!(bytes.len() == 20, "expected a 20-byte Ethereum address");
     Ok(bytes)
+}
+
+fn litecoin_dest(addr: &str) -> anyhow::Result<Vec<u8>> {
+    Ok(decode_litecoin_address(addr)?.script_pubkey.to_bytes())
 }
 
 fn bitcoin_dest(addr: &str) -> anyhow::Result<Vec<u8>> {

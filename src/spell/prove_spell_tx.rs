@@ -159,10 +159,11 @@ impl ProveSpellTxImpl {
         let charms_fee = self.charms_fee_settings.clone();
 
         match chain {
-            Chain::Bitcoin => {
+            Chain::Bitcoin | Chain::Litecoin => {
                 let truncated = clear_inputs_and_coins(committed_spell);
                 let spell_data = util::write(&(&truncated, &proof))?;
                 let txs = bitcoin_tx::make_transactions(
+                    chain,
                     &norm_spell,
                     &change_address,
                     &prev_txs_by_id,
@@ -170,6 +171,7 @@ impl ProveSpellTxImpl {
                     fee_rate,
                     charms_fee,
                     total_cycles,
+                    self.mock,
                 )?;
                 Ok(txs)
             }

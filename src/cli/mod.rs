@@ -12,6 +12,7 @@ use crate::{
         wallet::{List, WalletCli},
     },
     spell::{CharmsFee, MockProver, ProveSpellTx, ProveSpellTxImpl},
+    tx::bitcoin_tx::decode_litecoin_address,
     utils,
     utils::{BoxedSP1Prover, block_on},
 };
@@ -676,6 +677,19 @@ pub(crate) fn charms_fee_settings() -> Option<CharmsFee> {
             }),
         "a fee address is not valid for the specified network"
     );
+
+    if let Some(addresses) = fee_settings.fee_addresses.get(&Chain::Litecoin) {
+        assert!(
+            addresses.iter().all(|(network, address)| {
+                let Ok(decoded) = decode_litecoin_address(address) else {
+                    return false;
+                };
+                check!(decoded.networks.iter().any(|key| *key == network.as_str()));
+                true
+            }),
+            "a fee address is not valid for the specified network"
+        );
+    }
 
     Some(fee_settings)
 }

@@ -65,6 +65,30 @@ impl BitcoinTx {
     }
 }
 
+#[serde_as]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LitecoinTx {
+    #[serde_as(as = "TransactionHex")]
+    tx: Transaction,
+}
+
+impl LitecoinTx {
+    pub fn new(tx: Transaction) -> Self {
+        Self { tx }
+    }
+
+    pub fn from_hex(hex: &str) -> anyhow::Result<Self> {
+        Ok(Self {
+            tx: deserialize_hex(hex)?,
+        })
+    }
+
+    pub fn inner(&self) -> &Transaction {
+        &self.tx
+    }
+}
+
 impl EnchantedTx for BitcoinTx {
     fn extract_and_verify_spell(
         &self,
@@ -85,26 +109,7 @@ impl EnchantedTx for BitcoinTx {
             }
         };
 
-        if !mock {
-            ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
-        }
-        ensure!(
-            spell.tx.ins.is_none(),
-            "spell must inherit inputs from the enchanted tx"
-        );
-        ensure!(
-            spell.tx.outs.len() <= tx.output.len(),
-            "spell tx outs mismatch"
-        );
-        let spell = spell_with_committed_ins_and_coins(self, spell)?;
-
-        let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
-
-        let public_values = tx::to_serialized_pv(spell.version, spell_vk, &spell);
-
-        tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
-
-        Ok(spell)
+        finish_extract(self, spell, proof, spell_vk, mock)
     }
 
     fn virtual_spell(
@@ -152,17 +157,7 @@ impl EnchantedTx for BitcoinTx {
     }
 
     fn all_coin_outs(&self, _spell: &NormalizedSpell) -> anyhow::Result<Vec<NativeOutput>> {
-        let r = self
-            .inner()
-            .output
-            .iter()
-            .map(|tx_out| NativeOutput {
-                amount: tx_out.value.to_sat(),
-                dest: tx_out.script_pubkey.to_bytes(),
-                content: None, // there is only script_pubkey and value
-            })
-            .collect();
-        Ok(r)
+        Ok(native_coin_outputs(&self.inner().output))
     }
 
     fn proven_final(&self) -> bool {
@@ -172,6 +167,68 @@ impl EnchantedTx for BitcoinTx {
                 verify_finality_proof(tx, proof, headers).is_ok()
             }
         }
+    }
+}
+
+impl EnchantedTx for LitecoinTx {
+    fn extract_and_verify_spell(
+        &self,
+        spell_vk: &[u8; 32],
+        mock: bool,
+    ) -> anyhow::Result<NormalizedSpell> {
+        let (spell, proof) = parse_spell_and_proof_from_op_return(self.inner())?;
+        finish_extract(self, spell, proof, spell_vk, mock)
+    }
+
+    fn virtual_spell(
+        &self,
+        spell_vk: &[u8; 32],
+        next_spell: &NormalizedSpell,
+    ) -> anyhow::Result<NormalizedSpell> {
+        match self.extract_and_verify_spell(spell_vk, next_spell.mock) {
+            Ok(mut spell) => {
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+            Err(_) => {
+                let mut spell = NormalizedSpell::default();
+                spell.tx.ins = Some(self.spell_ins());
+                spell.tx.outs = vec![];
+                spell.tx.coins = Some(self.all_coin_outs(&spell)?);
+                Ok(spell)
+            }
+        }
+    }
+
+    fn tx_outs_len(&self) -> usize {
+        self.inner().output.len()
+    }
+
+    fn tx_id(&self) -> TxId {
+        TxId(self.inner().compute_txid().to_byte_array())
+    }
+
+    fn hex(&self) -> String {
+        serialize_hex(self.inner())
+    }
+
+    fn spell_ins(&self) -> Vec<UtxoId> {
+        self.inner()
+            .input
+            .iter()
+            .map(|tx_in| {
+                let out_point = tx_in.previous_output;
+                UtxoId(TxId(out_point.txid.to_byte_array()), out_point.vout)
+            })
+            .collect()
+    }
+
+    fn all_coin_outs(&self, _spell: &NormalizedSpell) -> anyhow::Result<Vec<NativeOutput>> {
+        Ok(native_coin_outputs(&self.inner().output))
+    }
+
+    fn proven_final(&self) -> bool {
+        false
     }
 }
 
@@ -226,9 +283,49 @@ fn block_has_tx(tx_block_proof: &MerkleBlock, txid: Txid) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn finish_extract(
+    tx: &impl EnchantedTx,
+    spell: NormalizedSpell,
+    proof: Proof,
+    spell_vk: &[u8; 32],
+    mock: bool,
+) -> anyhow::Result<NormalizedSpell> {
+    if !mock {
+        ensure!(!spell.mock, "spell is a mock, but we are not in mock mode");
+    }
+    ensure!(
+        spell.tx.ins.is_none(),
+        "spell must inherit inputs from the enchanted tx"
+    );
+    ensure!(
+        spell.tx.outs.len() <= tx.tx_outs_len(),
+        "spell tx outs mismatch"
+    );
+    let spell = spell_with_committed_ins_and_coins(tx, spell)?;
+
+    let spell_vk = tx::spell_vk(spell.version, spell_vk, spell.mock)?;
+
+    let public_values = tx::to_serialized_pv(spell.version, spell_vk, &spell);
+
+    tx::verify_snark_proof(&proof, &public_values, spell_vk, spell.version, spell.mock)?;
+
+    Ok(spell)
+}
+
+fn native_coin_outputs(outputs: &[TxOut]) -> Vec<NativeOutput> {
+    outputs
+        .iter()
+        .map(|tx_out| NativeOutput {
+            amount: tx_out.value.to_sat(),
+            dest: tx_out.script_pubkey.to_bytes(),
+            content: None,
+        })
+        .collect()
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn spell_with_committed_ins_and_coins(
-    tx: &BitcoinTx,
+    tx: &impl EnchantedTx,
     mut spell: NormalizedSpell,
 ) -> anyhow::Result<NormalizedSpell> {
     let mut tx_ins = tx.spell_ins();
@@ -313,7 +410,7 @@ pub fn parse_spell_and_proof_from_op_return(
 }
 
 #[tracing::instrument(level = "debug", skip_all)]
-pub fn parse_spell_and_proof_from_witness(
+fn parse_spell_and_proof_from_witness(
     spell_tx_in: &TxIn,
 ) -> anyhow::Result<(NormalizedSpell, Proof)> {
     ensure!(

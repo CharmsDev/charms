@@ -243,7 +243,7 @@ impl Prove for SpellCli {
         let transactions = spell_prover.prove_spell_tx(prove_request).await?;
 
         match chain {
-            Chain::Bitcoin => {
+            Chain::Bitcoin | Chain::Litecoin => {
                 // Convert transactions to hex and create JSON array
                 let hex_txs: Vec<Tx> = transactions;
 
