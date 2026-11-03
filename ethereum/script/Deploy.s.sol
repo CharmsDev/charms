@@ -22,7 +22,7 @@ import {IStockSP1Verifier} from "../src/interfaces/ISP1Verifier.sol";
 contract Deploy is Script {
     uint32 public constant SPELL_VERSION = 16;
     bytes32 public constant PROGRAM_VKEY =
-        0x00764be83874ba96706a4134fc8c09ccc40f60a2988a6106f9a9134b1acfa4e9;
+        0x0086f04df0cd1e2ef7b4e1c2a71cb156a9d7a61ea6af4562f1b5e740508c2b05;
     bytes32 public constant GROTH16_VK_HASH =
         0x4388a21c687fdd5f218d7e3d13190cac4c5355818d3605fd5fb811df468ee696;
 
@@ -33,7 +33,8 @@ contract Deploy is Script {
     bytes32 public constant INITIALIZER_SALT = keccak256("charms-initializer-v2");
     bytes32 public constant TOKEN_SALT = keccak256("charms-token");
     bytes32 public constant IMPLEMENTATION_SALT = keccak256("charms-implementation");
-    bytes32 public constant PROXY_SALT = keccak256("charms-proxy-v2");
+    // DEMO (demo/zkltc-testnet): a separate proxy so the production proxy 0x7f7a…d8f0 is untouched.
+    bytes32 public constant PROXY_SALT = keccak256("charms-proxy-v2-zkltc-testnet-demo");
 
     bytes32 internal constant IMPLEMENTATION_SLOT =
         bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1);

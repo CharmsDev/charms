@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 const SCROLLS_BITCOIN_V15_CANISTER_ID: &str = "rpgc6-oqaaa-aaaak-qy3uq-cai";
-const SCROLLS_LITECOIN_CANISTER_ID: &str = "ya3wx-vqaaa-aaaak-qzmja-cai";
+// DEMO (demo/zkltc-testnet): the demo canister. Production uses ya3wx-vqaaa-aaaak-qzmja-cai.
+const SCROLLS_LITECOIN_CANISTER_ID: &str = "yv4h2-uyaaa-aaaak-qzmkq-cai";
 
 fn scrolls_addresses_canister(chain: Chain) -> Option<&'static str> {
     match chain {
@@ -162,7 +163,7 @@ mod tests {
     fn litecoin_scrolls_call_ya3wx_and_not_the_bitcoin_canister() {
         assert_eq!(
             scrolls_addresses_canister(Chain::Litecoin),
-            Some("ya3wx-vqaaa-aaaak-qzmja-cai")
+            Some("yv4h2-uyaaa-aaaak-qzmkq-cai")
         );
         assert_eq!(
             scrolls_addresses_canister(Chain::Bitcoin),

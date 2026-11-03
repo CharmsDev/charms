@@ -252,11 +252,10 @@ pub const SCROLLS_ADDRS_PUBKEY: [u8; 32] =
 ///
 /// Litecoin scroll outputs are checked against this key. Bitcoin scroll outputs
 /// stay on [`SCROLLS_ADDRS_PUBKEY`].
-// TODO(demo/zkltc-testnet): replace with the x-only `[b"sign"]` Schnorr key of the demo
-// scrolls_litecoin canister before building the demo guest. This is still the production
-// ya3wx key.
+// DEMO (demo/zkltc-testnet): the key of the demo canister yv4h2-uyaaa-aaaak-qzmkq-cai.
+// Production uses ya3wx (1ed9e373…728f).
 pub const SCROLLS_LITECOIN_ADDRS_PUBKEY: [u8; 32] =
-    hex!("1ed9e3732a0b1df786044973959dbdd0aec8e0e23bbb9bdbe3459e5d57c4728f");
+    hex!("2a782bb96d3c0a8a5a3f4901f78724f33e7a36333067b06fedae47f97319d896");
 
 fn verify_finality_proof(
     tx: &Transaction,
@@ -597,7 +596,7 @@ mod tests {
 
     #[test]
     fn scrolls_litecoin_addrs_pubkey_is_the_one_derived_for_icp_threshold_schnorr() {
-        let canister_id = CanisterId::from_str("ya3wx-vqaaa-aaaak-qzmja-cai").unwrap();
+        let canister_id = CanisterId::from_str("yv4h2-uyaaa-aaaak-qzmkq-cai").unwrap();
         let args = SchnorrPublicKeyArgs {
             canister_id: Some(canister_id),
             derivation_path: vec![b"sign".to_vec()],

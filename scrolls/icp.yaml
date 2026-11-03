@@ -42,3 +42,18 @@ canisters:
       configuration:
         package: charms_metadata
         candid: src/charms_metadata/charms_metadata.did
+
+  # Demo only (branch demo/zkltc-testnet): zkLTC round trip on Litecoin testnet.
+  - name: scrolls_litecoin_demo
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_litecoin
+        candid: src/scrolls_litecoin/scrolls_litecoin.did
+
+  - name: scrolls_ethereum_demo
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: scrolls_ethereum
+        candid: src/scrolls_ethereum/scrolls_ethereum.did

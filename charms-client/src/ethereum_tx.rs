@@ -79,14 +79,13 @@ pub struct EthereumFinality {
     pub charms: [u8; 20],
 }
 
-// TODO(demo/zkltc-testnet): replace `vkey` with the Ed25519 `finality_public_key` of the
-// demo scrolls_ethereum canister and `charms` with the demo proxy address (computed from the
-// demo Deploy.s.sol salts) before building the demo guest. These are still the production
-// zvhx6 key and proxy 0x7f7a…d8f0.
+// DEMO (demo/zkltc-testnet): the Ed25519 `finality_public_key` of the demo scrolls_ethereum
+// canister y47mg-cqaaa-aaaak-qzmla-cai and the demo proxy 0x60d782ab…c88a (Deploy.s.sol with
+// PROXY_SALT "charms-proxy-v2-zkltc-testnet-demo"). Production uses zvhx6 and 0x7f7a…d8f0.
 pub const ETHEREUM_FINALITY: EthereumFinality = EthereumFinality {
-    vkey: hex!("864bdfb6bbfc5497e23314caab4accda88f6adb34c7e33b278961a6f5c9d2514"),
+    vkey: hex!("ce5cf7ae0d852ecd3a450381ec631805da6144d22db9cdf3eadf2f05dcaead42"),
     chain_id: 1,
-    charms: hex!("7f7ab9224782de7a20e89e6fc0de52ff6b48d8f0"),
+    charms: hex!("60d782ab42feb4c0f64f209351bb1a808900c88a"),
 };
 
 #[cfg(test)]
