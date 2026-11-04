@@ -59,7 +59,13 @@ const NEXT_SCROLLS_LITECOIN_CANISTER_ID: &str =
 const LITECOINSPACE_MAINNET_BROADCAST_URL: &str = "https://litecoinspace.org/api/tx";
 const LITECOINSPACE_TESTNET_BROADCAST_URL: &str = "https://litecoinspace.org/testnet/api/tx";
 
-const MAX_BROADCAST_RESPONSE_BYTES: u64 = 1024;
+/// Cap on the raw litecoinspace broadcast response. The IC counts response
+/// header names and values against `max_response_bytes`, not just the body.
+/// litecoinspace sits behind Cloudflare and sends about 700 B of headers before
+/// the 64-char txid, which overflowed a 1 KiB cap after the broadcast had
+/// already gone through. 16 KiB leaves room for header growth and HTML error
+/// pages and costs well under 1B extra cycles per call.
+const MAX_BROADCAST_RESPONSE_BYTES: u64 = 16 * 1024;
 
 /// litecoind `sendrawtransaction` code for a transaction already in a block.
 const LITECOIND_TX_ALREADY_IN_CHAIN_RPC_CODE: i64 = -27;
