@@ -80,8 +80,12 @@ const MEMPOOL_MAINNET_BROADCAST_URL: &str = "https://mempool.space/api/tx";
 /// mempool.space REST endpoint for broadcasting a raw transaction on testnet4.
 const MEMPOOL_TESTNET4_BROADCAST_URL: &str = "https://mempool.space/testnet4/api/tx";
 
-/// Upper bound on the mempool.space broadcast response body (txid is 64 hex chars).
-const MAX_BROADCAST_RESPONSE_BYTES: u64 = 1024;
+/// Cap on the raw mempool.space broadcast response. The IC counts response
+/// header names and values against `max_response_bytes`, not just the body,
+/// so a cap sized for the 64-char txid fails once the CDN adds headers, even
+/// after the broadcast went through. 16 KiB leaves room for header growth and
+/// HTML error pages and costs well under 1B extra cycles per call.
+const MAX_BROADCAST_RESPONSE_BYTES: u64 = 16 * 1024;
 
 /// bitcoind `sendrawtransaction` RPC code for an already-confirmed transaction.
 const MEMPOOL_TX_ALREADY_EXISTS_RPC_CODE: i64 = -27;
