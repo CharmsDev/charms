@@ -14,7 +14,7 @@ execution: code
 - **Objective:** A version-16 spell is accepted when the pinned teeVM module signed its statement with both ECDSA and Schnorr, and a spell from version 15 or earlier still verifies under the SP1 key it verifies under today. A version-16 Bitcoin or Litecoin spell does not ask Scrolls to derive an address or sign a spend. A version-16 Cardano spell is not certified by a proof check inside `scrolls_cardano`.
 - **Means:** One WASI program runs on teeVM. The version-16 proof is the ECDSA signature and the BIP-340 signature over that program's stdout. (KTD1, KTD2, KTD3, KTD7)
 - **Authority:** The assignment's version gate, then the teeVM canister API as implemented in `teevm/teevm`, then this plan. `teevm/teevm.run` has no API.
-- **Stop conditions:** Stop the guest work if a representative spell does not fit teeVM's current fuel, memory, stdout, and ingress caps and Ivan has not accepted a new teeVM build (Q4). Stop the mainnet pin and the Ethereum upgrade until Ivan answers the questions below. A published version-16 SP1 proof that must keep verifying changes the spell version (Q2).
+- **Stop conditions:** Stop the guest work if a representative spell does not fit teeVM's current fuel, memory, stdout, and ingress caps and Ivan has not accepted a new teeVM build (Q4). Stop the mainnet pin and the Ethereum upgrade until Ivan answers the questions that are still open. Version 16 stays version 16.
 - **Execution:** Code follows in later pull requests. This pull request is the plan. Ivan's assistant deploys the guest module, upgrades Scrolls canisters, and upgrades the Ethereum implementation. Those deploys are not part of implementation pull requests.
 - **Who ships:** An implementer lands the code against the defaults here. Ivan's assistant runs the runbook and fills in the production key.
 
@@ -28,11 +28,11 @@ Version 16 spell proving moves from SP1 Groth16 to one WASI program that teeVM r
 
 Charms now proves a spell twice. `charms-spell-checker` checks the spell inside SP1 and commits the public values. `charms-proof-wrapper` verifies that compressed proof and commits the same bytes as a Groth16 proof that Bitcoin, Litecoin, Cardano, Ethereum, and the Scrolls canisters can check. teeVM signs the stdout of one WASI module with a key bound to that module. It does not produce a Groth16 proof, and it does not verify an inner proof. The wrapper step has nothing left to wrap.
 
-Version 16 is the current protocol version (`CURRENT_VERSION` in `charms-client/src/lib.rs`). It is the version this guest already commits. The Ethereum proxy `0x7f7ab9224782dE7a20e89E6fc0DE52Ff6b48d8f0` is the mainnet host named by `ETHEREUM_FINALITY` and by `scrolls/BITCOIN-V16.md`. Whether any version-16 Groth16 proof under the current `SPELL_VK` has been published is Q2.
+Version 16 is the current protocol version (`CURRENT_VERSION` in `charms-client/src/lib.rs`). It is the version this guest already commits. The Ethereum proxy `0x7f7ab9224782dE7a20e89E6fc0DE52Ff6b48d8f0` is the mainnet host named by `ETHEREUM_FINALITY` and by `scrolls/BITCOIN-V16.md`. Ivan says version 16 has not been released, so no published verification key for it exists. The teeVM check replaces the unpublished in-tree SP1 key in place.
 
 ### Key Decisions
 
-- Version 16 is the teeVM spell version. Governs R3. Versions 0 through 15 keep one frozen SP1 key each, as `docs/solutions/architecture-patterns/one-spell-version-one-verification-key.md` requires. The in-tree version-16 SP1 key is replaced because that note says a guest rebuild before release replaces the version-16 key, and it says the version was not released as of 2026-10-28. Q2 is the check that this is still true.
+- Version 16 is the teeVM spell version. Governs R3. Versions 0 through 15 keep one frozen SP1 key each, as `docs/solutions/architecture-patterns/one-spell-version-one-verification-key.md` requires. Ivan answered the release question: version 16 has not been released, and no published verification key for it exists. The teeVM check replaces `SPELL_VK` `0x00764be83874ba96706a4134fc8c09ccc40f60a2988a6106f9a9134b1acfa4e9` in place. `CURRENT_VERSION` stays 16. This is not a new spell version, and version 16 does not also accept that SP1 key.
 - Version 16 drops Bitcoin and Litecoin Scrolls address generation and spend-signing. Governs R8. The teeVM certificate on the spell is the authorization those canisters used to enforce before they would sign. Older versions keep `addresses` and `sign_and_submit`.
 - Version 16 does not verify a spell proof inside `scrolls_cardano`. Governs R9. The teeVM certificate in the inline datum is the certification. The canister's Ed25519 co-sign stays, because it also satisfies the withdraw script and carries the input permutation. It is not removed. Mithril finality stays. There is no Cardano address-generation method to remove.
 
@@ -127,8 +127,9 @@ Out of scope: a second teeVM canister, Falcon-1024, a new Plutus proof checker, 
 
 ### Open questions for Ivan
 
+Question 2 is closed. Ivan said version 16 has not been released, so no published verification key for it exists. The teeVM check replaces that unpublished SP1 key in place. It is not a new spell version. The questions below stay open, and they keep their numbers.
+
 1. teeVM `run` returns one `signature` and the guest stdout. `teevm.did` on main (tree `8719e404df1b66de72976938e0f80080abdf6e35`) has no call that returns both algorithms. This plan treats the certificate as two `run` calls, ECDSA then Schnorr, and stores them as 128 bytes in that order. Is two calls, and that byte order, what you want?
-2. Has any version-16 Groth16 proof under `SPELL_VK` `0x00764be83874ba96706a4134fc8c09ccc40f60a2988a6106f9a9134b1acfa4e9` been published on Bitcoin, Litecoin, Cardano, or Ethereum? `docs/solutions/architecture-patterns/one-spell-version-one-verification-key.md` says version 16 was not released as of 2026-10-28, and this plan replaces that key. `CHIPs/CHIP-0020/README.md` and `scrolls/BITCOIN-V16.md` name Ethereum proxy `0x7f7ab9224782dE7a20e89E6fc0DE52Ff6b48d8f0` as the current mainnet deployment. If a version-16 SP1 proof must keep verifying, the teeVM check has to be a new spell version. Which is it?
 3. `ecrecover` does not hash its input. It takes a caller-supplied 32-byte digest, so the contract can pass SHA-256 of the version-16 statement. The address it returns is the last 20 bytes of keccak256 of the recovered uncompressed key. teeVM's ECDSA signature is 64 bytes, `r || s`, low-S, with no recovery id, so the contract tries recovery ids 27 and 28 and compares that address with the address of the pinned 33-byte compressed key. BIP-340 still needs its own check. `PROGRAM_VKEY` stays the Schnorr key. Should `CharmsApply` use `ecrecover` this way for the ECDSA half, or custom Solidity for both signatures?
 4. One teeVM run allows 300,000,000 Wasmi fuel units, 64 MiB of memory, and 1 MiB of stdout. A `run` request must fit in a 2 MiB ingress message, and `public_input` is hex, so it is twice the statement. The certificate needs two runs of the same guest. If the WASI guest cannot re-check an older Groth16 proof and run app contracts inside those caps, only a new teeVM build can raise them. Is a new teeVM build available, or must the guest fit the current caps?
 5. The `teevm/teevm.run` repository on main contains only the line "teeVM website (teevm.run)". This plan does not use it. Is a deployment or certificate flow planned there that is not in the repository yet?
@@ -141,7 +142,7 @@ Out of scope: a second teeVM canister, Falcon-1024, a new Plutus proof checker, 
 12. `verify_tx` also requires a fee output at `spell.tx.outs.len()` paid to `config.fee_address`. That check is not the spell proof. If version 16 still calls `sign`, the fee check stays. If Q11 drops `sign`, where is the Cardano fee enforced?
 13. `certify_final` verifies the spell, then checks Mithril, then signs the tx-body hash under the `FINALITY` path. The client checks that signature in `proven_final` and does not call the canister. This plan skips only the spell check for version 16 and keeps the Mithril signature. Is that the finality path you want?
 
-The code defaults stand until Ivan overrides them. The mainnet pin, the canister upgrades, and the Ethereum upgrade wait for his answers. Q2 changes the spell version if a published version-16 SP1 proof must survive. Q3 chooses `ecrecover` or custom Solidity for the ECDSA half. Q4 stops the guest if it does not fit and no new teeVM build is allowed. Q8 and Q10 change which spends still call a Scrolls canister. Q9 and Q12 change fee enforcement. Q11 changes whether a version-16 Cardano transaction still needs `sign`.
+The code defaults stand until Ivan overrides them. The mainnet pin, the canister upgrades, and the Ethereum upgrade wait for the questions that are still open. Version 16 is settled: the teeVM check replaces the unpublished SP1 key in place. Q3 chooses `ecrecover` or custom Solidity for the ECDSA half. Q4 stops the guest if it does not fit and no new teeVM build is allowed. Q8 and Q10 change which spends still call a Scrolls canister. Q9 and Q12 change fee enforcement. Q11 changes whether a version-16 Cardano transaction still needs `sign`.
 
 ### Sources
 
@@ -266,7 +267,7 @@ teeVM's WASI host provides stdin, stdout, arguments, clocks frozen at 0, and `ra
 ### Alternatives considered
 
 - Keep the wrapper as a second teeVM module that signs the checker's signature. teeVM binds keys per module and signs stdout only. Two modules would be two signatures and two pins, and the outer module would not be verifying an SP1 proof. KTD1 drops the wrapper.
-- Put Groth16 and the teeVM certificate both on version 16. The version-16 key note says one version verifies under one statement key, and a second key made charms stay visible after a guest move. KTD2 keeps the Schnorr key as that statement key and checks both signatures against it. It does not also accept the old Groth16 key.
+- Put Groth16 and the teeVM certificate both on version 16, or move teeVM to a new spell version. The version-16 key note says one version verifies under one statement key. Ivan confirmed there is no published version-16 key, so KTD2 replaces `0x00764be8…fa4e9` in place and does not also accept it.
 - Use only the Schnorr signature as the certificate. That was the earlier recommendation, because the committed statement had one 32-byte identity. Ivan required both signatures. KTD3 follows that. The ECDSA key is pinned beside the Schnorr key and is committed in the version-16 statement. `ecrecover` can check the ECDSA half over a SHA-256 digest. Q3 chooses that or custom Solidity.
 - Drop Cardano `sign` and the withdraw-0 because the script only checks the Scrolls vkey. The vkey requirement is the chain's stand-in for the canister proof check, but the same redeemer carries the input permutation the client needs before it can check the teeVM certificate. KTD8 leaves the co-sign in place. Q11 is the override.
 
@@ -379,7 +380,7 @@ Bake-off was skipped. The algorithm, the signed bytes, and the single module are
 - **Patterns to follow:** the existing runbook tone in `scrolls/BITCOIN-V16.md`.
 - **Test scenarios:**
   - Test expectation: none. These are prose edits. The review check is that every remaining "version 16" Groth16 sentence is either updated or explicitly limited to versions 0 through 15.
-- **Verification:** A search for the old `SPELL_VK` hex in docs finds it only as the retired version-16 SP1 key, with Q2 named beside it.
+- **Verification:** A search for the old `SPELL_VK` hex in docs finds it only as the unpublished version-16 SP1 key this plan replaces in place.
 
 ## Verification Contract
 
@@ -424,4 +425,4 @@ This plan's pull request adds only this document. Its check is review, not a pro
 
 ### Directive check
 
-The assignment asked for one program in place of both guests. The wrapper cannot be ported: teeVM signs stdout and does not verify an SP1 proof. The single program is the checker. The assignment's version-16 gate matches the one-key note only if no published version-16 SP1 proof has to survive. That is Q2. Ivan's later constraints are KTD3, KTD7, and KTD8: both signatures, no new Bitcoin or Litecoin Scrolls address or spend signature, and no spell-proof check inside `scrolls_cardano`. The Cardano co-sign stays because the withdraw script and the input permutation are not that proof check.
+The assignment asked for one program in place of both guests. The wrapper cannot be ported: teeVM signs stdout and does not verify an SP1 proof. The single program is the checker. Ivan confirmed version 16 has not been released, so the teeVM check replaces the unpublished version-16 SP1 key in place and the spell version stays 16. Ivan's later constraints are KTD3, KTD7, and KTD8: both signatures, no new Bitcoin or Litecoin Scrolls address or spend signature, and no spell-proof check inside `scrolls_cardano`. The Cardano co-sign stays because the withdraw script and the input permutation are not that proof check.
